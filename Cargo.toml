@@ -1,0 +1,19 @@
+[package]
+name = "rstsr-showcase-hessian"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libcint = "0.3"
+npyz = "0.9"
+zip = "8.6"
+rayon = "1.12"
+itertools = "0.14"
+libxc = "0.1"
+rstsr = { version = "0.7", default-features = false, features = ["col_major", "faer", "faer_as_default"] }
+
+[dev-dependencies]
+rstest = "0.26"
+
+[profile.dev]
+opt-level = 2
