@@ -10,7 +10,6 @@ book
 *.npy
 *.npz
 repomix-output*
-.claude
 *.local*
 
 # bindgen
