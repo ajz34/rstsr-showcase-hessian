@@ -7,7 +7,11 @@ class HessRscfAPI(ABC):
 
     @abstractmethod
     def make_hess(
-        self, mo_coeff: np.ndarray, mo_occ: np.ndarray, mo_energy: np.ndarray, dm0: np.ndarray = None
+        self,
+        mo_coeff: np.ndarray,
+        mo_occ: np.ndarray,
+        mo_energy: np.ndarray,
+        dm0: np.ndarray = None,
     ) -> np.ndarray:
         """Generate the Hessian for current SCF component.
 
@@ -50,4 +54,29 @@ class HessRscfAPI(ABC):
         """
         import pyhessref.util
 
-        return pyhessref.util.get_dm(mo_coeff, mo_occ)
+        return pyhessref.util.get_dm0(mo_coeff, mo_occ)
+
+    @staticmethod
+    def get_dme0(
+        mo_coeff: np.ndarray, mo_occ: np.ndarray, mo_energy: np.ndarray
+    ) -> np.ndarray:
+        """Generate the energy-weighted density matrix for current SCF component.
+
+        Parameters
+        ----------
+        mo_coeff : np.ndarray
+            Molecular orbital coefficients, shape [nao, nmo].
+        mo_occ : np.ndarray
+            Molecular orbital occupation numbers, shape [nmo].
+            In usual cases, the occupied orbitals should have occupation 2, and virtual orbitals should have occupation 0.
+        mo_energy : np.ndarray
+            Molecular orbital energies, shape [nmo].
+
+        Returns
+        -------
+        dme0 : np.ndarray
+            The energy-weighted density matrix for current SCF component, shape [nao, nao].
+        """
+        import pyhessref.util
+
+        return pyhessref.util.get_dme0(mo_coeff, mo_occ, mo_energy)

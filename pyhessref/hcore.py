@@ -141,6 +141,8 @@ class HessHcore(HessRscfAPI):
     def __init__(self, mol: gto.Mole):
         self.mol = mol
 
-    def make_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, *args, dm0: np.ndarray = None) -> np.ndarray:
+    def make_hess(
+        self, mo_coeff: np.ndarray, mo_occ: np.ndarray, *args, dm0: np.ndarray = None
+    ) -> np.ndarray:
         dm0 = dm0 or self.get_dm0(mo_coeff, mo_occ)
         return get_hess_hcore(self.mol, dm0)
