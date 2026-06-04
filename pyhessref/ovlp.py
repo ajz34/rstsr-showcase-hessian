@@ -1,11 +1,14 @@
 from pyscf import gto
 import numpy as np
 
-from pyhessref.hess_trait import HessRscfAPI
-
 
 def get_hess_ovlp(mol: gto.Mole, dme0: np.ndarray) -> np.ndarray:
     """Hessian contribution from overlap matrix derivative.
+
+    Notes
+    -----
+    Please be aware that the overlap matrix derivative is **NOT skeleton derivative**.
+    It's true origin is the application of Hellmann-Feynman theorem, that converts part of the response of density matrix to the response of basis functions.
 
     Parameters
     ----------
@@ -47,14 +50,19 @@ def get_hess_ovlp(mol: gto.Mole, dme0: np.ndarray) -> np.ndarray:
     return de_ovlp
 
 
-class HessOvlp(HessRscfAPI):
-    """Hessian contribution from overlap matrix derivative."""
+class HessOvlp:
+    """Hessian contribution from overlap matrix derivative.
+
+    Note that overlap is special to the SCF part, in that
+    - The contribution of hessian from overlap is not skeleton, so we do not derive this class from `HessCoreAPI`.
+    - The CP-HF requires both first order derivative of hcore and ovlp, but their roles are different.
+
+    Due to these reasons, although it has the similar interface to `HessCoreAPI`,
+    `HessOvlp` is designed as a standalone class, without inheriting from any abstract class.
+    """
 
     def __init__(self, mol: gto.Mole):
         self.mol = mol
 
-    def make_hess(
-        self, mo_coeff: np.ndarray, mo_occ: np.ndarray, mo_energy: np.ndarray, **kwargs
-    ) -> np.ndarray:
-        dme0 = self.get_dme0(mo_coeff, mo_occ, mo_energy)
+    def make_hess(self, dme0: np.ndarray) -> np.ndarray:
         return get_hess_ovlp(self.mol, dme0)

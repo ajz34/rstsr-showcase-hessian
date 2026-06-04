@@ -39,7 +39,7 @@ class TestHessianRHF(unittest.TestCase):
         from pyhessref.nuc_repl import HessNucRepl
 
         hess_nuc_repl_obj = HessNucRepl(mol)
-        de_nuc_repl = hess_nuc_repl_obj.make_hess(mf.mo_coeff, mf.mo_occ, mf.mo_energy)
+        de_nuc_repl = hess_nuc_repl_obj.make_skeleton_hess(mf.mo_coeff, mf.mo_occ)
         self.assertTrue(np.allclose(de_nuc_repl, ref_value["de_nuc"]))
 
     def test_generator_hcore_deriv2(self):
@@ -68,14 +68,16 @@ class TestHessianRHF(unittest.TestCase):
         from pyhessref.hcore import HessHcore
 
         hess_hcore_obj = HessHcore(mol)
-        de_hcore = hess_hcore_obj.make_hess(mf.mo_coeff, mf.mo_occ, mf.mo_energy)
+        de_hcore = hess_hcore_obj.make_skeleton_hess(mf.mo_coeff, mf.mo_occ)
         self.assertTrue(np.allclose(de_hcore, ref_value["de_hcore"]))
 
     def test_hess_ovlp(self):
         # class check
         from pyhessref.ovlp import HessOvlp
+        from pyhessref.util import get_dme0
 
         hess_ovlp_obj = HessOvlp(mol)
-        de_ovlp = hess_ovlp_obj.make_hess(mf.mo_coeff, mf.mo_occ, mf.mo_energy)
+        dme0 = get_dme0(mf.mo_coeff, mf.mo_occ, mf.mo_energy)
+        de_ovlp = hess_ovlp_obj.make_hess(dme0)
         self.assertTrue(np.allclose(de_ovlp, ref_value["de_ovlp"]))
         self.assertAlmostEqual(lib.fp(de_ovlp), 0.7050335726988588)
