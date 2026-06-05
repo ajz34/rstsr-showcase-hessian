@@ -150,7 +150,7 @@ class TestHessianRHF(unittest.TestCase):
 
         # functionality check
         hess_rijk_obj = RHessRIJKNaive(mol, aux)
-        hess_rijk_obj.prepare_response(mf.mo_coeff, mf.mo_occ)
+        hess_rijk_obj.make_response_preparation(mf.mo_coeff, mf.mo_occ)
         mo1_bra = mf.mo_coeff @ mo1
         resp_bra = hess_rijk_obj.get_response_bra(mo1_bra)
         resp = mf.mo_coeff.T @ resp_bra
@@ -173,13 +173,12 @@ class TestHessianRHF(unittest.TestCase):
         )
 
         # before krylov, first obtain dimensionless rhs part
-        np.set_printoptions(precision=5, suppress=True, linewidth=150)
         pre_cphf_dict = hess_impl.compute_dimensionless_cphf_rhs()
         self.assertAlmostEqual(lib.fp(pre_cphf_dict["rhs"]), -0.027755691019085788)
 
         # solve cphf
         rhs = pre_cphf_dict["rhs"]
-        hess_impl.prepare_response()
+        hess_impl.make_response_preparation()
         mo1 = hess_impl.solve_dimless_cphf(rhs)
         self.assertTrue(np.allclose(mo1, ref_value["mo1"], atol=1e-6, rtol=1e-4))
         self.assertAlmostEqual(lib.fp(mo1), -0.02385155247256418, places=6)
@@ -198,4 +197,18 @@ class TestHessianRHF(unittest.TestCase):
         s1mo = pre_cphf_dict["s1mo"]
         de_cphf = hess_impl.get_cphf_hess(f1mo, s1mo, mo1, mo_e1)
         self.assertTrue(np.allclose(de_cphf, ref_value["de_cphf"], atol=1e-6, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(de_cphf), 1.0888788930763051, places=6)
     
+    def test_make_hess(self):
+        hess_impl = RHessImpl(
+            mol,
+            mf.mo_coeff,
+            mf.mo_occ,
+            mf.mo_energy,
+            ovlp_obj=RHessOvlp(mol),
+            core_list=[HessNucRepl(mol), RHessHcore(mol)],
+            el_list=[RHessRIJKNaive(mol, aux)],
+        )
+        de_hess = hess_impl.make_hess()
+        self.assertTrue(np.allclose(de_hess, ref_value["de_ref"], atol=1e-6, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(de_hess), 1.4704252379360374, places=5)

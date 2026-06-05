@@ -144,7 +144,7 @@ class RHessElecInteractAPI(ABC):
         return self.get_deriv1_ao(mo_coeff, mo_occ) @ mocc
 
     @abstractmethod
-    def prepare_response(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+    def make_response_preparation(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
         """Prepare the data for response calculation.
 
         Response (related to second order of density matrix derivative to energy) will be called multiple-times in CP-HF solver and other places.
@@ -157,10 +157,10 @@ class RHessElecInteractAPI(ABC):
         r"""Get the response contribution for current SCF component.
 
         This function will be called multiple-times in CP-HF solver and other places.
-        Call `prepare_response` before this function to make sure the data is ready.
+        Call `make_response_preparation` before this function to make sure the data is ready.
 
         Also, this function will not pass in the MO coefficients and occupation numbers.
-        If you need them, you should store them in the object in `prepare_response`.
+        If you need them, you should store them in the object by function `make_response_preparation`.
 
         Parameters
         ----------

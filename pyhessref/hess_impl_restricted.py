@@ -4,6 +4,7 @@ import numpy as np
 from pyhessref.hess_trait_restricted import RHessCoreAPI, RHessElecInteractAPI
 from pyhessref.ovlp import RHessOvlp
 from pyhessref.krylov_block import krylov_block
+from pyhessref.util import get_dme0_restricted
 
 
 class RHessImpl:
@@ -92,11 +93,11 @@ class RHessImpl:
             "s1mo": s1mo,
         }
 
-    def prepare_response(self, mo_coeff: np.ndarray = None, mo_occ: np.ndarray = None) -> np.ndarray:
+    def make_response_preparation(self, mo_coeff: np.ndarray = None, mo_occ: np.ndarray = None) -> np.ndarray:
         mo_coeff = mo_coeff if mo_coeff is not None else self.mo_coeff
         mo_occ = mo_occ if mo_occ is not None else self.mo_occ
         for el_obj in self.el_list:
-            el_obj.prepare_response(mo_coeff, mo_occ)
+            el_obj.make_response_preparation(mo_coeff, mo_occ)
 
     def response_mo(self, mo1: np.ndarray) -> np.ndarray:
         mo_coeff = self.mo_coeff
@@ -181,3 +182,36 @@ class RHessImpl:
             for B in range(A):
                 de_cphf[B, A] = de_cphf[A, B].T
         return de_cphf
+    
+    def make_cphf_hess(self) -> np.ndarray:
+        pre_cphf_dict = self.compute_dimensionless_cphf_rhs()
+        self.make_response_preparation(self.mo_coeff, self.mo_occ)
+        mo1 = self.solve_dimless_cphf(pre_cphf_dict["rhs"])
+        result_cphf = self.finalize_cphf(mo1, pre_cphf_dict)
+        mo1 = result_cphf["mo1"]
+        mo_e1 = result_cphf["mo_e1"]
+        f1mo = pre_cphf_dict["f1mo"]
+        s1mo = pre_cphf_dict["s1mo"]
+        de_cphf = self.get_cphf_hess(f1mo, s1mo, mo1, mo_e1)
+        return de_cphf
+
+    def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        natm = self.mol.natm
+        de_skeleton = np.zeros([natm, natm, 3, 3])
+        for core_obj in self.core_list:
+            de_skeleton += core_obj.make_skeleton_hess(mo_coeff, mo_occ)
+        for el_obj in self.el_list:
+            de_skeleton += el_obj.make_skeleton_hess(mo_coeff, mo_occ)
+        return de_skeleton
+    
+    def make_hess(self) -> np.ndarray:
+        mo_coeff = self.mo_coeff
+        mo_occ = self.mo_occ
+        mo_energy = self.mo_energy
+        dme0 = get_dme0_restricted(mo_coeff, mo_occ, mo_energy)
+        
+        de_skeleton = self.make_skeleton_hess(mo_coeff, mo_occ)
+        de_ovlp = self.ovlp_obj.make_hess(dme0)
+        de_cphf = self.make_cphf_hess()
+        de_hess = de_skeleton + de_ovlp + de_cphf
+        return de_hess

@@ -1042,7 +1042,7 @@ class RHessRIJKNaive(RHessElecInteractAPI):
         deriv_ao = self.scale_j * j1ao - self.scale_k * k1ao
         return deriv_ao
 
-    def prepare_response(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+    def make_response_preparation(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
         self.mo_coeff = mo_coeff
         self.mo_occ = mo_occ
 
