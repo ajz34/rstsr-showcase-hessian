@@ -56,3 +56,47 @@ class HessCoreAPI(ABC):
         If this component does not contribute (like nuclear repulsion), return None.
         """
         pass
+
+
+class HessElecInteractAPI(ABC):
+    """Abstract class for Hessian-related API for restricted SCF electronic interaction components.
+
+    Term Explanation
+    ----------------
+
+    **Electronic interaction** here actually means the term is of two-order (or higher-order) with right of (electron) density matrix.
+
+    - J/K contribution from Hartree-Fock is exactly two-order.
+    - DFT contribution is non-linear to density matrix, and should be counted as infinity-order.
+    - Implicit-solvent/VV10 is probably categorized here.
+
+    In SCF iteration, introducing two-order (or higher-order) contribution requires the program to make some modification to Fock matrix construction.
+    This kind of terms is substentially different from zero/one-order core components, and should be handled separately.
+    """
+
+    @abstractmethod
+    def make_skeleton_hess(
+        self,
+        mo_coeff: np.ndarray,
+        mo_occ: np.ndarray,
+        dm0: np.ndarray = None,
+    ) -> np.ndarray:
+        """Generate the **skeleton** contribution of Hessian for current SCF component.
+
+        Parameters
+        ----------
+        mo_coeff : np.ndarray
+            Molecular orbital coefficients, shape [nao, nmo].
+        mo_occ : np.ndarray
+            Molecular orbital occupation numbers, shape [nmo].
+            In usual cases, the occupied orbitals should have occupation 2, and virtual orbitals should have occupation 0.
+        dm0 : np.ndarray, optional
+            The density matrix for current SCF component, shape [nao, nao].
+            If not provided, it will be generated from `mo_coeff` and `mo_occ` if necessary.
+
+        Returns
+        -------
+        hess : np.ndarray
+            The Hessian matrix for current SCF component, shape [natm, natm, 3, 3].
+        """
+        pass
