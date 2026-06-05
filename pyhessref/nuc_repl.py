@@ -1,7 +1,7 @@
 import numpy as np
 from pyscf import gto
 
-from pyhessref.hess_trait import HessCoreAPI
+from pyhessref.hess_trait_restricted import RHessCoreAPI
 
 
 def get_nuc_repl_hess(mol: gto.Mole) -> np.ndarray:
@@ -42,7 +42,7 @@ def get_nuc_repl_hess(mol: gto.Mole) -> np.ndarray:
     return de_nuc
 
 
-class HessNucRepl(HessCoreAPI):
+class HessNucRepl(RHessCoreAPI):
     """Hessian contribution from nuclear repulsion."""
 
     def __init__(self, mol: gto.Mole):

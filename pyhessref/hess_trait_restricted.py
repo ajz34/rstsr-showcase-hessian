@@ -2,7 +2,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 
 
-class HessCoreAPI(ABC):
+class RHessCoreAPI(ABC):
     """Abstract class for Hessian-related API for restricted SCF core components.
 
     Term Explanation
@@ -58,7 +58,7 @@ class HessCoreAPI(ABC):
         pass
 
 
-class HessElecInteractAPI(ABC):
+class RHessElecInteractAPI(ABC):
     """Abstract class for Hessian-related API for restricted SCF electronic interaction components.
 
     Term Explanation
@@ -100,3 +100,53 @@ class HessElecInteractAPI(ABC):
             The Hessian matrix for current SCF component, shape [natm, natm, 3, 3].
         """
         pass
+
+    @abstractmethod
+    def deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
+        """First order skeleton derivative in AO basis.
+
+        Parameters
+        ----------
+        mo_coeff : np.ndarray
+            Molecular orbital coefficients, shape [nao, nmo].
+        mo_occ : np.ndarray
+            Molecular orbital occupation numbers, shape [nmo].
+            In usual cases, the occupied orbitals should have occupation 2, and virtual orbitals should have occupation 0.
+        dm0 : np.ndarray, optional
+            The density matrix for current SCF component, shape [nao, nao].
+            If not provided, it will be generated from `mo_coeff` and `mo_occ` if necessary.
+
+        Returns
+        -------
+        deriv_ao : np.ndarray
+            The first-order skeleton derivative in AO basis, shape [natm, 3, nao, nao].
+        """
+        pass
+
+    def deriv1_occ_half_trans(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
+        """First order skeleton derivative in half-transformed MO basis.
+
+        See also
+        --------
+        deriv1_ao
+
+        Notes
+        -----
+        If `deriv1_ao` implemented, this function should behave like `deriv_bra = deriv_ao @ mocc`, where `mocc` is
+        the occupied molecular coefficients (as ket).
+        
+        However, in some cases, it is probably better to skip the usage of `deriv1_ao` and directly use this function.
+        By ket half-transformation, some RI-JK or DFT methods will benefit from boost by using low-rank occupied orbitals,
+        instead of using full AO basis.
+        
+        Returns
+        -------
+        deriv_bra : np.ndarray
+            The first-order skeleton derivative in half-transformed MO basis, shape [natm, 3, nao, nocc].
+            Note that this function will handle the order of occupied orbitals. If occupation number is not sorted contiguously,
+            you may be extra cautious to this function.
+        """
+        occidx = mo_occ > 1e-15
+        mocc = mo_coeff[:, occidx]
+        return self.deriv1_ao(mo_coeff, mo_occ, dm0=dm0) @ mocc
+        

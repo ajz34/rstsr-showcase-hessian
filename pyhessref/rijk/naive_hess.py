@@ -3,7 +3,8 @@ from pyscf import gto
 from functools import partial
 from pyscf.df.grad.rhf import _int3c_wrapper
 
-from pyhessref.util import get_dm0
+from pyhessref.hess_trait_restricted import RHessElecInteractAPI
+from pyhessref.util import get_dm0_restricted
 
 # override einsum for some efficiency
 einsum = partial(np.einsum, optimize=True)
@@ -51,7 +52,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     # some elementary information
     nao = mol.nao
     naux = aux.nao
-    dm0 = get_dm0(mo_coeff, mo_occ)
+    dm0 = get_dm0_restricted(mo_coeff, mo_occ)
     natm = mol.natm
     aoslices = mol.aoslice_by_atom()
     auxslices = aux.aoslice_by_atom()
@@ -746,3 +747,22 @@ def get_decomposed_rik_skeleton_deriv2_naive(
         "de_K02": de_K02,
     }
     return de_K_skeleton
+
+
+class RHessRIJKNaive(RHessElecInteractAPI):
+    def __init__(self, mol: gto.Mole, aux: gto.Mole):
+        self.mol = mol
+        self.aux = aux
+        self.result = dict()
+
+    def make_skeleton_hess(self, mo_coeff, mo_occ, dm0=None):
+        de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(self.mol, self.aux, mo_coeff, mo_occ)
+        de_K_skeleton = get_decomposed_rik_skeleton_deriv2_naive(self.mol, self.aux, mo_coeff, mo_occ)
+
+        self.result.update(de_J_skeleton)
+        self.result.update(de_K_skeleton)
+
+        de_J = de_J_skeleton["de_J20"] + de_J_skeleton["de_J11"] + de_J_skeleton["de_J02"]
+        de_K = de_K_skeleton["de_K20"] + de_K_skeleton["de_K11"] + de_K_skeleton["de_K02"]
+        de_JK = de_J - 0.5 * de_K
+        return de_JK

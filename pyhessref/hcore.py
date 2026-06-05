@@ -1,8 +1,8 @@
 import numpy as np
 from pyscf import gto
 
-from pyhessref.hess_trait import HessCoreAPI
-from pyhessref.util import get_dm0
+from pyhessref.hess_trait_restricted import RHessCoreAPI
+from pyhessref.util import get_dm0_restricted
 
 
 def generator_hcore_deriv2(mol) -> callable:
@@ -155,14 +155,14 @@ def get_hess_hcore(mol: gto.Mole, dm0: np.ndarray) -> np.ndarray:
     return de_hcore
 
 
-class HessHcore(HessCoreAPI):
+class RHessHcore(RHessCoreAPI):
     """Hessian contribution from the core Hamiltonian."""
 
     def __init__(self, mol: gto.Mole):
         self.mol = mol
 
     def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
-        dm0 = dm0 if dm0 is not None else get_dm0(mo_coeff, mo_occ)
+        dm0 = dm0 if dm0 is not None else get_dm0_restricted(mo_coeff, mo_occ)
         return get_hess_hcore(self.mol, dm0)
 
     def generator_deriv1(self) -> callable:

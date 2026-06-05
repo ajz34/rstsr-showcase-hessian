@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def get_dm0(mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+def get_dm0_restricted(mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
     """Generate the density matrix for current SCF component.
 
     Parameters
@@ -20,7 +20,7 @@ def get_dm0(mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
     return mo_coeff[:, occidx] * mo_occ[occidx] @ mo_coeff[:, occidx].T
 
 
-def get_dme0(mo_coeff: np.ndarray, mo_occ: np.ndarray, mo_energy: np.ndarray) -> np.ndarray:
+def get_dme0_restricted(mo_coeff: np.ndarray, mo_occ: np.ndarray, mo_energy: np.ndarray) -> np.ndarray:
     """Generate the energy-weighted density matrix for current SCF component.
 
     Parameters

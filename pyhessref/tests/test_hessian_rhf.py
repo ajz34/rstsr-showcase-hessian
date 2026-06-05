@@ -64,19 +64,19 @@ class TestHessianRHF(unittest.TestCase):
         self.assertTrue(np.allclose(hess_hcore, ref_value["de_hcore"]))
         self.assertAlmostEqual(lib.fp(hess_hcore), -16.993496707453197)
         # class check
-        from pyhessref.hcore import HessHcore
+        from pyhessref.hcore import RHessHcore
 
-        hess_hcore_obj = HessHcore(mol)
+        hess_hcore_obj = RHessHcore(mol)
         de_hcore = hess_hcore_obj.make_skeleton_hess(mf.mo_coeff, mf.mo_occ)
         self.assertTrue(np.allclose(de_hcore, ref_value["de_hcore"]))
 
     def test_hess_ovlp(self):
         # class check
-        from pyhessref.ovlp import HessOvlp
-        from pyhessref.util import get_dme0
+        from pyhessref.ovlp import RHessOvlp
+        from pyhessref.util import get_dme0_restricted
 
-        hess_ovlp_obj = HessOvlp(mol)
-        dme0 = get_dme0(mf.mo_coeff, mf.mo_occ, mf.mo_energy)
+        hess_ovlp_obj = RHessOvlp(mol)
+        dme0 = get_dme0_restricted(mf.mo_coeff, mf.mo_occ, mf.mo_energy)
         de_ovlp = hess_ovlp_obj.make_hess(dme0)
         self.assertTrue(np.allclose(de_ovlp, ref_value["de_ovlp"]))
         self.assertAlmostEqual(lib.fp(de_ovlp), 0.7050335726988588)

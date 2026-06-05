@@ -77,7 +77,7 @@ def generator_ovlp_deriv1(mol: gto.Mole) -> callable:
     return get_ovlp_deriv_at_atom
 
 
-class HessOvlp:
+class RHessOvlp:
     """Hessian contribution from overlap matrix derivative.
 
     Note that overlap is special to the SCF part, in that
