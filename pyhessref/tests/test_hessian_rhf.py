@@ -4,6 +4,19 @@ import numpy as np
 from pyscf import gto, scf, lib, df, hessian
 
 
+from pyhessref.util import get_dme0_restricted
+from pyhessref.nuc_repl import HessNucRepl, get_nuc_repl_hess
+from pyhessref.hcore import RHessHcore, generator_hcore_deriv2, get_hess_hcore, generator_hcore_deriv1
+from pyhessref.ovlp import RHessOvlp
+from pyhessref.rijk.hess_restricted_naive import (
+    RHessRIJKNaive,
+    get_decomposed_rij_skeleton_deriv2_naive,
+    get_rij_deriv1_ao_naive,
+    get_rik_deriv1_ao_naive,
+)
+from pyhessref.hess_impl_restricted import RHessImpl
+
+
 def setUpModule():
     global mol, aux, mf, mf_hess, ref_value
 
@@ -30,22 +43,16 @@ def setUpModule():
 
 class TestHessianRHF(unittest.TestCase):
     def test_hess_nuc_repl(self):
-        from pyhessref.nuc_repl import get_nuc_repl_hess
-
         hess_nuc_repl = get_nuc_repl_hess(mol)
         # numerical check
         self.assertTrue(np.allclose(hess_nuc_repl, ref_value["de_nuc"]))
         self.assertAlmostEqual(lib.fp(hess_nuc_repl), 10.942151503672441)
         # class check
-        from pyhessref.nuc_repl import HessNucRepl
-
         hess_nuc_repl_obj = HessNucRepl(mol)
         de_nuc_repl = hess_nuc_repl_obj.make_skeleton_hess(mf.mo_coeff, mf.mo_occ)
         self.assertTrue(np.allclose(de_nuc_repl, ref_value["de_nuc"]))
 
     def test_generator_hcore_deriv2(self):
-        from pyhessref.hcore import generator_hcore_deriv2
-
         gen_hcore_deriv2 = generator_hcore_deriv2(mol)
         # functionality check
         for A in range(mol.natm):
@@ -57,24 +64,17 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(gen_hcore_deriv2(0, 1)), 12.858221292861833)
 
     def test_hess_hcore(self):
-        from pyhessref.hcore import get_hess_hcore
-
         hess_hcore = get_hess_hcore(mol, mf.make_rdm1())
         # numerical check
         self.assertTrue(np.allclose(hess_hcore, ref_value["de_hcore"]))
         self.assertAlmostEqual(lib.fp(hess_hcore), -16.993496707453197)
         # class check
-        from pyhessref.hcore import RHessHcore
-
         hess_hcore_obj = RHessHcore(mol)
         de_hcore = hess_hcore_obj.make_skeleton_hess(mf.mo_coeff, mf.mo_occ)
         self.assertTrue(np.allclose(de_hcore, ref_value["de_hcore"]))
 
     def test_hess_ovlp(self):
         # class check
-        from pyhessref.ovlp import RHessOvlp
-        from pyhessref.util import get_dme0_restricted
-
         hess_ovlp_obj = RHessOvlp(mol)
         dme0 = get_dme0_restricted(mf.mo_coeff, mf.mo_occ, mf.mo_energy)
         de_ovlp = hess_ovlp_obj.make_hess(dme0)
@@ -83,10 +83,6 @@ class TestHessianRHF(unittest.TestCase):
 
     def test_hess_JK_skeleton_naive(self):
         # function check
-        from pyhessref.rijk.hess_restricted_naive import (
-            get_decomposed_rij_skeleton_deriv2_naive,
-        )
-
         de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         for key, val in de_J_skeleton.items():
             self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
@@ -96,8 +92,6 @@ class TestHessianRHF(unittest.TestCase):
             self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
 
     def test_generator_hcore_deriv1(self):
-        from pyhessref.hcore import generator_hcore_deriv1
-
         gen_hcore_deriv1 = generator_hcore_deriv1(mol)
         # functionality check
         for A in range(mol.natm):
@@ -109,8 +103,6 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(gen_hcore_deriv1(3)), 23.88285913576012)
 
     def test_rij_deriv1(self):
-        from pyhessref.rijk.hess_restricted_naive import get_rij_deriv1_ao_naive
-
         j1ao_dict = get_rij_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         j1ao = j1ao_dict["j1ao_aux0"] + j1ao_dict["j1ao_aux1"]
 
@@ -122,8 +114,6 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(j1ao_dict["j1ao_aux1"]), 0.11465211252634573)
 
     def test_kij_deriv1(self):
-        from pyhessref.rijk.hess_restricted_naive import get_rik_deriv1_ao_naive
-
         k1ao_dict = get_rik_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         k1ao = k1ao_dict["k1ao_aux0"] + k1ao_dict["k1ao_aux1"]
 
@@ -135,9 +125,6 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(k1ao_dict["k1ao_aux1"]), 0.20670656219034203)
 
     def test_f1ao(self):
-        from pyhessref.rijk.hess_restricted_naive import RHessRIJKNaive
-        from pyhessref.hcore import RHessHcore
-
         # functionality check
         hess_hcore_obj = RHessHcore(mol)
         hess_rijk_obj = RHessRIJKNaive(mol, aux)
@@ -153,7 +140,6 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(f1ao), 0.03306328818631421)
 
     def test_resp_bra(self):
-        from pyhessref.rijk.hess_restricted_naive import RHessRIJKNaive
 
         # double check of umo (U_{pi}^A) sanity
         umo = ref_value["umo"]
@@ -174,3 +160,18 @@ class TestHessianRHF(unittest.TestCase):
 
         # numerical check
         self.assertAlmostEqual(lib.fp(resp), -0.07694258336883628)
+
+    def test_dimensionless_cphf_rhs(self):
+        hess_impl = RHessImpl(
+            mol,
+            mf.mo_coeff,
+            mf.mo_occ,
+            mf.mo_energy,
+            ovlp_obj=RHessOvlp(mol),
+            core_list=[HessNucRepl(mol), RHessHcore(mol)],
+            interact_list=[RHessRIJKNaive(mol, aux)],
+        )
+
+        np.set_printoptions(precision=5, suppress=True, linewidth=150)
+        pre_cphf_dict = hess_impl.compute_dimensionless_cphf_rhs()
+        self.assertAlmostEqual(lib.fp(pre_cphf_dict["rhs"]), -0.027755691019085788)

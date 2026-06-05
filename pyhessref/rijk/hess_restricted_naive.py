@@ -1009,7 +1009,7 @@ def get_rijk_response_bra_naive(
 
 
 class RHessRIJKNaive(RHessElecInteractAPI):
-    def __init__(self, mol: gto.Mole, aux: gto.Mole):
+    def __init__(self, mol: gto.Mole, aux: gto.Mole, scale_j: float = 1.0, scale_k: float = 0.5):
         self.mol = mol
         self.aux = aux
         self.scale_j = 1.0
