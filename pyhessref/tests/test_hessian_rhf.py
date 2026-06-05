@@ -1,7 +1,7 @@
 import unittest
 
 import numpy as np
-from pyscf import gto, scf, lib
+from pyscf import gto, scf, lib, df
 
 
 def setUpModule():
@@ -83,7 +83,9 @@ class TestHessianRHF(unittest.TestCase):
 
     def test_hess_JK_skeleton_naive(self):
         # function check
-        from pyhessref.rijk.naive_hess import get_decomposed_rij_skeleton_deriv2_naive
+        from pyhessref.rijk.hess_restricted_naive import (
+            get_decomposed_rij_skeleton_deriv2_naive,
+        )
 
         de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         for key, val in de_J_skeleton.items():
@@ -105,3 +107,12 @@ class TestHessianRHF(unittest.TestCase):
         # numerical check
         self.assertAlmostEqual(lib.fp(gen_hcore_deriv1(0)), -19.44142929546185)
         self.assertAlmostEqual(lib.fp(gen_hcore_deriv1(3)), 23.88285913576012)
+
+    def test_rij_deriv1(self):
+        from pyhessref.rijk.hess_restricted_naive import get_rij_deriv1_ao
+
+        j1ao_dict = get_rij_deriv1_ao(mol, aux, mf.mo_coeff, mf.mo_occ)
+        j1ao = j1ao_dict["j1ao_aux0"] + j1ao_dict["j1ao_aux1"]
+
+        j1ao_ref = np.array([r[2] for r in df.hessian.rhf._gen_jk(mf_hess, mf.mo_coeff, mf.mo_occ)])
+        self.assertTrue(np.allclose(j1ao, j1ao_ref))

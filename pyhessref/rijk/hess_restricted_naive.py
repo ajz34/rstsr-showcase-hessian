@@ -107,7 +107,14 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     # --- J11 (basis deriv 1, aux deriv 1) --- #
 
     # (10|1)(0|0)(0|00)
-    dbas_J11_1 = einsum("tsuvP, PQ, klQ, uv, kl -> tsuP", int3c2e_ip1ip2, int2c2e_inv, int3c2e, dm0, dm0)
+    dbas_J11_1 = einsum(
+        "tsuvP, PQ, klQ, uv, kl -> tsuP",
+        int3c2e_ip1ip2,
+        int2c2e_inv,
+        int3c2e,
+        dm0,
+        dm0,
+    )
     de_J11_1 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
@@ -168,7 +175,14 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     # --- J02 (basis deriv 0, aux deriv 2) --- #
 
     # (00|2)(0|00)
-    dbas_J02_1 = einsum("tsuvP, PQ, klQ, uv, kl -> tsP", int3c2e_ipip2, int2c2e_inv, int3c2e, dm0, dm0)
+    dbas_J02_1 = einsum(
+        "tsuvP, PQ, klQ, uv, kl -> tsP",
+        int3c2e_ipip2,
+        int2c2e_inv,
+        int3c2e,
+        dm0,
+        dm0,
+    )
     de_J02_1 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         de_J02_1[A, A] += einsum("tsP -> ts", dbas_J02_1[:, :, p0A:p1A])
@@ -777,7 +791,7 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
     int3c2e_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")()
     int3c2e_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")()
 
-    scr1 = np.einsum("tuvP, PQ, klQ, kl -> tuv", int3c2e_ip1, int2c2e_inv, int3c2e, dm0)
+    scr1 = einsum("tuvP, PQ, klQ, kl -> tuv", int3c2e_ip1, int2c2e_inv, int3c2e, dm0)
 
     j1ao_aux0 = np.zeros([natm, 3, nao, nao])
     for A in range(mol.natm):
@@ -788,7 +802,13 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
         # (01|0)(0|00) (can be symmetrized)
         j1ao_aux0[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
         # (00|0)(0|10), (00|0)(0|01)
-        scr2 = np.einsum("tklP, PQ, uvQ, kl -> tuv", int3c2e_ip1[:, slc], int2c2e_inv, int3c2e, dm0[slc])
+        scr2 = einsum(
+            "tklP, PQ, uvQ, kl -> tuv",
+            int3c2e_ip1[:, slc],
+            int2c2e_inv,
+            int3c2e,
+            dm0[slc],
+        )
         j1ao_aux0[A] -= 2 * scr2
 
     j1ao_aux1 = np.zeros([natm, 3, nao, nao])
@@ -796,15 +816,23 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
         _, _, p0, p1 = auxslices[A]
         slc = slice(p0, p1)
         # (00|1)(0|00)
-        j1ao_aux1[A] -= np.einsum(
-            "tuvP, PQ, klQ, kl -> tuv", int3c2e_ip2[:, :, :, slc], int2c2e_inv[slc, :], int3c2e, dm0
+        j1ao_aux1[A] -= einsum(
+            "tuvP, PQ, klQ, kl -> tuv",
+            int3c2e_ip2[:, :, :, slc],
+            int2c2e_inv[slc, :],
+            int3c2e,
+            dm0,
         )
         # (00|0)(1|00)
-        j1ao_aux1[A] -= np.einsum(
-            "uvP, PQ, tklQ, kl -> tuv", int3c2e, int2c2e_inv[:, slc], int3c2e_ip2[:, :, :, slc], dm0
+        j1ao_aux1[A] -= einsum(
+            "uvP, PQ, tklQ, kl -> tuv",
+            int3c2e,
+            int2c2e_inv[:, slc],
+            int3c2e_ip2[:, :, :, slc],
+            dm0,
         )
         # (00|0)(1|0)(0|00)
-        j1ao_aux1[A] += np.einsum(
+        j1ao_aux1[A] += einsum(
             "uvP, PQ, tQR, RS, klS, kl -> tuv",
             int3c2e,
             int2c2e_inv[:, slc],
@@ -814,7 +842,7 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
             dm0,
         )
         # (00|0)(0|1)(0|00)
-        j1ao_aux1[A] += np.einsum(
+        j1ao_aux1[A] += einsum(
             "uvP, PQ, tRQ, RS, klS, kl -> tuv",
             int3c2e,
             int2c2e_inv,

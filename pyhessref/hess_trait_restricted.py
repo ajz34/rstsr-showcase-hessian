@@ -134,11 +134,11 @@ class RHessElecInteractAPI(ABC):
         -----
         If `deriv1_ao` implemented, this function should behave like `deriv_bra = deriv_ao @ mocc`, where `mocc` is
         the occupied molecular coefficients (as ket).
-        
+
         However, in some cases, it is probably better to skip the usage of `deriv1_ao` and directly use this function.
         By ket half-transformation, some RI-JK or DFT methods will benefit from boost by using low-rank occupied orbitals,
         instead of using full AO basis.
-        
+
         Returns
         -------
         deriv_bra : np.ndarray
@@ -149,4 +149,3 @@ class RHessElecInteractAPI(ABC):
         occidx = mo_occ > 1e-15
         mocc = mo_coeff[:, occidx]
         return self.deriv1_ao(mo_coeff, mo_occ, dm0=dm0) @ mocc
-        
