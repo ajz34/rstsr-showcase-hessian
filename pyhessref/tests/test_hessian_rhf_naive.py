@@ -198,7 +198,7 @@ class TestHessianRHF(unittest.TestCase):
         de_cphf = hess_impl.get_cphf_hess(f1mo, s1mo, mo1, mo_e1)
         self.assertTrue(np.allclose(de_cphf, ref_value["de_cphf"], atol=1e-6, rtol=1e-4))
         self.assertAlmostEqual(lib.fp(de_cphf), 1.0888788930763051, places=6)
-    
+
     def test_make_hess(self):
         hess_impl = RHessImpl(
             mol,
