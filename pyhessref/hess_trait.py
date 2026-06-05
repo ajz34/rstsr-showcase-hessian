@@ -24,7 +24,6 @@ class HessCoreAPI(ABC):
         self,
         mo_coeff: np.ndarray,
         mo_occ: np.ndarray,
-        mo_energy: np.ndarray,
         dm0: np.ndarray = None,
     ) -> np.ndarray:
         """Generate the **skeleton** contribution of Hessian for current SCF component.

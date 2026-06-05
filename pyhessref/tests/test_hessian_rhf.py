@@ -5,7 +5,7 @@ from pyscf import gto, scf, lib
 
 
 def setUpModule():
-    global mol, mf, mf_hess, ref_value
+    global mol, aux, mf, mf_hess, ref_value
 
     xyz = """
     N  0   0   0
@@ -25,6 +25,7 @@ def setUpModule():
     mf.with_df.build()
     mf.converged = True
     mf_hess = mf.Hessian().run()
+    aux = mf.with_df.auxmol
 
 
 class TestHessianRHF(unittest.TestCase):
@@ -81,3 +82,11 @@ class TestHessianRHF(unittest.TestCase):
         de_ovlp = hess_ovlp_obj.make_hess(dme0)
         self.assertTrue(np.allclose(de_ovlp, ref_value["de_ovlp"]))
         self.assertAlmostEqual(lib.fp(de_ovlp), 0.7050335726988588)
+
+    def test_hess_J_skeleton(self):
+        # function check
+        from pyhessref.rijk.naive_hess import get_decomposed_rij_skeleton_deriv2_naive
+
+        de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
+        for key, val in de_J_skeleton.items():
+            self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
