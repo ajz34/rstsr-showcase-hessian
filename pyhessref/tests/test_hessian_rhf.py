@@ -1,7 +1,7 @@
 import unittest
 
 import numpy as np
-from pyscf import gto, scf, lib, df
+from pyscf import gto, scf, lib, df, hessian
 
 
 def setUpModule():
@@ -143,7 +143,7 @@ class TestHessianRHF(unittest.TestCase):
         hess_rijk_obj = RHessRIJKNaive(mol, aux)
 
         h1ao = np.array([hess_hcore_obj.generator_deriv1()(A) for A in range(mol.natm)])
-        jk1ao = hess_rijk_obj.deriv1_ao(mf.mo_coeff, mf.mo_occ)
+        jk1ao = hess_rijk_obj.get_deriv1_ao(mf.mo_coeff, mf.mo_occ)
         f1ao = h1ao + jk1ao
 
         f1ao_ref = mf_hess.make_h1(mf.mo_coeff, mf.mo_occ)
@@ -151,3 +151,26 @@ class TestHessianRHF(unittest.TestCase):
 
         # numerical check
         self.assertAlmostEqual(lib.fp(f1ao), 0.03306328818631421)
+
+    def test_resp_bra(self):
+        from pyhessref.rijk.hess_restricted_naive import RHessRIJKNaive
+
+        # double check of umo (U_{pi}^A) sanity
+        umo = ref_value["umo"]
+        self.assertAlmostEqual(lib.fp(umo), -0.02385155247256418)
+
+        nmo = umo.shape[-2]
+        nocc = umo.shape[-1]
+
+        # functionality check
+        hess_rijk_obj = RHessRIJKNaive(mol, aux)
+        hess_rijk_obj.prepare_response(mf.mo_coeff, mf.mo_occ)
+        umo_bra = mf.mo_coeff @ umo
+        resp_bra = hess_rijk_obj.get_response_bra(umo_bra)
+        resp = mf.mo_coeff.T @ resp_bra
+
+        resp_ref = hessian.rhf.gen_vind(mf, mf.mo_coeff, mf.mo_occ)(umo.reshape(-1, nmo, nocc)).reshape(umo.shape)
+        self.assertTrue(np.allclose(resp, resp_ref))
+
+        # numerical check
+        self.assertAlmostEqual(lib.fp(resp), -0.07694258336883628)

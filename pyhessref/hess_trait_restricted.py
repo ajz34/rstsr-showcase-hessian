@@ -79,7 +79,6 @@ class RHessElecInteractAPI(ABC):
         self,
         mo_coeff: np.ndarray,
         mo_occ: np.ndarray,
-        dm0: np.ndarray = None,
     ) -> np.ndarray:
         """Generate the **skeleton** contribution of Hessian for current SCF component.
 
@@ -90,9 +89,6 @@ class RHessElecInteractAPI(ABC):
         mo_occ : np.ndarray
             Molecular orbital occupation numbers, shape [nmo].
             In usual cases, the occupied orbitals should have occupation 2, and virtual orbitals should have occupation 0.
-        dm0 : np.ndarray, optional
-            The density matrix for current SCF component, shape [nao, nao].
-            If not provided, it will be generated from `mo_coeff` and `mo_occ` if necessary.
 
         Returns
         -------
@@ -102,7 +98,7 @@ class RHessElecInteractAPI(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
+    def get_deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
         """First order skeleton derivative in AO basis.
 
         Parameters
@@ -112,9 +108,6 @@ class RHessElecInteractAPI(ABC):
         mo_occ : np.ndarray
             Molecular orbital occupation numbers, shape [nmo].
             In usual cases, the occupied orbitals should have occupation 2, and virtual orbitals should have occupation 0.
-        dm0 : np.ndarray, optional
-            The density matrix for current SCF component, shape [nao, nao].
-            If not provided, it will be generated from `mo_coeff` and `mo_occ` if necessary.
 
         Returns
         -------
@@ -123,7 +116,7 @@ class RHessElecInteractAPI(ABC):
         """
         raise NotImplementedError
 
-    def deriv1_ket_half_trans(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
+    def get_deriv1_bra(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
         """First order skeleton derivative in half-transformed MO basis.
 
         See also
@@ -148,9 +141,10 @@ class RHessElecInteractAPI(ABC):
         """
         occidx = mo_occ > 1e-15
         mocc = mo_coeff[:, occidx]
-        return self.deriv1_ao(mo_coeff, mo_occ, dm0=dm0) @ mocc
+        return self.get_deriv1_ao(mo_coeff, mo_occ) @ mocc
 
-    def prepare_response(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None):
+    @abstractmethod
+    def prepare_response(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
         """Prepare the data for response calculation.
 
         Response (related to second order of density matrix derivative to energy) will be called multiple-times in CP-HF solver and other places.
@@ -159,7 +153,7 @@ class RHessElecInteractAPI(ABC):
         pass
 
     @abstractmethod
-    def get_response_ket_half_trans(self, ket: np.ndarray, bra: np.ndarray, ket_trans: np.ndarray = None) -> np.ndarray:
+    def get_response_bra(self, bra: np.ndarray) -> np.ndarray:
         r"""Get the response contribution for current SCF component.
 
         This function will be called multiple-times in CP-HF solver and other places.
@@ -170,22 +164,13 @@ class RHessElecInteractAPI(ABC):
 
         Parameters
         ----------
-        ket : np.ndarray
-            The ket part. Shape [nao, nocc].
-            This is usually the occupied part of the MO coefficients, without scaling by occupation numbers.
-
         bra : np.ndarray
-            The bra part. Shape [..., nao, nmo].
-            This is usually the derivative of MO coefficients (like :math:`U_{\mu p}^\mathbb{A}` given by CP-HF).
-
-        ket_trans : np.ndarray, optional
-            The ket part after transformation. Shape [nao, nocc].
-            This is usually the occupied part of the MO coefficients after some transformation (like bra-transform by multiplying MO coefficients).
-            If not provided, it will be set as `ket` by default.
+            The bra part. Shape [..., nao, nocc].
+            This is usually the derivative of MO coefficients (like :math:`U_{\mu i}^\mathbb{A}` given by CP-HF).
 
         Returns
         -------
-        resp_ket_half_trans : np.ndarray
+        resp_bra : np.ndarray
             The response potential (related to second order of density matrix derivative to energy).
             Shape [..., nao, nocc].
 

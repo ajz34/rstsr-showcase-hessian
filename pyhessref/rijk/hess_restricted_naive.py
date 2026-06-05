@@ -759,7 +759,9 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     return de_K_skeleton
 
 
-def get_rij_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
+def get_rij_deriv1_ao_naive(
+    mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray
+) -> dict[str, np.ndarray]:
     """Get the first derivative of the Coulomb interaction in AO basis.
 
     Parameters
@@ -859,7 +861,9 @@ def get_rij_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, 
     return {"j1ao_aux0": j1ao_aux0, "j1ao_aux1": j1ao_aux1}
 
 
-def get_rik_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
+def get_rik_deriv1_ao_naive(
+    mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray
+) -> dict[str, np.ndarray]:
     """Get the first derivative of the exchange interaction in AO basis.
 
     Parameters
@@ -880,7 +884,6 @@ def get_rik_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, 
     """
     nao = mol.nao
     natm = mol.natm
-    dm0 = get_dm0_restricted(mo_coeff, mo_occ)
     aoslices = mol.aoslice_by_atom()
     auxslices = aux.aoslice_by_atom()
 
@@ -909,9 +912,7 @@ def get_rik_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, 
         # (01|0)(0|00)
         k1ao_aux0[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
         # (00|0)(0|10), (00|0)(0|01)
-        scr2 = einsum(
-            "tklP, PQ, uvQ, ki, ui -> tlv", int3c2e_ip1[:, slc], int2c2e_inv, int3c2e, mocc_2[slc], mocc_2
-        )
+        scr2 = einsum("tklP, PQ, uvQ, ki, ui -> tlv", int3c2e_ip1[:, slc], int2c2e_inv, int3c2e, mocc_2[slc], mocc_2)
         k1ao_aux0[A] -= scr2 + scr2.swapaxes(-1, -2)
 
     # --- aux derivative 1 --- #
@@ -954,15 +955,70 @@ def get_rik_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, 
     return {"k1ao_aux0": k1ao_aux0, "k1ao_aux1": k1ao_aux1}
 
 
+def get_rijk_response_bra_naive(
+    mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray, bra: np.ndarray
+) -> np.ndarray:
+    """Compute the response of RI-JK by given bra (perturbed coefficients).
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        The molecule object.
+    aux : gto.Mole
+        The auxiliary basis set molecule object.
+    mo_coeff : np.ndarray
+        The molecular orbital coefficients, shape [nao, nmo].
+    mo_occ : np.ndarray
+        The molecular orbital occupation numbers, shape [nmo].
+    bra : np.ndarray
+        The bra vector (perturbed coefficients), shape [..., nao, nocc].
+
+    Returns
+    -------
+    resp_half_trans : np.ndarray
+        The response of RI-JK with half transformation, shape [..., nao, nocc].
+
+    Notes
+    -----
+    This function only works in restricted case, not designed for fractional charge or ROHF.
+    We also will check if `bra` have the correct occupation number.
+    """
+    nao = mol.nao
+    occidx = mo_occ > 1e-15
+    mocc = mo_coeff[:, occidx]
+    nocc = mocc.shape[-1]
+
+    int2c2e = aux.intor("int2c2e")
+    int2c2e_inv = np.linalg.inv(int2c2e)
+    int3c2e = _int3c_wrapper(mol, aux, "int3c2e", "s1")()
+
+    # reshape bra to (-1, nao, nocc)
+    bra_shape = bra.shape
+    assert bra_shape[-2] == nao
+    assert bra_shape[-1] == nocc
+    bra = bra.reshape(-1, nao, nocc)
+
+    resp_bra_j = 4 * einsum("uvP, PQ, klQ, Akj, lj, vi -> Aui", int3c2e, int2c2e_inv, int3c2e, bra, mocc, mocc)
+    resp_bra_k0 = einsum("uvP, PQ, klQ, Avj, lj, ki -> Aui", int3c2e, int2c2e_inv, int3c2e, bra, mocc, mocc)
+    resp_bra_k1 = einsum("uvP, PQ, klQ, Akj, vj, li -> Aui", int3c2e, int2c2e_inv, int3c2e, bra, mocc, mocc)
+    resp_bra = resp_bra_j - resp_bra_k0 - resp_bra_k1
+
+    # restore original shape
+    resp_bra = resp_bra.reshape(bra_shape)
+    return resp_bra
+
+
 class RHessRIJKNaive(RHessElecInteractAPI):
     def __init__(self, mol: gto.Mole, aux: gto.Mole):
         self.mol = mol
         self.aux = aux
         self.scale_j = 1.0
         self.scale_k = 0.5
+        self.mo_coeff = None
+        self.mo_occ = None
         self.result = dict()
 
-    def make_skeleton_hess(self, mo_coeff, mo_occ, **kwargs):
+    def make_skeleton_hess(self, mo_coeff, mo_occ):
         de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(self.mol, self.aux, mo_coeff, mo_occ)
         de_K_skeleton = get_decomposed_rik_skeleton_deriv2_naive(self.mol, self.aux, mo_coeff, mo_occ)
 
@@ -973,11 +1029,11 @@ class RHessRIJKNaive(RHessElecInteractAPI):
         de_K = de_K_skeleton["de_K20"] + de_K_skeleton["de_K11"] + de_K_skeleton["de_K02"]
         de_JK = self.scale_j * de_J - self.scale_k * de_K
         return de_JK
-    
-    def deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, **kwargs) -> np.ndarray:
+
+    def get_deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
         j1ao_dict = get_rij_deriv1_ao_naive(self.mol, self.aux, mo_coeff, mo_occ)
         k1ao_dict = get_rik_deriv1_ao_naive(self.mol, self.aux, mo_coeff, mo_occ)
-        
+
         self.result.update(j1ao_dict)
         self.result.update(k1ao_dict)
 
@@ -985,3 +1041,10 @@ class RHessRIJKNaive(RHessElecInteractAPI):
         k1ao = k1ao_dict["k1ao_aux0"] + k1ao_dict["k1ao_aux1"]
         deriv_ao = self.scale_j * j1ao - self.scale_k * k1ao
         return deriv_ao
+
+    def prepare_response(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+        self.mo_coeff = mo_coeff
+        self.mo_occ = mo_occ
+
+    def get_response_bra(self, bra: np.ndarray) -> np.ndarray:
+        return get_rijk_response_bra_naive(self.mol, self.aux, self.mo_coeff, self.mo_occ, bra)
