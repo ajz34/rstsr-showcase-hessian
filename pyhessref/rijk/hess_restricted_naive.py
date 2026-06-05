@@ -759,7 +759,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     return de_K_skeleton
 
 
-def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
+def get_rij_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
     """Get the first derivative of the Coulomb interaction in AO basis.
 
     Parameters
@@ -859,7 +859,7 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
     return {"j1ao_aux0": j1ao_aux0, "j1ao_aux1": j1ao_aux1}
 
 
-def get_rik_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
+def get_rik_deriv1_ao_naive(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
     """Get the first derivative of the exchange interaction in AO basis.
 
     Parameters
@@ -975,8 +975,8 @@ class RHessRIJKNaive(RHessElecInteractAPI):
         return de_JK
     
     def deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, **kwargs) -> np.ndarray:
-        j1ao_dict = get_rij_deriv1_ao(self.mol, self.aux, mo_coeff, mo_occ)
-        k1ao_dict = get_rik_deriv1_ao(self.mol, self.aux, mo_coeff, mo_occ)
+        j1ao_dict = get_rij_deriv1_ao_naive(self.mol, self.aux, mo_coeff, mo_occ)
+        k1ao_dict = get_rik_deriv1_ao_naive(self.mol, self.aux, mo_coeff, mo_occ)
         
         self.result.update(j1ao_dict)
         self.result.update(k1ao_dict)
