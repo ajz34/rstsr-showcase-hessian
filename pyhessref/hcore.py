@@ -15,9 +15,9 @@ def generator_hcore_deriv2(mol) -> callable:
 
     Returns
     -------
-    get_hcore_deriv_at_atoms : function(natm1: int, natm2: int) -> np.ndarray
-        A function that computes the second derivative of the core Hamiltonian
-        with respect to the nuclear coordinates.
+    get_hcore_deriv_at_atoms : function(A: int, B: int) -> np.ndarray
+        A function that computes the second derivative of the core Hamiltonian with respect to the nuclear coordinates.
+        Input is the pair of atom indices (A, B).
         The returned array has shape [3, 3, nao, nao].
     """
 
@@ -107,6 +107,40 @@ def generator_hcore_deriv2(mol) -> callable:
     return get_hcore_deriv_at_atoms
 
 
+def generator_hcore_deriv1(mol) -> callable:
+    """Generator for first derivatives of the core Hamiltonian (skeleton derivative).
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        The molecule object.
+
+    Returns
+    -------
+    get_hcore_deriv_at_atoms : function(A: int) -> np.ndarray
+        A function that computes the first derivative of the core Hamiltonian with respect to the nuclear coordinates.
+        Input is the atom index A.
+        The returned array has shape [3, nao].
+    """
+
+    h1 = - mol.intor("int1e_ipkin") - mol.intor("int1e_ipnuc")
+    if mol.has_ecp():
+        h1 -= mol.intor("ECPscalar_ipnuc")
+    ecp_atoms = set(mol._ecpbas[:, gto.ATOM_OF])
+    aoslices = mol.aoslice_by_atom()
+    
+    def get_hcore_deriv_at_atoms(A):
+        _, _, p0, p1 = aoslices[A]
+        z = mol.atom_charge(A)
+        with mol.with_rinv_at_nucleus(A):
+            h1ao = -z * mol.intor("int1e_iprinv")
+            if A in ecp_atoms:
+                h1ao += mol.intor("ECPscalar_iprinv")
+        h1ao[:, p0:p1] += h1[:, p0:p1]
+        return h1ao + h1ao.swapaxes(-1, -2)
+    return get_hcore_deriv_at_atoms
+
+
 def get_hess_hcore(mol: gto.Mole, dm0: np.ndarray) -> np.ndarray:
     """Hessian contribution from the core Hamiltonian.
 
@@ -147,3 +181,6 @@ class HessHcore(HessCoreAPI):
     ) -> np.ndarray:
         dm0 = dm0 if dm0 is not None else get_dm0(mo_coeff, mo_occ)
         return get_hess_hcore(self.mol, dm0)
+
+    def generator_deriv1(self) -> callable:
+        return generator_hcore_deriv1(self.mol)

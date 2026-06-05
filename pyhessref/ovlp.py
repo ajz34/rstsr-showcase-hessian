@@ -50,6 +50,34 @@ def get_hess_ovlp(mol: gto.Mole, dme0: np.ndarray) -> np.ndarray:
     return de_ovlp
 
 
+def generator_ovlp_deriv1(mol: gto.Mole) -> callable:
+    """Generator for the first derivative of overlap matrix.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        The molecule object.
+
+    Returns
+    -------
+    get_ovlp_deriv_at_atom : function(A: int) -> np.ndarray
+        A function that computes the first derivative of the overlap matrix with respect to the nuclear coordinates.
+        Input is the atom index A.
+        The returned array has shape [3, nao, nao].
+    """
+    nao = mol.nao
+    int1e_ipovlp = mol.intor("int1e_ipovlp")
+
+    def get_ovlp_deriv_at_atom(A):
+        _, _, p0, p1 = mol.aoslice_by_atom()[A]
+        slc = slice(p0, p1)
+        s1ao = np.zeros([3, nao, nao])
+        s1ao[:, slc, :] += -int1e_ipovlp[:, slc, :]
+        s1ao[:, :, slc] += -int1e_ipovlp[:, slc, :].swapaxes(-1, -2)
+        return s1ao
+    return get_ovlp_deriv_at_atom
+
+
 class HessOvlp:
     """Hessian contribution from overlap matrix derivative.
 
@@ -66,3 +94,6 @@ class HessOvlp:
 
     def make_hess(self, dme0: np.ndarray) -> np.ndarray:
         return get_hess_ovlp(self.mol, dme0)
+
+    def generator_deriv1(self) -> callable:
+        return generator_ovlp_deriv1(self.mol)

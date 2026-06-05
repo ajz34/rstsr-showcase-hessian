@@ -87,10 +87,27 @@ class TestHessianRHF(unittest.TestCase):
         # function check
         from pyhessref.rijk.naive_hess import get_decomposed_rij_skeleton_deriv2_naive
 
-        de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
+        de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(
+            mol, aux, mf.mo_coeff, mf.mo_occ
+        )
         for key, val in de_J_skeleton.items():
             self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
 
-        de_K_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
+        de_K_skeleton = get_decomposed_rij_skeleton_deriv2_naive(
+            mol, aux, mf.mo_coeff, mf.mo_occ
+        )
         for key, val in de_K_skeleton.items():
             self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
+
+    def test_generator_hcore_deriv1(self):
+        from pyhessref.hcore import generator_hcore_deriv1
+
+        gen_hcore_deriv1 = generator_hcore_deriv1(mol)
+        # functionality check
+        for A in range(mol.natm):
+            hcore_deriv1_A = gen_hcore_deriv1(A)
+            hcore_deriv1_A_ref = mf.nuc_grad_method().hcore_generator(mol)(A)
+            self.assertTrue(np.allclose(hcore_deriv1_A, hcore_deriv1_A_ref))
+        # numerical check
+        self.assertAlmostEqual(lib.fp(gen_hcore_deriv1(0)), -19.44142929546185)
+        self.assertAlmostEqual(lib.fp(gen_hcore_deriv1(3)), 23.88285913576012)

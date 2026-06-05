@@ -50,3 +50,6 @@ class HessNucRepl(HessCoreAPI):
 
     def make_skeleton_hess(self, *args, **kwargs) -> np.ndarray:
         return get_nuc_repl_hess(self.mol)
+
+    def generator_deriv1(self) -> callable:
+        return None

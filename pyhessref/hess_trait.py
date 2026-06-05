@@ -45,3 +45,14 @@ class HessCoreAPI(ABC):
             The Hessian matrix for current SCF component, shape [natm, natm, 3, 3].
         """
         pass
+
+    @abstractmethod
+    def generator_deriv1(self) -> callable:
+        """Generate the function to compute the first-order derivative of core component.
+
+        The returned function should take atom index as input, and returns the first-order derivative, of shape [3, nao, nao].
+        
+        This function only works for first-order density matrix contribution (like hcore).
+        If this component does not contribute (like nuclear repulsion), return None.
+        """
+        pass
