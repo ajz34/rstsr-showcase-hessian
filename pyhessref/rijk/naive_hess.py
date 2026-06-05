@@ -37,8 +37,6 @@ def get_decomposed_rij_skeleton_deriv2_naive(
         The molecular orbital coefficients, shape [nao, nmo].
     mo_occ : np.ndarray
         The molecular orbital occupation numbers, shape [nmo].
-    auxbasis_response : int
-        The derivative level of the auxiliary basis set. For hessian computation, it should be 0/1/2.
 
     Returns
     -------
@@ -364,8 +362,6 @@ def get_decomposed_rik_skeleton_deriv2_naive(
         The molecular orbital coefficients, shape [nao, nmo].
     mo_occ : np.ndarray
         The molecular orbital occupation numbers, shape [nmo].
-    auxbasis_response : int
-        The derivative level of the auxiliary basis set. For hessian computation, it should be 0/1/2.
 
     Returns
     -------
@@ -749,13 +745,97 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     return de_K_skeleton
 
 
+def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
+    """Get the first derivative of the Coulomb interaction in AO basis.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        The molecule object.
+    aux : gto.Mole
+        The auxiliary basis set molecule object.
+    mo_coeff : np.ndarray
+        The molecular orbital coefficients, shape [nao, nmo].
+    mo_occ : np.ndarray
+        The molecular orbital occupation numbers, shape [nmo].
+
+    Returns
+    -------
+    j1ao : dict[str, np.ndarray]
+        The first derivative components of the Coulomb interaction in AO basis, shape [natm, 3, nao, nao].
+    """
+    nao = mol.nao
+    natm = mol.natm
+    dm0 = get_dm0_restricted(mo_coeff, mo_occ)
+    aoslices = mol.aoslice_by_atom()
+    auxslices = aux.aoslice_by_atom()
+
+    int2c2e = aux.intor("int2c2e")
+    int2c2e_inv = np.linalg.inv(int2c2e)
+    int2c2e_ip1 = aux.intor("int2c2e_ip1")
+    int3c2e = _int3c_wrapper(mol, aux, "int3c2e", "s1")()
+    int3c2e_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")()
+    int3c2e_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")()
+
+    scr1 = np.einsum("tuvP, PQ, klQ, kl -> tuv", int3c2e_ip1, int2c2e_inv, int3c2e, dm0)
+
+    j1ao_aux0 = np.zeros([natm, 3, nao, nao])
+    for A in range(mol.natm):
+        _, _, p0, p1 = aoslices[A]
+        slc = slice(p0, p1)
+        # (10|0)(0|00)
+        j1ao_aux0[A, :, slc, :] -= scr1[:, slc, :]
+        # (01|0)(0|00) (can be symmetrized)
+        j1ao_aux0[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
+        # (00|0)(0|10), (00|0)(0|01)
+        scr2 = np.einsum("tklP, PQ, uvQ, kl -> tuv", int3c2e_ip1[:, slc], int2c2e_inv, int3c2e, dm0[slc])
+        j1ao_aux0[A] -= 2 * scr2
+
+    j1ao_aux1 = np.zeros([natm, 3, nao, nao])
+    for A in range(mol.natm):
+        _, _, p0, p1 = auxslices[A]
+        slc = slice(p0, p1)
+        # (00|1)(0|00)
+        j1ao_aux1[A] -= np.einsum(
+            "tuvP, PQ, klQ, kl -> tuv", int3c2e_ip2[:, :, :, slc], int2c2e_inv[slc, :], int3c2e, dm0
+        )
+        # (00|0)(1|00)
+        j1ao_aux1[A] -= np.einsum(
+            "uvP, PQ, tklQ, kl -> tuv", int3c2e, int2c2e_inv[:, slc], int3c2e_ip2[:, :, :, slc], dm0
+        )
+        # (00|0)(1|0)(0|00)
+        j1ao_aux1[A] += np.einsum(
+            "uvP, PQ, tQR, RS, klS, kl -> tuv",
+            int3c2e,
+            int2c2e_inv[:, slc],
+            int2c2e_ip1[:, slc],
+            int2c2e_inv,
+            int3c2e,
+            dm0,
+        )
+        # (00|0)(0|1)(0|00)
+        j1ao_aux1[A] += np.einsum(
+            "uvP, PQ, tRQ, RS, klS, kl -> tuv",
+            int3c2e,
+            int2c2e_inv,
+            int2c2e_ip1[:, slc],
+            int2c2e_inv[slc, :],
+            int3c2e,
+            dm0,
+        )
+
+    return {"j1ao_aux0": j1ao_aux0, "j1ao_aux1": j1ao_aux1}
+
+
 class RHessRIJKNaive(RHessElecInteractAPI):
     def __init__(self, mol: gto.Mole, aux: gto.Mole):
         self.mol = mol
         self.aux = aux
+        self.scale_j = 1.0
+        self.scale_k = 0.5
         self.result = dict()
 
-    def make_skeleton_hess(self, mo_coeff, mo_occ, dm0=None):
+    def make_skeleton_hess(self, mo_coeff, mo_occ, **kwargs):
         de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(self.mol, self.aux, mo_coeff, mo_occ)
         de_K_skeleton = get_decomposed_rik_skeleton_deriv2_naive(self.mol, self.aux, mo_coeff, mo_occ)
 
@@ -764,5 +844,5 @@ class RHessRIJKNaive(RHessElecInteractAPI):
 
         de_J = de_J_skeleton["de_J20"] + de_J_skeleton["de_J11"] + de_J_skeleton["de_J02"]
         de_K = de_K_skeleton["de_K20"] + de_K_skeleton["de_K11"] + de_K_skeleton["de_K02"]
-        de_JK = de_J - 0.5 * de_K
+        de_JK = self.scale_j * de_J - self.scale_k * de_K
         return de_JK
