@@ -793,8 +793,10 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
 
     scr1 = einsum("tuvP, PQ, klQ, kl -> tuv", int3c2e_ip1, int2c2e_inv, int3c2e, dm0)
 
+    # --- aux derivative 0 --- #
+
     j1ao_aux0 = np.zeros([natm, 3, nao, nao])
-    for A in range(mol.natm):
+    for A in range(natm):
         _, _, p0, p1 = aoslices[A]
         slc = slice(p0, p1)
         # (10|0)(0|00)
@@ -811,8 +813,10 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
         )
         j1ao_aux0[A] -= 2 * scr2
 
+    # --- aux derivative 1 --- #
+
     j1ao_aux1 = np.zeros([natm, 3, nao, nao])
-    for A in range(mol.natm):
+    for A in range(natm):
         _, _, p0, p1 = auxslices[A]
         slc = slice(p0, p1)
         # (00|1)(0|00)
@@ -853,6 +857,101 @@ def get_rij_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ
         )
 
     return {"j1ao_aux0": j1ao_aux0, "j1ao_aux1": j1ao_aux1}
+
+
+def get_rik_deriv1_ao(mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
+    """Get the first derivative of the exchange interaction in AO basis.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        The molecule object.
+    aux : gto.Mole
+        The auxiliary basis set molecule object.
+    mo_coeff : np.ndarray
+        The molecular orbital coefficients, shape [nao, nmo].
+    mo_occ : np.ndarray
+        The molecular orbital occupation numbers, shape [nmo].
+
+    Returns
+    -------
+    j1ao : dict[str, np.ndarray]
+        The first derivative components of the exchange interaction in AO basis, shape [natm, 3, nao, nao].
+    """
+    nao = mol.nao
+    natm = mol.natm
+    dm0 = get_dm0_restricted(mo_coeff, mo_occ)
+    aoslices = mol.aoslice_by_atom()
+    auxslices = aux.aoslice_by_atom()
+
+    occidx = mo_occ > 1e-15
+    mocc = mo_coeff[:, occidx]
+    occ = mo_occ[occidx]
+    mocc_2 = mocc * np.sqrt(occ)
+
+    int2c2e = aux.intor("int2c2e")
+    int2c2e_inv = np.linalg.inv(int2c2e)
+    int2c2e_ip1 = aux.intor("int2c2e_ip1")
+    int3c2e = _int3c_wrapper(mol, aux, "int3c2e", "s1")()
+    int3c2e_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")()
+    int3c2e_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")()
+
+    # --- aux derivative 0 --- #
+
+    scr1 = einsum("tuvP, PQ, klQ, vi, li -> tuk", int3c2e_ip1, int2c2e_inv, int3c2e, mocc_2, mocc_2)
+
+    k1ao_aux0 = np.zeros([natm, 3, nao, nao])
+    for A in range(natm):
+        _, _, p0, p1 = aoslices[A]
+        slc = slice(p0, p1)
+        # (10|0)(0|00)
+        k1ao_aux0[A, :, slc, :] -= scr1[:, slc, :]
+        # (01|0)(0|00)
+        k1ao_aux0[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
+        # (00|0)(0|10), (00|0)(0|01)
+        scr2 = einsum(
+            "tklP, PQ, uvQ, ki, ui -> tlv", int3c2e_ip1[:, slc], int2c2e_inv, int3c2e, mocc_2[slc], mocc_2
+        )
+        k1ao_aux0[A] -= scr2 + scr2.swapaxes(-1, -2)
+
+    # --- aux derivative 1 --- #
+
+    k1ao_aux1 = np.zeros([natm, 3, nao, nao])
+    for A in range(natm):
+        _, _, p0, p1 = auxslices[A]
+        slc = slice(p0, p1)
+        # (00|1)(0|00)
+        k1ao_aux1[A] -= einsum(
+            "tuvP, PQ, klQ, vi, li -> tuk", int3c2e_ip2[:, :, :, slc], int2c2e_inv[slc, :], int3c2e, mocc_2, mocc_2
+        )
+        # (00|0)(1|00)
+        k1ao_aux1[A] -= einsum(
+            "uvP, PQ, tklQ, vi, li -> tuk", int3c2e, int2c2e_inv[:, slc], int3c2e_ip2[:, :, :, slc], mocc_2, mocc_2
+        )
+        # (00|0)(1|0)(0|00)
+        k1ao_aux1[A] += einsum(
+            "uvP, PQ, tQR, RS, klS, vi, li -> tuk",
+            int3c2e,
+            int2c2e_inv[:, slc],
+            int2c2e_ip1[:, slc],
+            int2c2e_inv,
+            int3c2e,
+            mocc_2,
+            mocc_2,
+        )
+        # (00|0)(0|1)(0|00)
+        k1ao_aux1[A] += einsum(
+            "uvP, PQ, tRQ, RS, klS, vi, li -> tuk",
+            int3c2e,
+            int2c2e_inv,
+            int2c2e_ip1[:, slc],
+            int2c2e_inv[slc, :],
+            int3c2e,
+            mocc_2,
+            mocc_2,
+        )
+
+    return {"k1ao_aux0": k1ao_aux0, "k1ao_aux1": k1ao_aux1}
 
 
 class RHessRIJKNaive(RHessElecInteractAPI):
