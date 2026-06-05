@@ -42,9 +42,7 @@ def get_hess_ovlp(mol: gto.Mole, dme0: np.ndarray) -> np.ndarray:
             _, _, p0B, p1B = aoslices[B]
             slcB = slice(p0B, p1B)
             # de_ovlp[A, B] -= 2 * np.einsum('tsuv, uv -> ts', s2_ab[:, :, slcA, slcB], dme0[slcA, slcB])
-            de_ovlp[A, B] -= 2 * (s2_ab[:, :, slcA, slcB] * dme0[slcA, slcB]).sum(
-                axis=(-1, -2)
-            )
+            de_ovlp[A, B] -= 2 * (s2_ab[:, :, slcA, slcB] * dme0[slcA, slcB]).sum(axis=(-1, -2))
         for B in range(A):
             de_ovlp[B, A] = de_ovlp[A, B].T
     return de_ovlp
@@ -75,6 +73,7 @@ def generator_ovlp_deriv1(mol: gto.Mole) -> callable:
         s1ao[:, slc, :] += -int1e_ipovlp[:, slc, :]
         s1ao[:, :, slc] += -int1e_ipovlp[:, slc, :].swapaxes(-1, -2)
         return s1ao
+
     return get_ovlp_deriv_at_atom
 
 

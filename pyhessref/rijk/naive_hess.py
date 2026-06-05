@@ -60,24 +60,12 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     int2c2e = aux.intor("int2c2e")
     int2c2e_inv = np.linalg.inv(int2c2e)
     int3c2e = _int3c_wrapper(mol, aux, "int3c2e", "s1")()
-    int3c2e_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")().reshape(
-        [3, nao, nao, naux]
-    )
-    int3c2e_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")().reshape(
-        [3, nao, nao, naux]
-    )
-    int3c2e_ipip1 = _int3c_wrapper(mol, aux, "int3c2e_ipip1", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
-    int3c2e_ipvip1 = _int3c_wrapper(mol, aux, "int3c2e_ipvip1", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
-    int3c2e_ip1ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip1ip2", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
-    int3c2e_ipip2 = _int3c_wrapper(mol, aux, "int3c2e_ipip2", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
+    int3c2e_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")().reshape([3, nao, nao, naux])
+    int3c2e_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")().reshape([3, nao, nao, naux])
+    int3c2e_ipip1 = _int3c_wrapper(mol, aux, "int3c2e_ipip1", "s1")().reshape([3, 3, nao, nao, naux])
+    int3c2e_ipvip1 = _int3c_wrapper(mol, aux, "int3c2e_ipvip1", "s1")().reshape([3, 3, nao, nao, naux])
+    int3c2e_ip1ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip1ip2", "s1")().reshape([3, 3, nao, nao, naux])
+    int3c2e_ipip2 = _int3c_wrapper(mol, aux, "int3c2e_ipip2", "s1")().reshape([3, 3, nao, nao, naux])
     int2c2e_ip1 = aux.intor("int2c2e_ip1")
     int2c2e_ipip1 = aux.intor("int2c2e_ipip1").reshape([3, 3, naux, naux])
     int2c2e_ip1ip2 = aux.intor("int2c2e_ip1ip2").reshape([3, 3, naux, naux])
@@ -96,14 +84,10 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J20_1 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
-            de_J20_1[A, B] += 4 * einsum(
-                "tsuv -> ts", dbas_J20_1[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J20_1[A, B] += 4 * einsum("tsuv -> ts", dbas_J20_1[:, :, p0A:p1A, p0B:p1B])
 
     # (11|0)(0|00)
-    dbas_J20_2 = einsum(
-        "tsuvP, PQ, klQ, kl -> tsuv", int3c2e_ipvip1, int2c2e_inv, int3c2e, dm0
-    )
+    dbas_J20_2 = einsum("tsuvP, PQ, klQ, kl -> tsuv", int3c2e_ipvip1, int2c2e_inv, int3c2e, dm0)
     de_J20_2 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
@@ -114,29 +98,21 @@ def get_decomposed_rij_skeleton_deriv2_naive(
             )
 
     # (20|0)(0|00)
-    dbas_J20_3 = einsum(
-        "tsuvP, PQ, klQ, kl -> tsuv", int3c2e_ipip1, int2c2e_inv, int3c2e, dm0
-    )
+    dbas_J20_3 = einsum("tsuvP, PQ, klQ, kl -> tsuv", int3c2e_ipip1, int2c2e_inv, int3c2e, dm0)
     de_J20_3 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
-        de_J20_3[A, A] += 2 * einsum(
-            "tsuv, uv -> ts", dbas_J20_3[:, :, p0A:p1A], dm0[p0A:p1A]
-        )
+        de_J20_3[A, A] += 2 * einsum("tsuv, uv -> ts", dbas_J20_3[:, :, p0A:p1A], dm0[p0A:p1A])
 
     de_J20 = de_J20_1 + de_J20_2 + de_J20_3
 
     # --- J11 (basis deriv 1, aux deriv 1) --- #
 
     # (10|1)(0|0)(0|00)
-    dbas_J11_1 = einsum(
-        "tsuvP, PQ, klQ, uv, kl -> tsuP", int3c2e_ip1ip2, int2c2e_inv, int3c2e, dm0, dm0
-    )
+    dbas_J11_1 = einsum("tsuvP, PQ, klQ, uv, kl -> tsuP", int3c2e_ip1ip2, int2c2e_inv, int3c2e, dm0, dm0)
     de_J11_1 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J11_1[A, B] += 2 * einsum(
-                "tsuP -> ts", dbas_J11_1[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J11_1[A, B] += 2 * einsum("tsuP -> ts", dbas_J11_1[:, :, p0A:p1A, p0B:p1B])
     de_J11_1 += de_J11_1.transpose(1, 0, 3, 2)
 
     # (10|0)(0|1)(0|00)
@@ -153,9 +129,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J11_2 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J11_2[A, B] += 2 * einsum(
-                "tsuR -> ts", dbas_J11_2[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J11_2[A, B] += 2 * einsum("tsuR -> ts", dbas_J11_2[:, :, p0A:p1A, p0B:p1B])
     de_J11_2 += de_J11_2.transpose(1, 0, 3, 2)
 
     # (10|0)(1|0)(0|00)
@@ -172,9 +146,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J11_3 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J11_3[A, B] += -2 * einsum(
-                "tsuQ -> ts", dbas_J11_3[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J11_3[A, B] += -2 * einsum("tsuQ -> ts", dbas_J11_3[:, :, p0A:p1A, p0B:p1B])
     de_J11_3 += de_J11_3.transpose(1, 0, 3, 2)
 
     # (10|0)(0|0)(1|00)
@@ -189,9 +161,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J11_4 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J11_4[A, B] += 2 * einsum(
-                "tsuQ -> ts", dbas_J11_4[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J11_4[A, B] += 2 * einsum("tsuQ -> ts", dbas_J11_4[:, :, p0A:p1A, p0B:p1B])
     de_J11_4 += de_J11_4.transpose(1, 0, 3, 2)
 
     de_J11 = de_J11_1 + de_J11_2 + de_J11_3 + de_J11_4
@@ -199,9 +169,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     # --- J02 (basis deriv 0, aux deriv 2) --- #
 
     # (00|2)(0|00)
-    dbas_J02_1 = einsum(
-        "tsuvP, PQ, klQ, uv, kl -> tsP", int3c2e_ipip2, int2c2e_inv, int3c2e, dm0, dm0
-    )
+    dbas_J02_1 = einsum("tsuvP, PQ, klQ, uv, kl -> tsP", int3c2e_ipip2, int2c2e_inv, int3c2e, dm0, dm0)
     de_J02_1 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         de_J02_1[A, A] += einsum("tsP -> ts", dbas_J02_1[:, :, p0A:p1A])
@@ -236,9 +204,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J02_3a = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_3a[A, B] += -0.5 * einsum(
-                "tsQR -> ts", dbas_J02_3a[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J02_3a[A, B] += -0.5 * einsum("tsQR -> ts", dbas_J02_3a[:, :, p0A:p1A, p0B:p1B])
     de_J02_3a += de_J02_3a.transpose(1, 0, 3, 2)
 
     # (00|0)(1|0)(0|1)(0|00)
@@ -257,9 +223,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J02_3b = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_3b[A, B] += -0.5 * einsum(
-                "tsQT -> ts", dbas_J02_3b[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J02_3b[A, B] += -0.5 * einsum("tsQT -> ts", dbas_J02_3b[:, :, p0A:p1A, p0B:p1B])
     de_J02_3b += de_J02_3b.transpose(1, 0, 3, 2)
 
     # (00|1)(1|0)(0|00)
@@ -276,9 +240,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J02_4 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_4[A, B] += -1 * einsum(
-                "tsPQ -> ts", dbas_J02_4[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J02_4[A, B] += -1 * einsum("tsPQ -> ts", dbas_J02_4[:, :, p0A:p1A, p0B:p1B])
     de_J02_4 += de_J02_4.transpose(1, 0, 3, 2)
 
     # (00|1)(1|00)
@@ -293,9 +255,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J02_5 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_5[A, B] += 0.5 * einsum(
-                "tsPQ -> ts", dbas_J02_5[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J02_5[A, B] += 0.5 * einsum("tsPQ -> ts", dbas_J02_5[:, :, p0A:p1A, p0B:p1B])
     de_J02_5 += de_J02_5.transpose(1, 0, 3, 2)
 
     # (00|0)(0|1)(1|0)(0|00)
@@ -314,9 +274,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J02_6 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_6[A, B] += 0.5 * einsum(
-                "tsRS -> ts", dbas_J02_6[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J02_6[A, B] += 0.5 * einsum("tsRS -> ts", dbas_J02_6[:, :, p0A:p1A, p0B:p1B])
     de_J02_6 += de_J02_6.transpose(1, 0, 3, 2)
 
     # (00|1)(0|1)(0|00)
@@ -333,9 +291,7 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J02_7 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_7[A, B] += -1 * einsum(
-                "tsPR -> ts", dbas_J02_7[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J02_7[A, B] += -1 * einsum("tsPR -> ts", dbas_J02_7[:, :, p0A:p1A, p0B:p1B])
     de_J02_7 += de_J02_7.transpose(1, 0, 3, 2)
 
     # (00|0)(1|0)(1|0)(0|00)
@@ -354,22 +310,10 @@ def get_decomposed_rij_skeleton_deriv2_naive(
     de_J02_8 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_8[A, B] += 1 * einsum(
-                "tsRT -> ts", dbas_J02_8[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_J02_8[A, B] += 1 * einsum("tsRT -> ts", dbas_J02_8[:, :, p0A:p1A, p0B:p1B])
     de_J02_8 += de_J02_8.transpose(1, 0, 3, 2)
 
-    de_J02 = (
-        de_J02_1
-        + de_J02_2
-        + de_J02_3a
-        + de_J02_3b
-        + de_J02_4
-        + de_J02_5
-        + de_J02_6
-        + de_J02_7
-        + de_J02_8
-    )
+    de_J02 = de_J02_1 + de_J02_2 + de_J02_3a + de_J02_3b + de_J02_4 + de_J02_5 + de_J02_6 + de_J02_7 + de_J02_8
 
     de_J_skeleton = {
         # de_J20
@@ -448,24 +392,12 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     int2c2e = aux.intor("int2c2e")
     int2c2e_inv = np.linalg.inv(int2c2e)
     int3c2e = _int3c_wrapper(mol, aux, "int3c2e", "s1")()
-    int3c2e_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")().reshape(
-        [3, nao, nao, naux]
-    )
-    int3c2e_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")().reshape(
-        [3, nao, nao, naux]
-    )
-    int3c2e_ipip1 = _int3c_wrapper(mol, aux, "int3c2e_ipip1", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
-    int3c2e_ipvip1 = _int3c_wrapper(mol, aux, "int3c2e_ipvip1", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
-    int3c2e_ip1ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip1ip2", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
-    int3c2e_ipip2 = _int3c_wrapper(mol, aux, "int3c2e_ipip2", "s1")().reshape(
-        [3, 3, nao, nao, naux]
-    )
+    int3c2e_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")().reshape([3, nao, nao, naux])
+    int3c2e_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")().reshape([3, nao, nao, naux])
+    int3c2e_ipip1 = _int3c_wrapper(mol, aux, "int3c2e_ipip1", "s1")().reshape([3, 3, nao, nao, naux])
+    int3c2e_ipvip1 = _int3c_wrapper(mol, aux, "int3c2e_ipvip1", "s1")().reshape([3, 3, nao, nao, naux])
+    int3c2e_ip1ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip1ip2", "s1")().reshape([3, 3, nao, nao, naux])
+    int3c2e_ipip2 = _int3c_wrapper(mol, aux, "int3c2e_ipip2", "s1")().reshape([3, 3, nao, nao, naux])
     int2c2e_ip1 = aux.intor("int2c2e_ip1")
     int2c2e_ipip1 = aux.intor("int2c2e_ipip1").reshape([3, 3, naux, naux])
     int2c2e_ip1ip2 = aux.intor("int2c2e_ip1ip2").reshape([3, 3, naux, naux])
@@ -486,9 +418,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K20_1a = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
-            de_K20_1a[A, B] += 2 * einsum(
-                "tsuk -> ts", dbas_K20_1a[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K20_1a[A, B] += 2 * einsum("tsuk -> ts", dbas_K20_1a[:, :, p0A:p1A, p0B:p1B])
 
     # (10|0)(0|10), part b
     dbas_K20_1b = einsum(
@@ -504,9 +434,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K20_1b = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
-            de_K20_1b[A, B] += 2 * einsum(
-                "tsuk -> ts", dbas_K20_1b[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K20_1b[A, B] += 2 * einsum("tsuk -> ts", dbas_K20_1b[:, :, p0A:p1A, p0B:p1B])
 
     # (11|0)(0|00)
     dbas_K20_2 = einsum(
@@ -522,9 +450,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K20_2 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
-            de_K20_2[A, B] += 2 * einsum(
-                "tsuv -> ts", dbas_K20_2[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K20_2[A, B] += 2 * einsum("tsuv -> ts", dbas_K20_2[:, :, p0A:p1A, p0B:p1B])
 
     # (20|0)(0|00)
     dbas_K20_3 = einsum(
@@ -559,9 +485,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K11_1 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K11_1[A, B] += 2 * einsum(
-                "tsuP -> ts", dbas_K11_1[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K11_1[A, B] += 2 * einsum("tsuP -> ts", dbas_K11_1[:, :, p0A:p1A, p0B:p1B])
     de_K11_1 += de_K11_1.transpose(1, 0, 3, 2)
 
     # (10|0)(0|1)(0|00)
@@ -580,9 +504,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K11_2 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K11_2[A, B] += 2 * einsum(
-                "tsuR -> ts", dbas_K11_2[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K11_2[A, B] += 2 * einsum("tsuR -> ts", dbas_K11_2[:, :, p0A:p1A, p0B:p1B])
     de_K11_2 += de_K11_2.transpose(1, 0, 3, 2)
 
     # (10|0)(1|0)(0|00)
@@ -601,9 +523,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K11_3 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K11_3[A, B] += -2 * einsum(
-                "tsuQ -> ts", dbas_K11_3[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K11_3[A, B] += -2 * einsum("tsuQ -> ts", dbas_K11_3[:, :, p0A:p1A, p0B:p1B])
     de_K11_3 += de_K11_3.transpose(1, 0, 3, 2)
 
     # (10|0)(0|0)(1|00)
@@ -620,9 +540,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K11_4 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K11_4[A, B] += 2 * einsum(
-                "tsuQ -> ts", dbas_K11_4[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K11_4[A, B] += 2 * einsum("tsuQ -> ts", dbas_K11_4[:, :, p0A:p1A, p0B:p1B])
     de_K11_4 += de_K11_4.transpose(1, 0, 3, 2)
 
     de_K11 = de_K11_1 + de_K11_2 + de_K11_3 + de_K11_4
@@ -678,9 +596,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K02_3a = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_3a[A, B] += -0.5 * einsum(
-                "tsQR -> ts", dbas_K02_3a[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K02_3a[A, B] += -0.5 * einsum("tsQR -> ts", dbas_K02_3a[:, :, p0A:p1A, p0B:p1B])
     de_K02_3a += de_K02_3a.transpose(1, 0, 3, 2)
 
     # (00|0)(1|0)(0|1)(0|00)
@@ -701,9 +617,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K02_3b = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_3b[A, B] += -0.5 * einsum(
-                "tsQT -> ts", dbas_K02_3b[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K02_3b[A, B] += -0.5 * einsum("tsQT -> ts", dbas_K02_3b[:, :, p0A:p1A, p0B:p1B])
     de_K02_3b += de_K02_3b.transpose(1, 0, 3, 2)
 
     # (00|1)(1|0)(0|00)
@@ -722,9 +636,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K02_4 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_4[A, B] += -1 * einsum(
-                "tsPQ -> ts", dbas_K02_4[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K02_4[A, B] += -1 * einsum("tsPQ -> ts", dbas_K02_4[:, :, p0A:p1A, p0B:p1B])
     de_K02_4 += de_K02_4.transpose(1, 0, 3, 2)
 
     # (00|1)(1|00)
@@ -741,9 +653,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K02_5 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_5[A, B] += 0.5 * einsum(
-                "tsPQ -> ts", dbas_K02_5[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K02_5[A, B] += 0.5 * einsum("tsPQ -> ts", dbas_K02_5[:, :, p0A:p1A, p0B:p1B])
     de_K02_5 += de_K02_5.transpose(1, 0, 3, 2)
 
     # (00|0)(0|1)(1|0)(0|00)
@@ -764,9 +674,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K02_6 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_6[A, B] += 0.5 * einsum(
-                "tsRS -> ts", dbas_K02_6[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K02_6[A, B] += 0.5 * einsum("tsRS -> ts", dbas_K02_6[:, :, p0A:p1A, p0B:p1B])
     de_K02_6 += de_K02_6.transpose(1, 0, 3, 2)
 
     # (00|1)(0|1)(0|00)
@@ -785,9 +693,7 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K02_7 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_7[A, B] += -1 * einsum(
-                "tsPR -> ts", dbas_K02_7[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K02_7[A, B] += -1 * einsum("tsPR -> ts", dbas_K02_7[:, :, p0A:p1A, p0B:p1B])
     de_K02_7 += de_K02_7.transpose(1, 0, 3, 2)
 
     # (00|0)(1|0)(1|0)(0|00)
@@ -808,22 +714,10 @@ def get_decomposed_rik_skeleton_deriv2_naive(
     de_K02_8 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_8[A, B] += 1 * einsum(
-                "tsQS -> ts", dbas_K02_8[:, :, p0A:p1A, p0B:p1B]
-            )
+            de_K02_8[A, B] += 1 * einsum("tsQS -> ts", dbas_K02_8[:, :, p0A:p1A, p0B:p1B])
     de_K02_8 += de_K02_8.transpose(1, 0, 3, 2)
 
-    de_K02 = (
-        de_K02_1
-        + de_K02_2
-        + de_K02_3a
-        + de_K02_3b
-        + de_K02_4
-        + de_K02_5
-        + de_K02_6
-        + de_K02_7
-        + de_K02_8
-    )
+    de_K02 = de_K02_1 + de_K02_2 + de_K02_3a + de_K02_3b + de_K02_4 + de_K02_5 + de_K02_6 + de_K02_7 + de_K02_8
 
     de_K_skeleton = {
         # de_K20

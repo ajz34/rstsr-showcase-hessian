@@ -20,9 +20,7 @@ def get_dm0(mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
     return mo_coeff[:, occidx] * mo_occ[occidx] @ mo_coeff[:, occidx].T
 
 
-def get_dme0(
-    mo_coeff: np.ndarray, mo_occ: np.ndarray, mo_energy: np.ndarray
-) -> np.ndarray:
+def get_dme0(mo_coeff: np.ndarray, mo_occ: np.ndarray, mo_energy: np.ndarray) -> np.ndarray:
     """Generate the energy-weighted density matrix for current SCF component.
 
     Parameters
@@ -40,8 +38,4 @@ def get_dme0(
         The energy-weighted density matrix for current SCF component, shape [nao, nao].
     """
     occidx = mo_occ > 1e-15
-    return (
-        mo_coeff[:, occidx]
-        * (mo_occ[occidx] * mo_energy[occidx])
-        @ mo_coeff[:, occidx].T
-    )
+    return mo_coeff[:, occidx] * (mo_occ[occidx] * mo_energy[occidx]) @ mo_coeff[:, occidx].T

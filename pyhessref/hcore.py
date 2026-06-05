@@ -66,38 +66,22 @@ def generator_hcore_deriv2(mol) -> callable:
             zi = mol.atom_charge(A)
             with mol.with_rinv_at_nucleus(A):
                 shls_slice = (sh0B, sh1B, 0, nbas)
-                rinv_atom_aa = -zi * mol.intor(
-                    "int1e_ipiprinv", shls_slice=shls_slice
-                ).reshape(3, 3, -1, nao)
-                rinv_atom_ab = -zi * mol.intor(
-                    "int1e_iprinvip", shls_slice=shls_slice
-                ).reshape(3, 3, -1, nao)
+                rinv_atom_aa = -zi * mol.intor("int1e_ipiprinv", shls_slice=shls_slice).reshape(3, 3, -1, nao)
+                rinv_atom_ab = -zi * mol.intor("int1e_iprinvip", shls_slice=shls_slice).reshape(3, 3, -1, nao)
                 if A in ecp_atoms:
-                    rinv_atom_aa += mol.intor(
-                        "ECPscalar_ipiprinv", shls_slice=shls_slice
-                    ).reshape(3, 3, -1, nao)
-                    rinv_atom_ab += mol.intor(
-                        "ECPscalar_iprinvip", shls_slice=shls_slice
-                    ).reshape(3, 3, -1, nao)
+                    rinv_atom_aa += mol.intor("ECPscalar_ipiprinv", shls_slice=shls_slice).reshape(3, 3, -1, nao)
+                    rinv_atom_ab += mol.intor("ECPscalar_iprinvip", shls_slice=shls_slice).reshape(3, 3, -1, nao)
             hcore_deriv[:, :, slcB, :] -= rinv_atom_aa
             hcore_deriv[:, :, slcB, :] -= rinv_atom_ab.swapaxes(0, 1)
             # handle rinv@j, basis@i
             zj = mol.atom_charge(B)
             with mol.with_rinv_at_nucleus(B):
                 shls_slice = (sh0A, sh1A, 0, nbas)
-                rinv_atom_aa = -zj * mol.intor(
-                    "int1e_ipiprinv", shls_slice=shls_slice
-                ).reshape(3, 3, -1, nao)
-                rinv_atom_ab = -zj * mol.intor(
-                    "int1e_iprinvip", shls_slice=shls_slice
-                ).reshape(3, 3, -1, nao)
+                rinv_atom_aa = -zj * mol.intor("int1e_ipiprinv", shls_slice=shls_slice).reshape(3, 3, -1, nao)
+                rinv_atom_ab = -zj * mol.intor("int1e_iprinvip", shls_slice=shls_slice).reshape(3, 3, -1, nao)
                 if B in ecp_atoms:
-                    rinv_atom_aa += mol.intor(
-                        "ECPscalar_ipiprinv", shls_slice=shls_slice
-                    ).reshape(3, 3, -1, nao)
-                    rinv_atom_ab += mol.intor(
-                        "ECPscalar_iprinvip", shls_slice=shls_slice
-                    ).reshape(3, 3, -1, nao)
+                    rinv_atom_aa += mol.intor("ECPscalar_ipiprinv", shls_slice=shls_slice).reshape(3, 3, -1, nao)
+                    rinv_atom_ab += mol.intor("ECPscalar_iprinvip", shls_slice=shls_slice).reshape(3, 3, -1, nao)
             hcore_deriv[:, :, slcA, :] -= rinv_atom_aa
             hcore_deriv[:, :, slcA, :] -= rinv_atom_ab
 
@@ -123,12 +107,12 @@ def generator_hcore_deriv1(mol) -> callable:
         The returned array has shape [3, nao].
     """
 
-    h1 = - mol.intor("int1e_ipkin") - mol.intor("int1e_ipnuc")
+    h1 = -mol.intor("int1e_ipkin") - mol.intor("int1e_ipnuc")
     if mol.has_ecp():
         h1 -= mol.intor("ECPscalar_ipnuc")
     ecp_atoms = set(mol._ecpbas[:, gto.ATOM_OF])
     aoslices = mol.aoslice_by_atom()
-    
+
     def get_hcore_deriv_at_atoms(A):
         _, _, p0, p1 = aoslices[A]
         z = mol.atom_charge(A)
@@ -138,6 +122,7 @@ def generator_hcore_deriv1(mol) -> callable:
                 h1ao += mol.intor("ECPscalar_iprinv")
         h1ao[:, p0:p1] += h1[:, p0:p1]
         return h1ao + h1ao.swapaxes(-1, -2)
+
     return get_hcore_deriv_at_atoms
 
 
@@ -176,9 +161,7 @@ class HessHcore(HessCoreAPI):
     def __init__(self, mol: gto.Mole):
         self.mol = mol
 
-    def make_skeleton_hess(
-        self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None
-    ) -> np.ndarray:
+    def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
         dm0 = dm0 if dm0 is not None else get_dm0(mo_coeff, mo_occ)
         return get_hess_hcore(self.mol, dm0)
 

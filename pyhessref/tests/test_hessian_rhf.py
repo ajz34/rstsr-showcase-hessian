@@ -51,9 +51,7 @@ class TestHessianRHF(unittest.TestCase):
         for A in range(mol.natm):
             for B in range(mol.natm):
                 hcore_deriv2_AB = gen_hcore_deriv2(A, B)
-                self.assertTrue(
-                    np.allclose(hcore_deriv2_AB, mf_hess.hcore_generator()(A, B))
-                )
+                self.assertTrue(np.allclose(hcore_deriv2_AB, mf_hess.hcore_generator()(A, B)))
         # numerical check
         self.assertAlmostEqual(lib.fp(gen_hcore_deriv2(0, 0)), -72.29474171640412)
         self.assertAlmostEqual(lib.fp(gen_hcore_deriv2(0, 1)), 12.858221292861833)
@@ -87,15 +85,11 @@ class TestHessianRHF(unittest.TestCase):
         # function check
         from pyhessref.rijk.naive_hess import get_decomposed_rij_skeleton_deriv2_naive
 
-        de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(
-            mol, aux, mf.mo_coeff, mf.mo_occ
-        )
+        de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         for key, val in de_J_skeleton.items():
             self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
 
-        de_K_skeleton = get_decomposed_rij_skeleton_deriv2_naive(
-            mol, aux, mf.mo_coeff, mf.mo_occ
-        )
+        de_K_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         for key, val in de_K_skeleton.items():
             self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
 

@@ -9,12 +9,12 @@ class HessCoreAPI(ABC):
     ----------------
 
     **Core component** here actually means the term is of zero/one-order with right of (electron) density matrix.
-    
+
     - Nuclear repulsion is zero-order (unrelated to density matrix).
     - Core Hamiltonian is one-order (linear to density matrix).
     - External field may have nuclear and electronic contributions.
       For dipole field, as an example, the electronic contribution is of one-order, and can be counted in core-hamiltonian in some frameworks.
-    
+
     We have function `make_skeleton_hess` here to count the **skeleton** contribution of the Hessian.
     We do not handle derivative of density matrix here, which is the responsibility of CPHF solver.
     """
@@ -51,7 +51,7 @@ class HessCoreAPI(ABC):
         """Generate the function to compute the first-order derivative of core component.
 
         The returned function should take atom index as input, and returns the first-order derivative, of shape [3, nao, nao].
-        
+
         This function only works for first-order density matrix contribution (like hcore).
         If this component does not contribute (like nuclear repulsion), return None.
         """
