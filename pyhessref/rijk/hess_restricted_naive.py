@@ -1009,11 +1009,17 @@ def get_rijk_response_bra_naive(
 
 
 class RHessRIJKNaive(RHessElecInteractAPI):
+    """A naive implementation of the RI-JK Hessian for restricted Hartree-Fock.
+
+    This implementation is straightforward and not optimized for performance, but it serves as a reference for correctness.
+    The auxiliary derivative is always be full (count up to 2nd-order for skeleton, and 1st-order for CP-HF).
+    """
+
     def __init__(self, mol: gto.Mole, aux: gto.Mole, scale_j: float = 1.0, scale_k: float = 0.5):
         self.mol = mol
         self.aux = aux
-        self.scale_j = 1.0
-        self.scale_k = 0.5
+        self.scale_j = scale_j or 1.0
+        self.scale_k = scale_k or 0.5
         self.mo_coeff = None
         self.mo_occ = None
         self.result = dict()
