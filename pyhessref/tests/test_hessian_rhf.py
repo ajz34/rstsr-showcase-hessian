@@ -169,9 +169,17 @@ class TestHessianRHF(unittest.TestCase):
             mf.mo_energy,
             ovlp_obj=RHessOvlp(mol),
             core_list=[HessNucRepl(mol), RHessHcore(mol)],
-            interact_list=[RHessRIJKNaive(mol, aux)],
+            el_list=[RHessRIJKNaive(mol, aux)],
         )
 
+        # before krylov, first obtain dimensionless rhs part
         np.set_printoptions(precision=5, suppress=True, linewidth=150)
         pre_cphf_dict = hess_impl.compute_dimensionless_cphf_rhs()
         self.assertAlmostEqual(lib.fp(pre_cphf_dict["rhs"]), -0.027755691019085788)
+
+        # solve cpks
+        rhs = pre_cphf_dict["rhs"]
+        hess_impl.prepare_response()
+        umo = hess_impl.solve_dimless_cphf(rhs)
+        self.assertTrue(np.allclose(umo, ref_value["umo"], atol=1e-6, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(umo), -0.02385155247256418, places=6)

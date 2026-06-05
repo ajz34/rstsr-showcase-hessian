@@ -3,6 +3,7 @@ import numpy as np
 
 from pyhessref.hess_trait_restricted import RHessCoreAPI, RHessElecInteractAPI
 from pyhessref.ovlp import RHessOvlp
+from pyhessref.krylov_block import krylov_block
 
 
 class RHessImpl:
@@ -15,7 +16,7 @@ class RHessImpl:
         mo_energy: np.ndarray,
         ovlp_obj: RHessOvlp,
         core_list: list[RHessCoreAPI],
-        interact_list: list[RHessElecInteractAPI],
+        el_list: list[RHessElecInteractAPI],
         level_shift: float = 0,
     ):
         """Working solver and maintainer of all hessian components for restricted SCF method."""
@@ -26,13 +27,13 @@ class RHessImpl:
 
         self.ovlp_obj = ovlp_obj
         self.core_list = core_list
-        self.interact_list = interact_list
+        self.el_list = el_list
 
         self.level_shift = level_shift
 
         self.result = dict()
 
-    def compute_dimensionless_cphf_rhs(self):
+    def compute_dimensionless_cphf_rhs(self) -> dict[str, np.ndarray]:
         # dimensionality setting
         mo_coeff = self.mo_coeff
         mo_occ = self.mo_occ
@@ -63,8 +64,8 @@ class RHessImpl:
 
         # fock skeleton derivative (electron interaction contribution, half-transformed to bra)
         f1bra_el = np.zeros([natm, 3, nao, nocc])
-        for interact_obj in self.interact_list:
-            f1bra_el += interact_obj.get_deriv1_bra(mo_coeff, mo_occ)
+        for el_obj in self.el_list:
+            f1bra_el += el_obj.get_deriv1_bra(mo_coeff, mo_occ)
 
         # construct whole f1mo
         f1bra = f1bra_el + f1ao_core @ mocc
@@ -90,3 +91,47 @@ class RHessImpl:
             "f1mo": f1mo,
             "s1mo": s1mo,
         }
+    
+    def prepare_response(self, mo_coeff: np.ndarray = None, mo_occ: np.ndarray = None) -> np.ndarray:
+        mo_coeff = mo_coeff if mo_coeff is not None else self.mo_coeff
+        mo_occ = mo_occ if mo_occ is not None else self.mo_occ
+        for el_obj in self.el_list:
+            el_obj.prepare_response(mo_coeff, mo_occ)
+    
+    def response_dimless_cphf(self, umo: np.ndarray) -> np.ndarray:
+        mo_coeff = self.mo_coeff
+        mo_occ = self.mo_occ
+        mo_energy = self.mo_energy
+        occidx = mo_occ > 1e-15
+        nocc = occidx.sum()
+        level_shift = self.level_shift
+
+        eocc = mo_energy[occidx]
+        evir = mo_energy[~occidx]
+        e_ai = evir[:, None] - eocc[None, :]
+        e_ai_shift = e_ai + level_shift
+
+        ubra = mo_coeff @ umo
+        resp = np.zeros_like(umo)
+        for el_obj in self.el_list:
+            resp += mo_coeff.T @ el_obj.get_response_bra(ubra)
+
+        # handle dimensionless denominator and force handle virtual-part only
+        if level_shift != 0.0:
+            resp -= umo * level_shift
+        resp[..., nocc:, :] /= e_ai_shift
+        resp[..., :nocc, :] = 0
+        return resp
+
+    def solve_dimless_cphf(self, rhs: np.ndarray) -> dict[str, np.ndarray]:
+        rhs_shape = rhs.shape
+        nmo, nocc = rhs.shape[-2], rhs.shape[-1]
+        rhs = rhs.reshape(-1, nmo * nocc)
+
+        def response_cphf_flattened(x: np.ndarray):
+            x = x.reshape(-1, nmo, nocc)
+            y = self.response_dimless_cphf(x)
+            return y.reshape(-1, nmo * nocc)
+
+        umo = krylov_block(response_cphf_flattened, rhs)
+        return umo.reshape(rhs_shape)
