@@ -83,10 +83,14 @@ class TestHessianRHF(unittest.TestCase):
         self.assertTrue(np.allclose(de_ovlp, ref_value["de_ovlp"]))
         self.assertAlmostEqual(lib.fp(de_ovlp), 0.7050335726988588)
 
-    def test_hess_J_skeleton(self):
+    def test_hess_JK_skeleton_naive(self):
         # function check
         from pyhessref.rijk.naive_hess import get_decomposed_rij_skeleton_deriv2_naive
 
         de_J_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         for key, val in de_J_skeleton.items():
+            self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
+
+        de_K_skeleton = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
+        for key, val in de_K_skeleton.items():
             self.assertTrue(np.allclose(val, ref_value[key], atol=1e-5, rtol=1e-4))
