@@ -141,21 +141,21 @@ class TestHessianRHF(unittest.TestCase):
 
     def test_resp_bra(self):
 
-        # double check of umo (U_{pi}^A) sanity
-        umo = ref_value["umo"]
-        self.assertAlmostEqual(lib.fp(umo), -0.02385155247256418)
+        # double check of mo1 (U_{pi}^A) sanity
+        mo1 = ref_value["mo1"]
+        self.assertAlmostEqual(lib.fp(mo1), -0.02385155247256418)
 
-        nmo = umo.shape[-2]
-        nocc = umo.shape[-1]
+        nmo = mo1.shape[-2]
+        nocc = mo1.shape[-1]
 
         # functionality check
         hess_rijk_obj = RHessRIJKNaive(mol, aux)
         hess_rijk_obj.prepare_response(mf.mo_coeff, mf.mo_occ)
-        umo_bra = mf.mo_coeff @ umo
-        resp_bra = hess_rijk_obj.get_response_bra(umo_bra)
+        mo1_bra = mf.mo_coeff @ mo1
+        resp_bra = hess_rijk_obj.get_response_bra(mo1_bra)
         resp = mf.mo_coeff.T @ resp_bra
 
-        resp_ref = hessian.rhf.gen_vind(mf, mf.mo_coeff, mf.mo_occ)(umo.reshape(-1, nmo, nocc)).reshape(umo.shape)
+        resp_ref = hessian.rhf.gen_vind(mf, mf.mo_coeff, mf.mo_occ)(mo1.reshape(-1, nmo, nocc)).reshape(mo1.shape)
         self.assertTrue(np.allclose(resp, resp_ref))
 
         # numerical check
@@ -177,9 +177,25 @@ class TestHessianRHF(unittest.TestCase):
         pre_cphf_dict = hess_impl.compute_dimensionless_cphf_rhs()
         self.assertAlmostEqual(lib.fp(pre_cphf_dict["rhs"]), -0.027755691019085788)
 
-        # solve cpks
+        # solve cphf
         rhs = pre_cphf_dict["rhs"]
         hess_impl.prepare_response()
-        umo = hess_impl.solve_dimless_cphf(rhs)
-        self.assertTrue(np.allclose(umo, ref_value["umo"], atol=1e-6, rtol=1e-4))
-        self.assertAlmostEqual(lib.fp(umo), -0.02385155247256418, places=6)
+        mo1 = hess_impl.solve_dimless_cphf(rhs)
+        self.assertTrue(np.allclose(mo1, ref_value["mo1"], atol=1e-6, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(mo1), -0.02385155247256418, places=6)
+
+        # finalize cphf
+        result_cphf = hess_impl.finalize_cphf(mo1, pre_cphf_dict)
+        self.assertTrue(np.allclose(result_cphf["mo1"], ref_value["mo1"], atol=1e-6, rtol=1e-4))
+        self.assertTrue(np.allclose(result_cphf["mo_e1"], ref_value["mo_e1"], atol=1e-6, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(result_cphf["mo1"]), -0.02385155247256418, places=6)
+        self.assertAlmostEqual(lib.fp(result_cphf["mo_e1"]), 0.2961618130386303, places=6)
+
+        # compute de_cphf
+        mo1 = result_cphf["mo1"]
+        mo_e1 = result_cphf["mo_e1"]
+        f1mo = pre_cphf_dict["f1mo"]
+        s1mo = pre_cphf_dict["s1mo"]
+        de_cphf = hess_impl.get_cphf_hess(f1mo, s1mo, mo1, mo_e1)
+        self.assertTrue(np.allclose(de_cphf, ref_value["de_cphf"], atol=1e-6, rtol=1e-4))
+    

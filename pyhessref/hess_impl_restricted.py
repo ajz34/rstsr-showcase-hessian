@@ -91,15 +91,23 @@ class RHessImpl:
             "f1mo": f1mo,
             "s1mo": s1mo,
         }
-    
+
     def prepare_response(self, mo_coeff: np.ndarray = None, mo_occ: np.ndarray = None) -> np.ndarray:
         mo_coeff = mo_coeff if mo_coeff is not None else self.mo_coeff
         mo_occ = mo_occ if mo_occ is not None else self.mo_occ
         for el_obj in self.el_list:
             el_obj.prepare_response(mo_coeff, mo_occ)
-    
-    def response_dimless_cphf(self, umo: np.ndarray) -> np.ndarray:
+
+    def response_mo(self, mo1: np.ndarray) -> np.ndarray:
         mo_coeff = self.mo_coeff
+
+        ubra = mo_coeff @ mo1
+        resp = np.zeros_like(mo1)
+        for el_obj in self.el_list:
+            resp += mo_coeff.T @ el_obj.get_response_bra(ubra)
+        return resp
+
+    def response_dimless_cphf(self, mo1: np.ndarray) -> np.ndarray:
         mo_occ = self.mo_occ
         mo_energy = self.mo_energy
         occidx = mo_occ > 1e-15
@@ -111,14 +119,11 @@ class RHessImpl:
         e_ai = evir[:, None] - eocc[None, :]
         e_ai_shift = e_ai + level_shift
 
-        ubra = mo_coeff @ umo
-        resp = np.zeros_like(umo)
-        for el_obj in self.el_list:
-            resp += mo_coeff.T @ el_obj.get_response_bra(ubra)
+        resp = self.response_mo(mo1)
 
         # handle dimensionless denominator and force handle virtual-part only
         if level_shift != 0.0:
-            resp -= umo * level_shift
+            resp -= mo1 * level_shift
         resp[..., nocc:, :] /= e_ai_shift
         resp[..., :nocc, :] = 0
         return resp
@@ -133,5 +138,46 @@ class RHessImpl:
             y = self.response_dimless_cphf(x)
             return y.reshape(-1, nmo * nocc)
 
-        umo = krylov_block(response_cphf_flattened, rhs)
-        return umo.reshape(rhs_shape)
+        mo1 = krylov_block(response_cphf_flattened, rhs)
+        return mo1.reshape(rhs_shape)
+
+    def finalize_cphf(self, mo1: np.ndarray, pre_cphf_dict: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        mo_occ = self.mo_occ
+        mo_energy = self.mo_energy
+        occidx = mo_occ > 1e-15
+        nocc = occidx.sum()
+        eocc = mo_energy[occidx]
+        evir = mo_energy[~occidx]
+        e_ai = evir[:, None] - eocc[None, :]
+        e_ij = eocc[:, None] - eocc[None, :]
+
+        # last-iter the cp-hf equation, and remove the level-shift
+        f1mo = pre_cphf_dict["f1mo"]
+        s1mo = pre_cphf_dict["s1mo"]
+        b1mo = f1mo - s1mo * eocc + self.response_mo(mo1)
+        mo1[:, :, nocc:, :] = -b1mo[:, :, nocc:, :] / e_ai
+
+        # get the derivative of fock matrix in occ-occ block (derivative of orbital energy with rotation)
+        mo_e1 = b1mo[:, :, :nocc, :] + mo1[:, :, :nocc, :] * e_ij
+        return {
+            "mo1": mo1,
+            "mo_e1": mo_e1,
+        }
+
+    def get_cphf_hess(self, f1mo: np.ndarray, s1mo: np.ndarray, mo1: np.ndarray, mo_e1: np.ndarray) -> np.ndarray:
+        natm = self.mol.natm
+        occidx = self.mo_occ > 1e-15
+        nocc = occidx.sum()
+        eocc = self.mo_energy[occidx]
+
+        s1oo = s1mo[:, :, :nocc, :]
+
+        de_cphf = np.zeros([natm, natm, 3, 3])
+        for A in range(natm):
+            for B in range(A + 1):
+                de_cphf[A, B] += 4 * (f1mo[A][:, None] * mo1[B][None, :]).sum(axis=(-1, -2))
+                de_cphf[A, B] -= 4 * (s1mo[A][:, None] * mo1[B][None, :] * eocc).sum(axis=(-1, -2))
+                de_cphf[A, B] -= 2 * (s1oo[A][:, None] * mo_e1[B][None, :]).sum(axis=(-1, -2))
+            for B in range(A):
+                de_cphf[B, A] = de_cphf[A, B].T
+        return de_cphf
