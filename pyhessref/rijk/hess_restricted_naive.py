@@ -973,3 +973,15 @@ class RHessRIJKNaive(RHessElecInteractAPI):
         de_K = de_K_skeleton["de_K20"] + de_K_skeleton["de_K11"] + de_K_skeleton["de_K02"]
         de_JK = self.scale_j * de_J - self.scale_k * de_K
         return de_JK
+    
+    def deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, **kwargs) -> np.ndarray:
+        j1ao_dict = get_rij_deriv1_ao(self.mol, self.aux, mo_coeff, mo_occ)
+        k1ao_dict = get_rik_deriv1_ao(self.mol, self.aux, mo_coeff, mo_occ)
+        
+        self.result.update(j1ao_dict)
+        self.result.update(k1ao_dict)
+
+        j1ao = j1ao_dict["j1ao_aux0"] + j1ao_dict["j1ao_aux1"]
+        k1ao = k1ao_dict["k1ao_aux0"] + k1ao_dict["k1ao_aux1"]
+        deriv_ao = self.scale_j * j1ao - self.scale_k * k1ao
+        return deriv_ao

@@ -133,3 +133,21 @@ class TestHessianRHF(unittest.TestCase):
         # numerical check
         self.assertAlmostEqual(lib.fp(k1ao_dict["k1ao_aux0"]), 1.5425060495529097)
         self.assertAlmostEqual(lib.fp(k1ao_dict["k1ao_aux1"]), 0.20670656219034203)
+
+    def test_f1ao(self):
+        from pyhessref.rijk.hess_restricted_naive import RHessRIJKNaive
+        from pyhessref.hcore import RHessHcore
+
+        # functionality check
+        hess_hcore_obj = RHessHcore(mol)
+        hess_rijk_obj = RHessRIJKNaive(mol, aux)
+
+        h1ao = np.array([hess_hcore_obj.generator_deriv1()(A) for A in range(mol.natm)])
+        jk1ao = hess_rijk_obj.deriv1_ao(mf.mo_coeff, mf.mo_occ)
+        f1ao = h1ao + jk1ao
+
+        f1ao_ref = mf_hess.make_h1(mf.mo_coeff, mf.mo_occ)
+        self.assertTrue(np.allclose(f1ao, f1ao_ref))
+
+        # numerical check
+        self.assertAlmostEqual(lib.fp(f1ao), 0.03306328818631421)
