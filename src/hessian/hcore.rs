@@ -91,6 +91,15 @@ pub fn generator_hcore_deriv2(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usiz
     }
 }
 
+/// Hessian contribution from the core Hamiltonian.
+///
+/// # Parameters
+///
+/// - `mol` : [`CInt`]. The molecule object.
+/// - `dm0` : shape [nao, nao]. The SCF density matrix.
+///
+/// # Returns
+/// - `de_hcore` : shape [3, 3, natm, natm]. The Hessian contribution from the core Hamiltonian.
 pub fn get_hess_hcore(mol: &CInt, dm0: TsrView) -> Tsr {
     let device = dm0.device();
     let natm = mol.natm();
@@ -114,6 +123,7 @@ pub fn get_hess_hcore(mol: &CInt, dm0: TsrView) -> Tsr {
     de_hcore
 }
 
+/// Hessian contribution from the core Hamiltonian.
 pub struct HessHcore {
     pub mol: CInt,
 }

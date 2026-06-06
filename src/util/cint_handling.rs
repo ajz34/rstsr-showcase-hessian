@@ -3,9 +3,20 @@ use libcint::util::ShlsSlice;
 
 /// A wrapper around [`CInt::integrate`] that directly transform the output and shape to tensor.
 ///
+/// This only handles single molecule integrals. For cross integrals, see [`hess_intor_cross`].
+///
+/// # Notes
+///
+/// The following notes also apply to [`hess_intor_cross`].
+///
 /// Note that this wrapper **only works in hessian-related tasks**. We will transform integrators
 /// like `int2c2e_ipip1` original shape `[naux, naux, 9]` to [naux, naux, 3, 3]` to make it more
 /// intuitive to use. For other integrators, the shape will be unchanged.
+///
+/// Also note that, for second order derivative, for example of `int3c2e_ip1ip2` $(\partial_t \mu
+/// \nu | \partial_s P)$, the returned shape is `[nao, nao, naux, 3, 3]`, denoting the indices of
+/// $(\mu, \nu, P, s, t)$. Please be very careful about the last two dimensions, which are of
+/// indices `[s, t]` for column major.
 pub fn hess_intor(
     mol: &CInt,
     intor_name: &str,
