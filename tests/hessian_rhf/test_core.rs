@@ -3,7 +3,9 @@ use crate::test_util::*;
 use approx::assert_abs_diff_eq;
 use rstest::rstest;
 use rstsr_showcase_hessian::hessian::hess_trait_restricted::RHessCoreAPI;
-use rstsr_showcase_hessian::hessian::ri_jk_restricted_naive::get_decomposed_rij_skeleton_deriv2_naive;
+use rstsr_showcase_hessian::hessian::ri_jk_restricted_naive::{
+    get_decomposed_rij_skeleton_deriv2_naive, get_decomposed_rik_skeleton_deriv2_naive,
+};
 use rstsr_showcase_hessian::prelude::*;
 
 #[rstest]
@@ -60,6 +62,15 @@ fn test_hess_ri_jk_skeleton_naive(hess_case: &CaseAmoniaRHF) {
 
     // compute results
     let de_dict = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mo_coeff.view(), mo_occ.view());
+
+    // compare to reference
+    for (key, de) in de_dict {
+        let de_ref = ref_dict[key].to_owned().into_reverse_axes();
+        assert!(rt::allclose(de.view(), de_ref.view(), (1e-4, 1e-6)));
+    }
+
+    // also test K
+    let de_dict = get_decomposed_rik_skeleton_deriv2_naive(mol, aux, mo_coeff.view(), mo_occ.view());
 
     // compare to reference
     for (key, de) in de_dict {

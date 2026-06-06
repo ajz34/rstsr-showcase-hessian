@@ -12,3 +12,7 @@ As human developer, you should also provide @CLAUDE.local.md to specify some loc
 ## Python part
 
 You should already able to use `pyscf`, `numpy` and `scipy` in the Python part. You can run python scripts and jupyter notebooks.
+
+## Rust part
+
+We introduced `libcint` (via dynamic linking) and `libtblis` (via dynamic loading) as dependencies for the Rust part. You need to place these two libraries to be visible by `LD_LIBRARY_PATH`.
