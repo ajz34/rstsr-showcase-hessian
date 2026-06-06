@@ -7,7 +7,9 @@ pub mod prelude {
     #![allow(unused)]
 
     use super::*;
-    pub(crate) use util::*;
+
+    pub(crate) use crate::check_shape;
+    pub(crate) use util::prelude::*;
 
     pub(crate) use core::assert_matches;
     pub(crate) use itertools::Itertools;
