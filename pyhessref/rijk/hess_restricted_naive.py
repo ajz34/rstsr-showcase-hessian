@@ -86,21 +86,17 @@ def get_decomposed_rij_skeleton_deriv2_naive(
             de_J20_1[A, B] += 4 * einsum("tsuv -> ts", dbas_J20_1[:, :, p0A:p1A, p0B:p1B])
 
     # (11|0)(0|00)
-    dbas_J20_2 = einsum("tsuvP, PQ, klQ, kl -> tsuv", int3c2e_ipvip1, int2c2e_inv, int3c2e, dm0)
+    dbas_J20_2 = einsum("tsuvP, PQ, klQ, uv, kl -> tsuv", int3c2e_ipvip1, int2c2e_inv, int3c2e, dm0, dm0)
     de_J20_2 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
-            de_J20_2[A, B] += 2 * einsum(
-                "tsuv, uv -> ts",
-                dbas_J20_2[:, :, p0A:p1A, p0B:p1B],
-                dm0[p0A:p1A, p0B:p1B],
-            )
+            de_J20_2[A, B] += 2 * einsum("tsuv -> ts", dbas_J20_2[:, :, p0A:p1A, p0B:p1B])
 
     # (20|0)(0|00)
-    dbas_J20_3 = einsum("tsuvP, PQ, klQ, kl -> tsuv", int3c2e_ipip1, int2c2e_inv, int3c2e, dm0)
+    dbas_J20_3 = einsum("tsuvP, PQ, klQ, uv, kl -> tsuv", int3c2e_ipip1, int2c2e_inv, int3c2e, dm0, dm0)
     de_J20_3 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
-        de_J20_3[A, A] += 2 * einsum("tsuv, uv -> ts", dbas_J20_3[:, :, p0A:p1A], dm0[p0A:p1A])
+        de_J20_3[A, A] += 2 * einsum("tsuv -> ts", dbas_J20_3[:, :, p0A:p1A])
 
     de_J20 = de_J20_1 + de_J20_2 + de_J20_3
 

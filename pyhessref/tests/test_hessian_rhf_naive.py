@@ -19,6 +19,7 @@ from pyhessref.hess_scf_restricted import RHessSCF
 
 def setUpModule():
     global mol, aux, mf, mf_hess, ref_value
+    lib.num_threads(4)
 
     xyz = """
     N  0   0   0
@@ -37,7 +38,7 @@ def setUpModule():
     mf.mo_energy = ref_value["mo_energy"]
     mf.with_df.build()
     mf.converged = True
-    mf_hess = mf.Hessian().run()
+    mf_hess = mf.Hessian()
     aux = mf.with_df.auxmol
 
 
