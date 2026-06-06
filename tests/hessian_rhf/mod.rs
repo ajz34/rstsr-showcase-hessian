@@ -9,9 +9,9 @@ use rstsr_showcase_hessian::prelude_dev::*;
 pub struct CaseAmoniaRHF {
     pub mol: CInt,
     pub aux: CInt,
-    pub mo_coeff: Tsr<f64>,
-    pub mo_occ: Tsr<f64>,
-    pub ref_dict: HashMap<String, Tsr<f64>>,
+    pub mo_coeff: Tsr,
+    pub mo_occ: Tsr,
+    pub ref_dict: HashMap<String, Tsr>,
 }
 
 #[fixture]

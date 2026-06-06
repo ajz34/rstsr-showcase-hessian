@@ -17,7 +17,7 @@ pub type TsrView<'a, T = f64> = TensorView<'a, T, DeviceFaer, IxD>;
 /// Note the returned tensor is always in row-major order (which should be according to NumPy's
 /// convention). However, the shape is usually not the same to our convention, and some
 /// transposition may be needed.
-pub fn read_npz(file: &str, name: &str) -> Tsr<f64> {
+pub fn read_npz(file: &str, name: &str) -> Tsr {
     let cargo_manifest_path = std::env!("CARGO_MANIFEST_DIR");
     let path = Path::new(cargo_manifest_path).join("prototype").join(file);
     let npz_file = BufReader::new(File::open(path).unwrap());
@@ -30,7 +30,7 @@ pub fn read_npz(file: &str, name: &str) -> Tsr<f64> {
 }
 
 /// Read all tensors from npz file in prototype directory, and return as a dictionary.
-pub fn read_npz_dict(file: &str) -> HashMap<String, Tsr<f64>> {
+pub fn read_npz_dict(file: &str) -> HashMap<String, Tsr> {
     let cargo_manifest_path = std::env!("CARGO_MANIFEST_DIR");
     let path = Path::new(cargo_manifest_path).join("prototype").join(file);
     let npz_file = BufReader::new(File::open(path).unwrap());
@@ -53,6 +53,6 @@ pub fn read_npz_dict(file: &str) -> HashMap<String, Tsr<f64>> {
 ///
 /// Note this function requires column-major order iteration. This is different to PySCF's row-major
 /// order.
-pub fn fp(x: TsrView<f64>) -> f64 {
+pub fn fp(x: TsrView) -> f64 {
     x.iter_with_order(TensorIterOrder::F).into_par_iter().enumerate().map(|(i, &v)| (i as f64).cos() * v).sum()
 }

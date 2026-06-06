@@ -1,0 +1,69 @@
+use crate::prelude::*;
+use libcint::util::ShlsSlice;
+
+/// A wrapper around [`CInt::integrate`] that directly transform the output and shape to tensor.
+///
+/// Note that this wrapper **only works in hessian-related tasks**. We will transform integrators
+/// like `int2c2e_ipip1` original shape `[naux, naux, 9]` to [naux, naux, 3, 3]` to make it more
+/// intuitive to use. For other integrators, the shape will be unchanged.
+pub fn hess_intor(
+    mol: &CInt,
+    intor_name: &str,
+    symm: &str,
+    shls_slice: impl Into<ShlsSlice>,
+    device: &DeviceTsr,
+) -> Tsr {
+    let (out, shape) = mol.integrate(intor_name, symm, shls_slice.into()).into();
+    let ip_matches = intor_name.matches("ip").count();
+    let shape = match ip_matches {
+        0 | 1 => shape,
+        2 => {
+            // check last dimension is 9
+            assert_eq!(shape.last(), Some(&9), "For integrator with 2 'ip' in name, the last dimension should be 9.");
+            // transform last dimension from 9 to (3, 3)
+            let mut new_shape = shape.clone();
+            new_shape.pop();
+            new_shape.push(3);
+            new_shape.push(3);
+            new_shape
+        },
+        _ => panic!("Unsupported integrator with more than 2 'ip' in name."),
+    };
+    rt::asarray((out, shape, device))
+}
+
+/// A wrapper around [`CInt::integrate_cross`] that directly transform the output and shape to
+/// tensor.
+///
+/// Notes see also [`hess_intor`].
+pub fn hess_intor_cross(
+    mol_list: &[&CInt],
+    intor_name: &str,
+    symm: &str,
+    shls_slice: impl Into<ShlsSlice>,
+    device: &DeviceTsr,
+) -> Tsr {
+    let (out, shape) = CInt::integrate_cross(intor_name, mol_list, symm, shls_slice.into()).into();
+    let ip_matches = intor_name.matches("ip").count();
+    let shape = match ip_matches {
+        0 | 1 => shape,
+        2 => {
+            // check last dimension is 9
+            assert_eq!(shape.last(), Some(&9), "For integrator with 2 'ip' in name, the last dimension should be 9.");
+            // transform last dimension from 9 to (3, 3)
+            let mut new_shape = shape.clone();
+            new_shape.pop();
+            new_shape.push(3);
+            new_shape.push(3);
+            new_shape
+        },
+        _ => panic!("Unsupported integrator with more than 2 'ip' in name."),
+    };
+    rt::asarray((out, shape, device))
+}
+
+pub fn get_ecp_atoms(mol: &CInt) -> Vec<usize> {
+    const ATOM_OF: usize = libcint::ffi::cint_ffi::ATOM_OF as usize;
+    // remove duplicates and sort
+    mol.ecpbas.iter().map(|&ecpbas| ecpbas[ATOM_OF] as usize).sorted().dedup().collect_vec()
+}

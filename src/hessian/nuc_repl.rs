@@ -5,11 +5,12 @@ use crate::prelude::*;
 /// # Parameters
 ///
 /// - `mol` : [`CInt`]. The molecule object.
+/// - `device` : [`DeviceTsr`]. The device on which the returned tensor is allocated.
 ///
 /// # Returns
 /// -------
 /// - `de_nuc` : shape [3, 3, natm, natm]. The nuclear repulsion Hessian.
-pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr) -> Tsr<f64> {
+pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr) -> Tsr {
     let natm = mol.natm();
 
     // de_nuc: shape [3, 3, natm, natm]. The nuclear repulsion Hessian.
@@ -43,15 +44,16 @@ pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr) -> Tsr<f64> {
         *&mut de_nuc.i_mut((.., .., A, A)) -= tmp2_sum;
 
         // off-diagonal blocks
-        *&mut de_nuc.i_mut((0, 0, .., A)) += &tmp1;
-        *&mut de_nuc.i_mut((1, 1, .., A)) += &tmp1;
-        *&mut de_nuc.i_mut((2, 2, .., A)) += &tmp1;
-        *&mut de_nuc.i_mut((Ellipsis, A)) += &tmp2;
+        *&mut de_nuc.i_mut((0, 0, A, ..)) += &tmp1;
+        *&mut de_nuc.i_mut((1, 1, A, ..)) += &tmp1;
+        *&mut de_nuc.i_mut((2, 2, A, ..)) += &tmp1;
+        *&mut de_nuc.i_mut((.., .., A, ..)) += &tmp2;
     }
 
     de_nuc
 }
 
+/// Hessian contribution from nuclear repulsion.
 pub struct HessNucRepl {
     pub mol: CInt,
 }
@@ -67,7 +69,7 @@ impl RHessCoreAPI for HessNucRepl {
         get_nuc_repl_hess(&self.mol, mo_coeff.device())
     }
 
-    fn generator_deriv1(&self) -> Option<Box<dyn Fn(usize) -> Tsr>> {
+    fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>> {
         None
     }
 }

@@ -46,8 +46,6 @@ macro_rules! check_shape {
                 $actual.into_usize_vec(),
                 $msg
             );
-        } else {
-            Ok(())
         }
     }};
 
@@ -55,8 +53,6 @@ macro_rules! check_shape {
         if !$cond {
             let str_cond = stringify!($cond);
             panic!("Condition failed: {}; message: {}", str_cond, $msg);
-        } else {
-            Ok(())
         }
     }};
 }

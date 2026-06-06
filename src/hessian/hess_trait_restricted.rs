@@ -28,6 +28,8 @@ pub trait RHessCoreAPI {
     /// # Returns
     ///
     /// - `hess` : shape `[3, 3, natm, natm]`. The Hessian matrix for current SCF component.
+    ///
+    ///   Note the hessian should be of indices `[s, t, B, A]` for column major.
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr;
 
     /// Generate the function to compute the first-order derivative of core component.
@@ -43,7 +45,7 @@ pub trait RHessCoreAPI {
     ///
     /// - `deriv1` : shape `[nao, nao, 3]`. The first-order derivative of core component with
     ///   respect to the position of atom `A`.
-    fn generator_deriv1(&self) -> Option<Box<dyn Fn(usize) -> Tsr>>;
+    fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>>;
 }
 
 /// Abstract class for Hessian-related API for restricted SCF electronic interaction components.
@@ -72,6 +74,8 @@ pub trait RHessElecInteractAPI {
     /// # Returns
     ///
     /// - `hess` : shape `[3, 3, natm, natm]`. The Hessian matrix for current SCF component.
+    ///
+    ///   Note the hessian should be of indices `[s, t, B, A]` for column major.
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr;
 
     /// First order skeleton derivative in AO basis.
