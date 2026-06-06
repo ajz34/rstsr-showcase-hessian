@@ -1,5 +1,6 @@
 #![allow(clippy::deref_addrof)]
 #![allow(clippy::manual_is_multiple_of)]
+#![allow(non_snake_case)]
 
 pub mod hessian;
 pub mod util;
@@ -7,8 +8,9 @@ pub mod util;
 pub mod prelude {
     #![allow(unused)]
 
+    pub use crate::hessian::prelude::*;
+
     pub(crate) use crate::check_shape;
-    pub(crate) use crate::hessian::prelude::*;
     pub(crate) use crate::prelude_dev::*;
     pub(crate) use crate::util::prelude::*;
 }

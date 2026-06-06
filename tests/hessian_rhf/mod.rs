@@ -15,6 +15,7 @@ pub struct CaseAmoniaRHF {
 }
 
 #[fixture]
+#[once]
 pub fn hess_case() -> CaseAmoniaRHF {
     let toml_token = r#"
         atom = """
