@@ -10,7 +10,8 @@ zip = "8.6"
 rayon = "1.12"
 itertools = "0.14"
 libxc = "0.1"
-rstsr = { version = "0.7", default-features = false, features = ["col_major", "faer", "faer_as_default"] }
+rstsr = { version = "0.7.5", default-features = false, features = ["col_major", "faer", "tblis", "faer_as_default"] }
+rstsr-tblis = { version = "0.7.5", features = ["dynamic_loading"] }
 
 [dev-dependencies]
 rstest = "0.26"
