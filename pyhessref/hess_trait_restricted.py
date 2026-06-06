@@ -121,14 +121,14 @@ class RHessElecInteractAPI(ABC):
 
         See also
         --------
-        deriv1_ao
+        get_deriv1_ao
 
         Notes
         -----
-        If `deriv1_ao` implemented, this function should behave like `deriv_bra = deriv_ao @ mocc`, where `mocc` is
+        If `get_deriv1_ao` implemented, this function should behave like `deriv_bra = deriv_ao @ mocc`, where `mocc` is
         the occupied molecular coefficients (as ket).
 
-        However, in some cases, it is probably better to skip the usage of `deriv1_ao` and directly use this function.
+        However, in some cases, it is probably better to skip the usage of `get_deriv1_ao` and directly use this function.
         By ket half-transformation, some RI-JK or DFT methods will benefit from boost by using low-rank occupied orbitals,
         instead of using full AO basis.
 

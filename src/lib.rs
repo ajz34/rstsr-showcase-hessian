@@ -1,6 +1,7 @@
 #![allow(clippy::deref_addrof)]
 #![allow(clippy::manual_is_multiple_of)]
 
+pub mod hessian;
 pub mod util;
 
 pub mod prelude {
@@ -9,6 +10,7 @@ pub mod prelude {
     use super::*;
 
     pub(crate) use crate::check_shape;
+    pub(crate) use hessian::prelude::*;
     pub(crate) use util::prelude::*;
 
     pub(crate) use core::assert_matches;
