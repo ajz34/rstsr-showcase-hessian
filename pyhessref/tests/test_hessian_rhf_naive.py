@@ -14,7 +14,7 @@ from pyhessref.rijk.hess_restricted_naive import (
     get_rij_deriv1_ao_naive,
     get_rik_deriv1_ao_naive,
 )
-from pyhessref.hess_impl_restricted import RHessImpl
+from pyhessref.hess_scf_restricted import RHessSCF
 
 
 def setUpModule():
@@ -162,7 +162,7 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(resp), -0.07694258336883628)
 
     def test_dimensionless_cphf_rhs(self):
-        hess_impl = RHessImpl(
+        hess_impl = RHessSCF(
             mol,
             mf.mo_coeff,
             mf.mo_occ,
@@ -200,7 +200,7 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(de_cphf), 1.0888788930763051, places=6)
 
     def test_make_hess(self):
-        hess_impl = RHessImpl(
+        hess_impl = RHessSCF(
             mol,
             mf.mo_coeff,
             mf.mo_occ,

@@ -7,7 +7,7 @@ from pyhessref.krylov_block import krylov_block
 from pyhessref.util import get_dme0_restricted
 
 
-class RHessImpl:
+class RHessSCF:
     def __init__(
         self,
         mol: gto.Mole,

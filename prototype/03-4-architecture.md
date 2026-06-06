@@ -71,12 +71,12 @@ class RHessElecInteractAPI(ABC):
 
 **`make_response_preparation` 的作用**：对于 RI-JK（naive 版本），response 只需要三中心积分 + 两中心积分逆，不需要预处理。但对于 DFT，可能需要预计算 XC kernel 的某些量。统一的接口允许以相同方式调用。
 
-### 1.4 RHessImpl 主控类
+### 1.4 RHessSCF 主控类
 
-`RHessImpl` 是主控类，组合所有组件：
+`RHessSCF` 是主控类，组合所有组件：
 
 ```python
-RHessImpl(
+RHessSCF(
     mol, mo_coeff, mo_occ, mo_energy,
     ovlp_obj=RHessOvlp(mol),
     core_list=[HessNucRepl(mol), RHessHcore(mol)],
@@ -216,7 +216,7 @@ class RHessRIJKNaive(RHessElecInteractAPI):
 - 总能量表达式中 J 的系数仍然是 1，K 的系数取决于使用的 functional
 
 **通用模式**：
-- 对新类型实现 `RHessElecInteractAPI` 接口即可被 `RHessImpl` 的框架调用
+- 对新类型实现 `RHessElecInteractAPI` 接口即可被 `RHessSCF` 的框架调用
 - skeleton 部分、response 部分、deriv1 部分彼此独立
 - 测试策略相同：先用 prototype 分解验证公式，再在 pyhessref 中工程化
 
