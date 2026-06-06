@@ -2,6 +2,7 @@ import numpy as np
 from pyscf import gto
 
 from pyhessref.hess_trait_restricted import RHessCoreAPI
+from pyhessref.hess_trait_unrestricted import UHessCoreAPI
 
 
 def get_nuc_repl_hess(mol: gto.Mole) -> np.ndarray:
@@ -53,3 +54,13 @@ class HessNucRepl(RHessCoreAPI):
 
     def generator_deriv1(self) -> callable:
         return None
+
+
+class UHessNucRepl(HessNucRepl, UHessCoreAPI):
+    """UHF version of nuclear repulsion Hessian.
+
+    Nuclear repulsion is independent of electronic structure, so the implementation
+    is shared with the restricted case.
+    """
+
+    pass

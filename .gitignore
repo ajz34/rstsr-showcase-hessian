@@ -11,6 +11,7 @@ book
 *.npz
 repomix-output*
 *.local*
+*.egg-info
 
 # bindgen
 blas_bindgen.h

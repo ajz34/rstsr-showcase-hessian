@@ -2,7 +2,8 @@ import numpy as np
 from pyscf import gto
 
 from pyhessref.hess_trait_restricted import RHessCoreAPI
-from pyhessref.util import get_dm0_restricted
+from pyhessref.hess_trait_unrestricted import UHessCoreAPI
+from pyhessref.util import get_dm0_restricted, get_dm0_unrestricted
 
 
 def generator_hcore_deriv2(mol) -> callable:
@@ -163,6 +164,27 @@ class RHessHcore(RHessCoreAPI):
 
     def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
         dm0 = dm0 if dm0 is not None else get_dm0_restricted(mo_coeff, mo_occ)
+        return get_hess_hcore(self.mol, dm0)
+
+    def generator_deriv1(self) -> callable:
+        return generator_hcore_deriv1(self.mol)
+
+
+class UHessHcore(UHessCoreAPI):
+    """UHF version of core Hamiltonian Hessian contribution.
+
+    The skeleton derivative only depends on the *total* density matrix, so we reuse
+    the restricted pure function ``get_hess_hcore`` after summing the per-spin density
+    matrices. The first-order derivative generator is spin-independent and identical
+    to the restricted case.
+    """
+
+    def __init__(self, mol: gto.Mole):
+        self.mol = mol
+
+    def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray, dm0: np.ndarray = None) -> np.ndarray:
+        if dm0 is None:
+            dm0 = get_dm0_unrestricted(mo_coeff, mo_occ).sum(axis=0)
         return get_hess_hcore(self.mol, dm0)
 
     def generator_deriv1(self) -> callable:
