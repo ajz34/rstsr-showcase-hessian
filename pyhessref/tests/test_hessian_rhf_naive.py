@@ -159,7 +159,7 @@ class TestHessianRHF(unittest.TestCase):
         self.assertTrue(np.allclose(resp, resp_ref))
 
         # numerical check
-        self.assertAlmostEqual(lib.fp(resp), -0.07694258336883628)
+        self.assertAlmostEqual(lib.fp(resp), -0.2656880294075937)
 
     def test_dimensionless_cphf_rhs(self):
         hess_impl = RHessSCF(

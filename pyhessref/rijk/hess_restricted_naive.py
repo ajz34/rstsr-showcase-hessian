@@ -1015,11 +1015,11 @@ class RHessRIJKNaive(RHessElecInteractAPI):
     The auxiliary derivative is always be full (count up to 2nd-order for skeleton, and 1st-order for CP-HF).
     """
 
-    def __init__(self, mol: gto.Mole, aux: gto.Mole, scale_j: float = 1.0, scale_k: float = 0.5):
+    def __init__(self, mol: gto.Mole, aux: gto.Mole, scale_j: float = 1.0, scale_k: float = 1.0):
         self.mol = mol
         self.aux = aux
-        self.scale_j = scale_j or 1.0
-        self.scale_k = scale_k or 0.5
+        self.scale_j = scale_j
+        self.scale_k = scale_k
         self.mo_coeff = None
         self.mo_occ = None
         self.result = dict()
@@ -1033,7 +1033,7 @@ class RHessRIJKNaive(RHessElecInteractAPI):
 
         de_J = de_J_skeleton["de_J20"] + de_J_skeleton["de_J11"] + de_J_skeleton["de_J02"]
         de_K = de_K_skeleton["de_K20"] + de_K_skeleton["de_K11"] + de_K_skeleton["de_K02"]
-        de_JK = self.scale_j * de_J - self.scale_k * de_K
+        de_JK = self.scale_j * de_J - 0.5 * self.scale_k * de_K
         return de_JK
 
     def get_deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
@@ -1045,7 +1045,7 @@ class RHessRIJKNaive(RHessElecInteractAPI):
 
         j1ao = j1ao_dict["j1ao_aux0"] + j1ao_dict["j1ao_aux1"]
         k1ao = k1ao_dict["k1ao_aux0"] + k1ao_dict["k1ao_aux1"]
-        deriv_ao = self.scale_j * j1ao - self.scale_k * k1ao
+        deriv_ao = self.scale_j * j1ao - 0.5 * self.scale_k * k1ao
         return deriv_ao
 
     def make_response_preparation(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
