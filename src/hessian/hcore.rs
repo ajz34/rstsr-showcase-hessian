@@ -9,7 +9,7 @@ use crate::prelude::*;
 ///
 /// Returns
 /// -------
-/// - `get_hcore_deriv_at_atoms` : `Fn(A: usize, B: usize) -> Tsr`. A function that computes the
+/// - `get_hcore_deriv_at_atoms` : `FnMut(A: usize, B: usize) -> Tsr`. A function that computes the
 ///   second derivative of the core Hamiltonian with respect to the nuclear coordinates. The
 ///   returned array has shape [nao, nao, 3, 3].
 pub fn generator_hcore_deriv2(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usize, usize) -> Tsr {
@@ -123,14 +123,59 @@ pub fn get_hess_hcore(mol: &CInt, dm0: TsrView) -> Tsr {
     de_hcore
 }
 
+/// Generator for first derivatives of the core Hamiltonian (skeleton derivative).
+///
+/// # Parameters
+///
+/// - `mol` : [`CInt`]. The molecule object.
+/// - `device` : [`DeviceTsr`]. The device object.
+///
+/// # Returns
+///
+/// - `get_hcore_deriv_at_atoms` : `FnMut(A: usize) -> Tsr`. A function that computes the first
+///   derivative of the core Hamiltonian with respect to the nuclear coordinates. Input is the atom
+///   index A. The returned array has shape `[nao, nao, 3]`.
+pub fn generator_hcore_deriv1(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usize) -> Tsr {
+    // preparation
+    let device = device.clone();
+    let mut mol = mol.clone();
+    let nao = mol.nao();
+    let ecp_atoms = get_ecp_atoms(&mol);
+    let aoslices = mol.aoslice_by_atom();
+
+    let mut h1_a = -hess_intor(&mol, "int1e_ipkin", "s1", None, &device);
+    h1_a -= hess_intor(&mol, "int1e_ipnuc", "s1", None, &device);
+    if mol.has_ecp() {
+        h1_a -= hess_intor(&mol, "ECPscalar_ipnuc", "s1", None, &device);
+    }
+
+    move |A: usize| {
+        let [_, _, p0A, p1A] = aoslices[A];
+        let slcA = rt::slice!(p0A, p1A);
+        let zA = mol.atom_charge(A);
+
+        let mut hcore_deriv: Tsr = rt::zeros(([nao, nao, 3], &device));
+        *&mut hcore_deriv.i_mut(slcA) += h1_a.i(slcA);
+        mol.with_rinv_at_nucleus(A, |mol| {
+            let mut rinv_a = -zA * hess_intor(mol, "int1e_iprinv", "s1", None, &device);
+            if ecp_atoms.contains(&A) {
+                rinv_a += hess_intor(mol, "ECPscalar_iprinv", "s1", None, &device);
+            }
+            hcore_deriv += &rinv_a;
+        });
+        &hcore_deriv + hcore_deriv.swapaxes(0, 1)
+    }
+}
+
 /// Hessian contribution from the core Hamiltonian.
 pub struct HessHcore {
     pub mol: CInt,
+    pub device: DeviceTsr,
 }
 
 impl HessHcore {
-    pub fn new(mol: CInt) -> Self {
-        Self { mol }
+    pub fn new(mol: &CInt, device: &DeviceTsr) -> Self {
+        Self { mol: mol.clone(), device: device.clone() }
     }
 }
 
@@ -141,6 +186,6 @@ impl RHessCoreAPI for HessHcore {
     }
 
     fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>> {
-        todo!()
+        Some(Box::new(generator_hcore_deriv1(&self.mol, &self.device)))
     }
 }

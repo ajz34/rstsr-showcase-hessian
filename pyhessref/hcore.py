@@ -105,7 +105,7 @@ def generator_hcore_deriv1(mol) -> callable:
     get_hcore_deriv_at_atoms : function(A: int) -> np.ndarray
         A function that computes the first derivative of the core Hamiltonian with respect to the nuclear coordinates.
         Input is the atom index A.
-        The returned array has shape [3, nao].
+        The returned array has shape [3, nao, nao].
     """
 
     h1 = -mol.intor("int1e_ipkin") - mol.intor("int1e_ipnuc")
