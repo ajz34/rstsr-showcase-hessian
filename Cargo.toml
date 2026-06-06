@@ -15,6 +15,7 @@ rstsr-tblis = { version = "0.7.5", features = ["dynamic_loading"] }
 
 [dev-dependencies]
 rstest = "0.26"
+approx = "0.5"
 
 [profile.dev]
 opt-level = 2
