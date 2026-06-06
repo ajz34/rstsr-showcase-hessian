@@ -4,12 +4,28 @@
 
 ## 1. 积分记号系统
 
+### 1.0 公式记号与 einsum 指标对照
+
+本节系列文档中，数学公式记号与 einsum 字符串指标的统一对应关系如下：
+
+| 记号 | 含义 | 维度 | einsum 指标 |
+|--|--|--|--|
+| $\mu, \nu, \kappa, \lambda$ | 原子轨道基函数 | `nao` | `u, v, k, l` |
+| $t, s$ | 笛卡尔坐标导数方向 (x, y, z) | 3 | `t, s` |
+| $P, Q, R, S, T, U$ | 辅助基函数 | `naux` | `P, Q, R, S, T, U` |
+| $\sigma$ | 自旋分量 (UHF 特有) | 2 | `x` |
+| $A, B$ | 原子索引或性质分量，取决于具体问题 | `natm` / `natm * 3` | `A, B` |
+| $i, j$ | 占据分子轨道 | `nocc` | `i, j` |
+| $p, q$ | 全部分子轨道 | `nmo` | `p, q` |
+
+注意：在 RHF 文档中，自旋指标 $\sigma$ 不出现；本系列推导中所有用于基函数的第 4 个指标统一记作 $\kappa$（而非 $\sigma$），以避免与自旋指标冲突，方便后续 UHF 推导直接复用同一套记号。
+
 ### 1.1 三中心 / 两中心积分
 
 RI (Resolution of Identity) 方法中，库伦和交换积分通过辅助基组近似：
 
 $$
-(\mu\nu|\lambda\sigma) \approx (\mu\nu|P) (P|Q)^{-1} (Q|\lambda\sigma)
+(\mu\nu|\kappa\lambda) \approx (\mu\nu|P) (P|Q)^{-1} (Q|\kappa\lambda)
 $$
 
 其中：
@@ -54,13 +70,7 @@ $$
 
 ### 2.1 einsum 中的指标
 
-| 指标 | 含义 | 范围 |
-|------|------|------|
-| `t, s` | 笛卡尔坐标导数方向 | 3 |
-| `u, v, k, l` | 原子轨道基函数 | nao |
-| `P, Q, R, S, T` | 辅助基函数 | naux |
-| `i, j` | 占据分子轨道 | nocc |
-| `p, q` | 全部分子轨道 | nmo |
+einsum 指标遵循第 1.0 节给出的统一对照表（基函数 `u,v,k,l`，笛卡尔 `t,s`，辅助基 `P,Q,R,S,T,U`，分子轨道 `i,j` / `p,q`，UHF 自旋 `x`），此处不再重复。
 
 ### 2.2 原子贡献的提取
 
@@ -77,7 +87,7 @@ skeleton 二阶导数的 Hessian 贡献具有 `[natm, natm, 3, 3]` 的形状。�
 
 ### 3.1 J20 — 基组二阶导数
 
-J 的 RI 表达式为 $J = (\mu\nu|P)(P|Q)^{-1}(Q|\lambda\sigma) D_{\mu\nu} D_{\lambda\sigma}$，对基组求二阶导数：
+J 的 RI 表达式为 $J = (\mu\nu|P)(P|Q)^{-1}(Q|\kappa\lambda) D_{\mu\nu} D_{\kappa\lambda}$，对基组求二阶导数：
 
 | 子项 | 公式（einsum） | 因子 | 原子贡献 |
 |------|---------------|------|---------|
@@ -87,7 +97,7 @@ J 的 RI 表达式为 $J = (\mu\nu|P)(P|Q)^{-1}(Q|\lambda\sigma) D_{\mu\nu} D_{\
 
 **推导说明**：
 
-- **J20_1** `$(10|0)(0|10)$`：左边对第一个基函数一阶导 $(t\partial_\mu)$，右边对第一个基函数一阶导 $(s\partial_\lambda)$。对 $D_{\mu\nu} D_{\lambda\sigma}$ 缩并后得 `tsuk`，再按原子 A（u 切片）和 B（k 切片）提取。因子 4 来自 RHF 密度矩阵的 2 倍 × 两个密度矩阵交叉缩并 = $2 \times 2 = 4$。
+- **J20_1** `$(10|0)(0|10)$`：左边对第一个基函数一阶导 $(t\partial_\mu)$，右边对第一个基函数一阶导 $(s\partial_\kappa)$。对 $D_{\mu\nu} D_{\kappa\lambda}$ 缩并后得 `tsuk`，再按原子 A（u 切片）和 B（k 切片）提取。因子 4 来自 RHF 密度矩阵的 2 倍 × 两个密度矩阵交叉缩并 = $2 \times 2 = 4$。
   
 - **J20_2** `$(11|0)(0|00)$`：左边对两个基函数各求一阶导 $(t\partial_\mu s\partial_\nu)$。缩并形式为 `tsuv`，需要再与 $D_{\mu\nu}$ 缩并。因子 2 来自一阶导数同时作用于 bra 和 ket。
 
@@ -149,10 +159,10 @@ J02 是最复杂的部分，包含 9 个子项。其复杂性来自辅助基二�
 K（交换积分）的 RI 表达式为：
 
 $$
-K_{\mu\lambda} = (\mu\nu|P)(P|Q)^{-1}(Q|\lambda\sigma) D_{\nu\sigma}
+K_{\mu\kappa} = (\mu\nu|P)(P|Q)^{-1}(Q|\kappa\lambda) D_{\nu\lambda}
 $$
 
-与 J 的关键区别在于：K 的密度矩阵缩并是交叉的（$\nu$ 与 $\sigma$），而 J 是直积的（$\mu\nu$ 与 $\lambda\sigma$ 分别缩并）。这意味着 K 需要引入占据轨道系数来做缩并。
+与 J 的关键区别在于：K 的密度矩阵缩并是交叉的（$\nu$ 与 $\lambda$），而 J 是直积的（$\mu\nu$ 与 $\kappa\lambda$ 分别缩并）。这意味着 K 需要引入占据轨道系数来做缩并。
 
 实际实现中，使用 `mocc_2 = mocc * sqrt(occ)` 来替代 `dm0`，即：
 
@@ -169,8 +179,8 @@ $$
 | K20_3 | `tsuvP, PQ, klQ, ui, vj, ki, lj -> tsuv` | 2 | A=A(u=v) |
 
 **K20_1 的拆分**：K20_1 对应 J20_1 的 `(10|0)(0|10)` 项。但由于 K 的密度矩阵缩并是交叉的，交换积分有两部分贡献：
-- **1a**：`ki, lj` 缩并（即 $\delta_{ki} \delta_{lj}$，对应 $K_{\mu\lambda}$ 的直接项）
-- **1b**：`kj, li` 缩并（即交换 $i \leftrightarrow j$，对应 $K_{\mu\lambda}$ 的交换项）
+- **1a**：`ki, lj` 缩并（即 $\delta_{ki} \delta_{lj}$，对应 $K_{\mu\kappa}$ 的直接项）
+- **1b**：`kj, li` 缩并（即交换 $i \leftrightarrow j$，对应 $K_{\mu\kappa}$ 的交换项）
 
 这两部分在 J 中因为直积结构自动合并为 4 倍因子，在 K 中需要分开计算。
 
