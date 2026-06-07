@@ -723,3 +723,122 @@ pub fn get_rij_deriv1_ao_naive(
 
     HashMap::from([("j1ao_aux0", j1ao_aux0), ("j1ao_aux1", j1ao_aux1)])
 }
+
+/// Get the first derivative of the exchange interaction in AO basis.
+///
+/// # Parameters
+///
+/// - `mol` : [CInt]. The molecule object.
+/// - `aux` : [CInt]. The auxiliary basis set molecule object.
+/// - `mo_coeff` : shape `[nao, nmo]`. The molecular orbital coefficients.
+/// - `mo_occ` : shape `[nmo]`. The molecular orbital occupation numbers.
+///
+/// # Returns
+///
+/// - `HashMap<&'static str, Tsr>`. Storing contribution by auxiliary basis derivative order. Output
+///   shape is `[nao, nao, 3, natm]`.
+pub fn get_rik_deriv1_ao_naive(
+    mol: &CInt,
+    aux: &CInt,
+    mo_coeff: TsrView,
+    mo_occ: TsrView,
+) -> HashMap<&'static str, Tsr> {
+    // some elementary information
+    let natm = mol.natm();
+    let nao = mol.nao();
+    let aoslices = mol.aoslice_by_atom();
+    let auxslices = aux.aoslice_by_atom();
+    let device = mo_coeff.device();
+
+    // occupation: mocc_2 = mocc * sqrt(occ)
+    let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+    let mocc = mo_coeff.bool_select(-1, &occidx);
+    let occ = mo_occ.bool_select(-1, &occidx);
+    let mocc_2 = &mocc * occ.sqrt().i((None, ..));
+
+    // integrals we need
+    let int3c2e = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s1", None, device);
+    let int3c2e_ip1 = hess_intor_cross(&[mol, mol, aux], "int3c2e_ip1", "s1", None, device);
+    let int3c2e_ip2 = hess_intor_cross(&[mol, mol, aux], "int3c2e_ip2", "s1", None, device);
+    let int2c2e = hess_intor(aux, "int2c2e", "s1", None, device);
+    let int2c2e_inv = rt::linalg::inv(int2c2e);
+    let int2c2e_ip1 = hess_intor(aux, "int2c2e_ip1", "s1", None, device);
+
+    // --- aux deriv 0 --- //
+
+    // python: tuvP, PQ, klQ, vi, li -> tuk
+    let subscripts = "uvPt, PQ, klQ, vi, li -> ukt";
+    let operands = [&int3c2e_ip1, &int2c2e_inv, &int3c2e, &mocc_2, &mocc_2];
+    let scr1 = rt::tblis::einsum(subscripts, operands, true, None);
+
+    let mut k1ao_aux0 = rt::zeros(([nao, nao, 3, natm], device));
+    for A in 0..natm {
+        let &[_, _, p0, p1] = &aoslices[A];
+        let slc = rt::slice!(p0, p1);
+        // (10|0)(0|00)
+        *&mut k1ao_aux0.i_mut((slc, .., .., A)) -= scr1.i(slc);
+        // (01|0)(0|00)
+        *&mut k1ao_aux0.i_mut((.., slc, .., A)) -= scr1.i(slc).swapaxes(0, 1);
+        // (00|0)(0|10), (00|0)(0|01)
+        // python: tklP, PQ, uvQ, ki, ui -> tlv
+        let subscripts = "klPt, PQ, uvQ, ki, ui -> lvt";
+        let operands = [int3c2e_ip1.i(slc), int2c2e_inv.view(), int3c2e.view(), mocc_2.i(slc), mocc_2.view()];
+        let scr2 = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut k1ao_aux0.i_mut((.., .., .., A)) -= &scr2 + scr2.swapaxes(0, 1);
+    }
+
+    // --- aux deriv 1 --- //
+
+    let mut k1ao_aux1 = rt::zeros(([nao, nao, 3, natm], device));
+    for A in 0..natm {
+        let &[_, _, p0, p1] = &auxslices[A];
+        let slc = rt::slice!(p0, p1);
+
+        // (00|1)(0|00)
+        // python: tuvP, PQ, klQ, vi, li -> tuk
+        let subscripts = "uvPt, PQ, klQ, vi, li -> ukt";
+        let operands = [int3c2e_ip2.i((.., .., slc)), int2c2e_inv.i(slc), int3c2e.view(), mocc_2.view(), mocc_2.view()];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut k1ao_aux1.i_mut((Ellipsis, A)) -= scr;
+
+        // (00|0)(1|00)
+        // python: uvP, PQ, tklQ, vi, li -> tuk
+        let subscripts = "uvP, PQ, klQt, vi, li -> ukt";
+        let operands =
+            [int3c2e.view(), int2c2e_inv.i((.., slc)), int3c2e_ip2.i((.., .., slc)), mocc_2.view(), mocc_2.view()];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut k1ao_aux1.i_mut((Ellipsis, A)) -= scr;
+
+        // (00|0)(1|0)(0|00)
+        // python: uvP, PQ, tQR, RS, klS, vi, li -> tuk
+        let subscripts = "uvP, PQ, QRt, RS, klS, vi, li -> ukt";
+        let operands = [
+            int3c2e.view(),
+            int2c2e_inv.i((.., slc)),
+            int2c2e_ip1.i(slc),
+            int2c2e_inv.view(),
+            int3c2e.view(),
+            mocc_2.view(),
+            mocc_2.view(),
+        ];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut k1ao_aux1.i_mut((Ellipsis, A)) += scr;
+
+        // (00|0)(0|1)(0|00)
+        // python: uvP, PQ, tRQ, RS, klS, vi, li -> tuk
+        let subscripts = "uvP, PQ, RQt, RS, klS, vi, li -> ukt";
+        let operands = [
+            int3c2e.view(),
+            int2c2e_inv.view(),
+            int2c2e_ip1.i(slc),
+            int2c2e_inv.i(slc),
+            int3c2e.view(),
+            mocc_2.view(),
+            mocc_2.view(),
+        ];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut k1ao_aux1.i_mut((Ellipsis, A)) += scr;
+    }
+
+    HashMap::from([("k1ao_aux0", k1ao_aux0), ("k1ao_aux1", k1ao_aux1)])
+}
