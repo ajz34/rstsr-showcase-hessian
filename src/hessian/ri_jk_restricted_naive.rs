@@ -624,3 +624,102 @@ pub fn get_decomposed_rik_skeleton_deriv2_naive(
         ("de_K02", de_K02),
     ])
 }
+
+/// Get the first derivative of the Coulomb interaction in AO basis.
+///
+/// # Parameters
+///
+/// - `mol` : [CInt]. The molecule object.
+/// - `aux` : [CInt]. The auxiliary basis set molecule object.
+/// - `mo_coeff` : shape `[nao, nmo]`. The molecular orbital coefficients.
+/// - `mo_occ` : shape `[nmo]`. The molecular orbital occupation numbers.
+///
+/// # Returns
+///
+/// - `HashMap<&'static str, Tsr>`. Storing contribution by auxiliary basis derivative order. Output
+///   shape is `[nao, nao, 3, natm]`.
+pub fn get_rij_deriv1_ao_naive(
+    mol: &CInt,
+    aux: &CInt,
+    mo_coeff: TsrView,
+    mo_occ: TsrView,
+) -> HashMap<&'static str, Tsr> {
+    // some elementary information
+    let natm = mol.natm();
+    let nao = mol.nao();
+    let aoslices = mol.aoslice_by_atom();
+    let auxslices = aux.aoslice_by_atom();
+    let device = mo_coeff.device();
+    let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
+
+    // integrals we need
+    let int3c2e = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s1", None, device);
+    let int3c2e_ip1 = hess_intor_cross(&[mol, mol, aux], "int3c2e_ip1", "s1", None, device);
+    let int3c2e_ip2 = hess_intor_cross(&[mol, mol, aux], "int3c2e_ip2", "s1", None, device);
+    let int2c2e = hess_intor(aux, "int2c2e", "s1", None, device);
+    let int2c2e_inv = rt::linalg::inv(int2c2e);
+    let int2c2e_ip1 = hess_intor(aux, "int2c2e_ip1", "s1", None, device);
+
+    // --- aux deriv 0 --- //
+
+    let subscripts = "uvPt, PQ, klQ, kl -> uvt";
+    let operands = [&int3c2e_ip1, &int2c2e_inv, &int3c2e, &dm0];
+    let scr1 = rt::tblis::einsum(subscripts, operands, true, None);
+
+    let mut j1ao_aux0 = rt::zeros(([nao, nao, 3, natm], device));
+    for A in 0..natm {
+        let &[_, _, p0, p1] = &aoslices[A];
+        let slc = rt::slice!(p0, p1);
+        // (10|0)(0|00)
+        *&mut j1ao_aux0.i_mut((slc, .., .., A)) -= scr1.i(slc);
+        // (01|0)(0|00), can be symmetrized
+        *&mut j1ao_aux0.i_mut((.., slc, .., A)) -= scr1.i(slc).swapaxes(0, 1);
+        // (00|0)(0|10), (00|0)(0|01)
+        let subscripts = "klPt, PQ, uvQ, kl -> uvt";
+        let operands = [int3c2e_ip1.i(slc), int2c2e_inv.view(), int3c2e.view(), dm0.i(slc)];
+        let scr2 = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut j1ao_aux0.i_mut((.., .., .., A)) -= 2 * scr2;
+    }
+
+    // --- aux deriv 1 --- //
+
+    let mut j1ao_aux1 = rt::zeros(([nao, nao, 3, natm], device));
+    for A in 0..natm {
+        let &[_, _, p0, p1] = &auxslices[A];
+        let slc = rt::slice!(p0, p1);
+
+        // (00|1)(0|00)
+        let subscripts = "uvPt, PQ, klQ, kl -> uvt";
+        let operands = [int3c2e_ip2.i((.., .., slc)), int2c2e_inv.i(slc), int3c2e.view(), dm0.view()];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut j1ao_aux1.i_mut((Ellipsis, A)) -= scr;
+
+        // (00|0)(1|00)
+        let subscripts = "uvP, PQ, klQt, kl -> uvt";
+        let operands = [int3c2e.view(), int2c2e_inv.i((.., slc)), int3c2e_ip2.i((.., .., slc)), dm0.view()];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut j1ao_aux1.i_mut((Ellipsis, A)) -= scr;
+
+        // (00|0)(1|0)(0|00)
+        let subscripts = "uvP, PQ, QRt, RS, klS, kl -> uvt";
+        let operands = [
+            int3c2e.view(),
+            int2c2e_inv.i((.., slc)),
+            int2c2e_ip1.i(slc),
+            int2c2e_inv.view(),
+            int3c2e.view(),
+            dm0.view(),
+        ];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut j1ao_aux1.i_mut((Ellipsis, A)) += scr;
+
+        // (00|0)(0|1)(0|00)
+        let subscripts = "uvP, PQ, RQt, RS, klS, kl -> uvt";
+        let operands =
+            [int3c2e.view(), int2c2e_inv.view(), int2c2e_ip1.i(slc), int2c2e_inv.i(slc), int3c2e.view(), dm0.view()];
+        let scr = rt::tblis::einsum(subscripts, operands, true, None);
+        *&mut j1ao_aux1.i_mut((Ellipsis, A)) += scr;
+    }
+
+    HashMap::from([("j1ao_aux0", j1ao_aux0), ("j1ao_aux1", j1ao_aux1)])
+}

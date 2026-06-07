@@ -114,7 +114,7 @@ class TestHessianRHF(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(j1ao_dict["j1ao_aux0"]), 35.38555993698421)
         self.assertAlmostEqual(lib.fp(j1ao_dict["j1ao_aux1"]), 0.11465211252634573)
 
-    def test_kij_deriv1(self):
+    def test_rik_deriv1(self):
         k1ao_dict = get_rik_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         k1ao = k1ao_dict["k1ao_aux0"] + k1ao_dict["k1ao_aux1"]
 

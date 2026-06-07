@@ -1,6 +1,7 @@
 #![allow(clippy::deref_addrof)]
 #![allow(clippy::manual_is_multiple_of)]
 #![allow(non_snake_case)]
+#![allow(clippy::needless_range_loop)]
 
 pub mod hessian;
 pub mod util;
