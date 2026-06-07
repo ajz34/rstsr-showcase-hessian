@@ -128,6 +128,8 @@ def krylov_block(aop, b, x0=None, tol=1e-10, max_cycle=30, lindep=1e-13):
         max_innerprod = max(innerprod) if innerprod else 0
         r = np.sqrt(max_innerprod)
 
+        print(f"Cycle {cycle+1}: max(||new_trial_vec_i||^2) = {max_innerprod:.3e}, max(||new_trial_vec_i||) = {r:.3e}")
+
         # Convergence check (same as PySCF)
         if max_innerprod < max(lindep, tol**2):
             break
