@@ -842,3 +842,39 @@ pub fn get_rik_deriv1_ao_naive(
 
     HashMap::from([("k1ao_aux0", k1ao_aux0), ("k1ao_aux1", k1ao_aux1)])
 }
+
+pub fn get_rijk_response_bra_naive(mol: &CInt, aux: &CInt, mo_coeff: TsrView, mo_occ: TsrView, bra: TsrView) -> Tsr {
+    // preparation
+    let nao = mol.nao();
+    let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+    let mocc = mo_coeff.bool_select(-1, &occidx);
+    let nocc = occidx.iter().filter(|&&x| x).count();
+
+    let int2c2e = hess_intor(aux, "int2c2e", "s1", None, bra.device());
+    let int2c2e_inv = rt::linalg::inv(int2c2e);
+    let int3c2e = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s1", None, bra.device());
+
+    // reshape bra to (nao, nocc, -1)
+    let bra_shape = bra.shape().to_vec();
+    check_shape!(bra_shape[0], nao, "bra.shape[0] should match nao");
+    check_shape!(bra_shape[1], nocc, "bra.shape[1] should match nocc");
+    let bra = bra.reshape((nao, nocc, -1));
+
+    // resp_bra_j
+    let subscripts = "uvP, PQ, klQ, kjA, lj, vi -> uiA";
+    let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
+    let resp_bra_j = rt::tblis::einsum(subscripts, operands, true, None);
+
+    // resp_bra_k0
+    let subscripts = "uvP, PQ, klQ, vjA, lj, ki -> uiA";
+    let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
+    let resp_bra_k0 = rt::tblis::einsum(subscripts, operands, true, None);
+
+    // resp_bra_k1
+    let subscripts = "uvP, PQ, klQ, kjA, vj, li -> uiA";
+    let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
+    let resp_bra_k1 = rt::tblis::einsum(subscripts, operands, true, None);
+
+    let resp: Tsr = 4 * resp_bra_j - resp_bra_k0 - resp_bra_k1;
+    resp.into_shape(bra_shape)
+}

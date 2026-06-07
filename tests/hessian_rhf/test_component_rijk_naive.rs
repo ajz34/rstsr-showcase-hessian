@@ -38,3 +38,15 @@ fn test_hess_ri_jk_deriv1_ao_naive(hess_case: &CaseAmoniaRHF) {
     assert_abs_diff_eq!(fp(de_dict["k1ao_aux0"].swapaxes(0, 1)), 1.5425060495529097, epsilon = 1e-6);
     assert_abs_diff_eq!(fp(de_dict["k1ao_aux1"].swapaxes(0, 1)), 0.20670656219034203, epsilon = 1e-6);
 }
+
+#[rstest]
+fn test_hess_ri_jk_response_bra(hess_case: &CaseAmoniaRHF) {
+    let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, ref_dict, .. } = hess_case;
+
+    // row-major [A, t, u, v] -> col-major [u, v, t, A]
+    let mo1 = ref_dict["mo1"].transpose((2, 3, 1, 0)).into_contig(ColMajor);
+    let mo1_bra = mo_coeff % mo1;
+    let resp_bra = get_rijk_response_bra_naive(mol, aux, mo_coeff.view(), mo_occ.view(), mo1_bra.view());
+    let resp = mo_coeff.t() % resp_bra;
+    assert_abs_diff_eq!(fp(resp.swapaxes(0, 1)), -0.2656880294075937, epsilon = 1e-6);
+}
