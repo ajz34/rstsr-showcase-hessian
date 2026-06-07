@@ -64,8 +64,8 @@ def build_test_system(n=12, nrhs=2):
 
 
 if __name__ == "__main__":
-    n = 12
-    nrhs = 2
+    n = 40
+    nrhs = 12
     A, b, eigs = build_test_system(n=n, nrhs=nrhs)
 
     print(f"Problem size: n = {n}, nrhs = {nrhs}")
@@ -93,6 +93,15 @@ if __name__ == "__main__":
     # Persist the test case so it can be reloaded by other scripts/notebooks
     # without needing to re-solve. `x_ref` is the direct-solve ground truth;
     # `x` is the krylov_block result (they should agree to ~1e-10).
+    # Force C-contiguous so downstream loaders (Rust `read_npz`) that assume
+    # row-major raw layout get the indices they expect.
     npz_path = "02-7-krylov_testing_data.npz"
-    np.savez(npz_path, A=A, b=b, x=x, x_ref=x_ref, eigs=eigs)
+    np.savez(
+        npz_path,
+        A=np.ascontiguousarray(A),
+        b=np.ascontiguousarray(b),
+        x=np.ascontiguousarray(x),
+        x_ref=np.ascontiguousarray(x_ref),
+        eigs=np.ascontiguousarray(eigs),
+    )
     print(f"\nSaved test data to {npz_path}")
