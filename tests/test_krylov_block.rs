@@ -2,7 +2,7 @@ mod test_util;
 
 use rstsr::prelude::*;
 use rstsr_showcase_hessian::util::krylov_block::krylov_block;
-use test_util::{Tsr, TsrView, fp, read_npz_dict};
+use test_util::{fp, read_npz_dict, Tsr, TsrView};
 
 #[test]
 fn test_krylov_block_small_deterministic() {
