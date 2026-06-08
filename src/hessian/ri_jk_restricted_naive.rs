@@ -878,3 +878,53 @@ pub fn get_rijk_response_bra_naive(mol: &CInt, aux: &CInt, mo_coeff: TsrView, mo
     let resp: Tsr = 4 * resp_bra_j - resp_bra_k0 - resp_bra_k1;
     resp.into_shape(bra_shape)
 }
+
+pub struct RHessRIJKNaive {
+    pub mol: CInt,
+    pub aux: CInt,
+    pub scale_j: f64,
+    pub scale_k: f64,
+    pub intmd: HashMap<&'static str, Tsr>, // intermediates
+    pub result: HashMap<&'static str, Tsr>,
+}
+
+impl RHessRIJKNaive {
+    pub fn new(mol: &CInt, aux: &CInt, scale_j: f64, scale_k: f64) -> Self {
+        Self { mol: mol.clone(), aux: aux.clone(), scale_j, scale_k, intmd: HashMap::new(), result: HashMap::new() }
+    }
+}
+
+impl RHessElecInteractAPI for RHessRIJKNaive {
+    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
+        let de_J_skeleton_dict = get_rij_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+        let de_K_skeleton_dict = get_rik_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+        let result = &mut self.result;
+        result.extend(de_J_skeleton_dict);
+        result.extend(de_K_skeleton_dict);
+        let de_J = &result["de_J20"] + &result["de_J11"] + &result["de_J02"];
+        let de_K = &result["de_K20"] + &result["de_K11"] + &result["de_K02"];
+        self.scale_j * de_J - 0.5 * self.scale_k * de_K
+    }
+
+    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
+        let j1ao_dict = get_rij_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+        let k1ao_dict = get_rik_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+        let result = &mut self.result;
+        result.extend(j1ao_dict);
+        result.extend(k1ao_dict);
+        let j1ao = &result["j1ao_aux0"] + &result["j1ao_aux1"];
+        let k1ao = &result["k1ao_aux0"] + &result["k1ao_aux1"];
+        self.scale_j * j1ao - 0.5 * self.scale_k * k1ao
+    }
+
+    fn make_response_preparation(&mut self, mo_coeff: TsrView, mo_occ: TsrView) {
+        self.intmd.insert("mo_coeff", mo_coeff.into_contig(RowMajor));
+        self.intmd.insert("mo_occ", mo_occ.to_owned());
+    }
+
+    fn get_response_bra(&self, bra: TsrView) -> Tsr {
+        let mo_coeff = self.intmd["mo_coeff"].view();
+        let mo_occ = self.intmd["mo_occ"].view();
+        get_rijk_response_bra_naive(&self.mol, &self.aux, mo_coeff, mo_occ, bra)
+    }
+}

@@ -2,7 +2,6 @@ use crate::hessian_rhf::*;
 use crate::test_util::*;
 use approx::assert_abs_diff_eq;
 use rstest::rstest;
-use rstsr_showcase_hessian::hessian::hess_trait_restricted::RHessCoreAPI;
 use rstsr_showcase_hessian::prelude::*;
 
 #[rstest]

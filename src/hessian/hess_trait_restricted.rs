@@ -88,7 +88,7 @@ pub trait RHessElecInteractAPI {
     /// # Returns
     ///
     /// - `deriv_ao` : shape `[nao, nao, 3, natm]`. The first-order skeleton derivative in AO basis.
-    fn get_deriv1_ao(&self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr;
+    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr;
 
     /// First order skeleton derivative in half-transformed MO basis.
     ///
@@ -120,7 +120,7 @@ pub trait RHessElecInteractAPI {
     /// [`get_deriv1_ao`]
     ///
     /// [`get_deriv1_ao`]: Self::get_deriv1_ao
-    fn get_deriv1_bra(&self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
+    fn get_deriv1_bra(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
         let occidx = mo_occ.view().greater(0).into_vec();
         let mocc = mo_coeff.bool_select(-1, &occidx);
         self.get_deriv1_ao(mo_coeff, mo_occ) % mocc
@@ -168,5 +168,5 @@ pub trait RHessElecInteractAPI {
     /// We have not prepared to propose a good API for fractional occupation.
     ///
     /// [`make_response_preparation`]: Self::make_response_preparation
-    fn get_response_bra(self, bra: TsrView) -> Tsr;
+    fn get_response_bra(&self, bra: TsrView) -> Tsr;
 }

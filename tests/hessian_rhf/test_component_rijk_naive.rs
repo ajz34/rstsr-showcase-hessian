@@ -43,8 +43,12 @@ fn test_hess_ri_jk_deriv1_ao_naive(hess_case: &CaseAmoniaRHF) {
 fn test_hess_ri_jk_response_bra(hess_case: &CaseAmoniaRHF) {
     let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, ref_dict, .. } = hess_case;
 
+    // double check of mo1 sanity
+    assert_abs_diff_eq!(fp(ref_dict["mo1"].t()), -0.02385155247256418, epsilon = 1e-6);
+
     // row-major [A, t, u, v] -> col-major [u, v, t, A]
     let mo1 = ref_dict["mo1"].transpose((2, 3, 1, 0)).into_contig(ColMajor);
+
     let mo1_bra = mo_coeff % mo1;
     let resp_bra = get_rijk_response_bra_naive(mol, aux, mo_coeff.view(), mo_occ.view(), mo1_bra.view());
     let resp = mo_coeff.t() % resp_bra;
