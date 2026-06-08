@@ -1,15 +1,14 @@
 //! Block Krylov subspace solver for `(1 + A) x = b`.
 //!
-//! Direct translation of `prototype/krylov_block.py`. The convergence behavior
-//! matches PySCF's `lib.krylov` block algorithm: each cycle adds the surviving
-//! trial directions to the subspace, and the basis is kept non-normalized so
-//! that the squared norms of the new trial vectors act as the convergence
-//! signal without requiring an explicit residual evaluation.
+//! The convergence behavior should approximately matches PySCF's `lib.krylov` block algorithm: each
+//! cycle adds the surviving trial directions to the subspace, and the basis is kept non-normalized
+//! so that the squared norms of the new trial vectors act as the convergence signal without
+//! requiring an explicit residual evaluation.
 //!
-//! Layout convention is col-major: each right-hand side / basis vector is a
-//! **column** of the corresponding matrix. So `b` is shaped `[n, nset]`,
-//! the operator maps `[n, nblock] -> [n, nblock]`, and the basis matrices
-//! `xs`, `ax` are `[n, nd]` with new vectors appended along axis 1.
+//! Layout convention is col-major: each right-hand side / basis vector is a **column** of the
+//! corresponding matrix. So `b` is shaped `[n, nset]`, the operator maps `[n, nblock] -> [n,
+//! nblock]`, and the basis matrices `xs`, `ax` are `[n, nd]` with new vectors appended along axis
+//! 1.
 
 use crate::prelude::*;
 
@@ -20,7 +19,7 @@ use crate::prelude::*;
 /// - `aop` : Linear operator. Given a `[n, nblock]` input it must return a `[n, nblock]` output
 ///   (the action of `A` applied column-wise).
 /// - `b` : Right-hand sides, shape `[n, nset]`. Each column is one RHS.
-/// - `x0` : Optional initial guess, shape `[n, nset]`.
+/// - `x0` : Optional initial guess, shape `[n, nset]`. Zero initial guess is used if not provided.
 /// - `tol` : Convergence tolerance on `max(||new_trial_vec_i||)`.
 /// - `max_cycle` : Maximum number of block cycles.
 /// - `lindep` : Vectors with `||v||^2 < lindep` are dropped from the subspace.
@@ -37,12 +36,12 @@ pub fn krylov_block(
     lindep: f64,
 ) -> Tsr {
     let device = b.device().clone();
-    let ndim_l = b.shape()[0];
-    let nset_l = b.shape()[1];
+    let n = b.shape()[0];
+    let nset = b.shape()[1];
 
     // Subtract the contribution of the initial guess from the RHS.
     let b: Tsr = match x0.as_ref() {
-        Some(x0v) => &b - (&x0v.to_owned() + aop(x0v.view())),
+        Some(x0v) => &b - (x0v + aop(x0v.view())),
         None => b.to_owned(),
     };
 
@@ -50,18 +49,18 @@ pub fn krylov_block(
     let (mut x1, mut innerprod) = orth_block(b.view(), lindep);
 
     if x1.shape()[1] == 0 {
-        let mut result: Tsr = rt::zeros(([ndim_l, nset_l], &device));
+        let mut result: Tsr = rt::zeros(([n, nset], &device));
         if let Some(x0v) = x0 {
             result += x0v;
         }
         return result;
     }
 
-    // Pre-allocate basis storage: at most nset_l vectors per cycle plus the
-    // initial block, so cap at nset_l * (max_cycle + 1) columns.
-    let max_basis = nset_l * (max_cycle + 1);
-    let mut xs: Tsr = rt::zeros(([ndim_l, max_basis], &device));
-    let mut ax: Tsr = rt::zeros(([ndim_l, max_basis], &device));
+    // Pre-allocate basis storage: at most nset vectors per cycle plus the
+    // initial block, so cap at nset * (max_cycle + 1) columns.
+    let max_basis = nset * (max_cycle + 1);
+    let mut xs: Tsr = rt::zeros(([n, max_basis], &device));
+    let mut ax: Tsr = rt::zeros(([n, max_basis], &device));
     let mut all_innerprod: Vec<f64> = Vec::with_capacity(max_basis);
     let mut nd: usize = 0;
 
@@ -86,7 +85,7 @@ pub fn krylov_block(
         //   x1_new[:, k] = axt[:, k] - sum_i coeffs[i, k] * xs[:, i]
         //              = axt - xs_slc @ coeffs
         let xs_slc = xs.i((.., ..nd));
-        let ip_vec: Tsr = rt::asarray((all_innerprod.clone(), &device));
+        let ip_vec = rt::asarray((&all_innerprod, &device));
         let coeffs = (xs_slc.t() % &axt) / ip_vec.i((.., None));
         let x1_new = axt - &xs_slc % &coeffs;
 
@@ -125,7 +124,7 @@ pub fn krylov_block(
     let g: Tsr = xs_slc.t() % &b;
 
     // Solve h c = g, then reconstruct x[:, k] = sum_i c[i, k] * xs[:, i] = xs c.
-    let c = rt::linalg::solve_general((h.view(), g.view()));
+    let c = rt::linalg::solve_general((h, g));
     let mut x: Tsr = &xs_slc % &c;
 
     if let Some(x0v) = x0 {
@@ -163,10 +162,11 @@ fn orth_block(vec: TsrView, lindep: f64) -> (Tsr, Vec<f64>) {
         }
     }
 
-    let m = result.len();
-    let mut out: Tsr = rt::zeros(([n, m], &device));
-    for (i, vi) in result.into_iter().enumerate() {
-        out.i_mut((.., i)).assign(&vi);
+    // stack vectors to output matrix if any survived
+    if result.is_empty() {
+        // rt::stack does not allow zero-length, where numpy also disallowed.
+        (rt::zeros(([n, 0], &device)), norms_sq)
+    } else {
+        (rt::stack((result, -1)), norms_sq)
     }
-    (out, norms_sq)
 }
