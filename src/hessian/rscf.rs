@@ -10,11 +10,12 @@ pub struct RHessSCFConfig {
     pub cphf_tol: f64,
     pub cphf_max_cycle: usize,
     pub cphf_max_space: usize,
+    pub cphf_lindep: f64,
 }
 
 impl Default for RHessSCFConfig {
     fn default() -> Self {
-        Self { level_shift: 0.0, cphf_tol: 1e-8, cphf_max_cycle: 42, cphf_max_space: 14 }
+        Self { level_shift: 0.0, cphf_tol: 1e-8, cphf_max_cycle: 42, cphf_max_space: 14, cphf_lindep: 1e-14 }
     }
 }
 
@@ -127,5 +128,106 @@ impl<'a> RHessSCF<'a> {
         *&mut rhs.i_mut(so) += -0.5 * s1mo.i(so);
 
         HashMap::from([("f1mo", f1mo), ("s1mo", s1mo), ("rhs", rhs)])
+    }
+
+    /// Prepare the response for CPHF calculation.
+    ///
+    /// This involves all electron-interaction objects.
+    pub fn make_response_preparation(&mut self) {
+        for el_obj in self.el_list.iter_mut() {
+            el_obj.make_response_preparation(self.mo_coeff.view(), self.mo_occ.view());
+        }
+    }
+    /// Compute the response of the system to a given perturbation in MO space (mo1), which is
+    /// needed for CPHF.
+    ///
+    /// # Parameters
+    ///
+    /// - `mo1` : shape `[nmo, nocc, ...]`. The perturbation in MO space.
+    ///
+    /// # Returns
+    ///
+    /// - `resp` : shape `[..., nmo, nocc]`. The response in MO space.
+    pub fn response_mo(&self, mo1: TsrView) -> Tsr {
+        let mo_coeff = self.mo_coeff.view();
+        let ubra = &mo_coeff % &mo1;
+        let mut resp = rt::zeros_like(&mo1);
+        for el_obj in self.el_list.iter() {
+            resp += mo_coeff.t() % el_obj.get_response_bra(ubra.view());
+        }
+        resp
+    }
+    /// Compute the dimensionless response for CP-HF calculation.
+    ///
+    /// Compared to usual CP-HF response, this additionally handles
+    /// - the level shift in denominator
+    /// - the zeroing of occupied-part response (we use `mo1[occ, occ]` part for evaluating
+    ///   `resp[vir, occ]`, but we actually only want to solve the `mo1[vir, occ]` part and freeze
+    ///   `mo1[occ, occ]` part to always be 0.5 times of ovlp_deriv1).
+    ///
+    /// # Parameters
+    ///
+    /// - `mo1` : shape `[nmo, nocc, ...]`. The perturbation in MO space.
+    ///
+    /// # Returns
+    ///
+    /// - `resp` : shape `[nmo, nocc, ...]`. The dimensionless response in MO space.
+    pub fn response_dimless_cphf(&self, mo1: TsrView) -> Tsr {
+        let mo_occ = self.mo_occ.view();
+        let mo_energy = self.mo_energy.view();
+        let level_shift = self.config.level_shift;
+        let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+        let viridx = occidx.iter().map(|&x| !x).collect_vec();
+        let nocc = occidx.iter().filter(|&&x| x).count();
+        let nmo = mo_occ.shape()[0];
+        let eocc = mo_energy.bool_select(-1, &occidx);
+        let evir = mo_energy.bool_select(-1, &viridx);
+        let so = rt::slice!(0, nocc);
+        let sv = rt::slice!(nocc, nmo);
+        let e_ai = evir.i((.., None)) - eocc.i((None, ..));
+        let e_ai_shift = &e_ai + level_shift;
+
+        let mut resp = self.response_mo(mo1.view());
+
+        // handle dimensionless denominator and force handle virtual-part only
+        if level_shift != 0.0 {
+            resp -= level_shift * &mo1;
+        }
+        *&mut resp.i_mut(sv) /= &e_ai_shift;
+        resp.i_mut(so).fill(0.0);
+        resp
+    }
+
+    /// Solve the dimensionless CP-HF equation using a Krylov solver.
+    ///
+    /// This should solves `U + resp(U) = rhs`. Note difference of standard CP-HF equation as
+    /// mentioned in functions above.
+    ///
+    /// # Parameters
+    ///
+    /// - `rhs` : shape `[nmo, nocc, 3, natm]`. Dimensionless right-hand side.
+    ///
+    /// # Returns
+    ///
+    /// - `mo1` : shape `[nmo, nocc, 3, natm]`. Perturbation in MO space that solves the
+    ///   dimensionless CP-HF equation.
+    pub fn solve_dimless_cphf(&self, rhs: TsrView) -> Tsr {
+        let rhs_shape = rhs.shape().to_vec();
+        let nmo = rhs.shape()[0];
+        let nocc = rhs.shape()[1];
+        let rhs = rhs.reshape((nmo * nocc, -1));
+
+        let response_cphf_flattened = |x: TsrView| -> Tsr {
+            let x = x.reshape((nmo, nocc, -1));
+            let y = self.response_dimless_cphf(x.view());
+            y.into_shape((nmo * nocc, -1))
+        };
+
+        let tol = self.config.cphf_tol;
+        let max_cycle = self.config.cphf_max_cycle;
+        let max_space = self.config.cphf_max_space;
+        let lindep = self.config.cphf_lindep;
+        let mo1 = krylov_block(response_cphf_flattened, rhs.view(), None, tol, max_cycle, max_space, lindep);
+        mo1.into_shape(rhs_shape)
     }
 }
