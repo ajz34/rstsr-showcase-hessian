@@ -5,6 +5,11 @@
 //! so that the squared norms of the new trial vectors act as the convergence signal without
 //! requiring an explicit residual evaluation.
 //!
+//! To bound memory the subspace is capped at `max_space` cycles. When that cap is hit without
+//! convergence the solver performs a **hard restart** (GMRES(m)-style): the projected system is
+//! solved to obtain the current best approximation, that approximation is folded into a running
+//! `x_accum`, the subspace is reset, and the residual `b - (I+A) x_accum` becomes the new RHS.
+//!
 //! Layout convention is col-major: each right-hand side / basis vector is a **column** of the
 //! corresponding matrix. So `b` is shaped `[n, nset]`, the operator maps `[n, nblock] -> [n,
 //! nblock]`, and the basis matrices `xs`, `ax` are `[n, nd]` with new vectors appended along axis
@@ -12,7 +17,7 @@
 
 use crate::prelude::*;
 
-/// Solve `(I + aop) x = b` by a block Krylov subspace method.
+/// Solve `(I + aop) x = b` by a block Krylov subspace method with hard restarts.
 ///
 /// # Parameters
 ///
@@ -21,7 +26,11 @@ use crate::prelude::*;
 /// - `b` : Right-hand sides, shape `[n, nset]`. Each column is one RHS.
 /// - `x0` : Optional initial guess, shape `[n, nset]`. Zero initial guess is used if not provided.
 /// - `tol` : Convergence tolerance on `max(||new_trial_vec_i||)`.
-/// - `max_cycle` : Maximum number of block cycles.
+/// - `max_cycle` : Maximum **total** number of inner cycles, summed across restarts. Recommended
+///   value is 54, and is better to be a multiple (or much larger) than `max_space`.
+/// - `max_space` : Maximum subspace size in cycles before a hard restart is triggered. Typical
+///   values are 6..=20, recommended 14 for CP-HF problems. With `max_space >= max_cycle` no restart
+///   ever happens (matches the pre-restart behavior). Storage is `O(n * nset * (max_space + 1))`.
 /// - `lindep` : Vectors with `||v||^2 < lindep` are dropped from the subspace.
 ///
 /// # Returns
@@ -33,104 +42,142 @@ pub fn krylov_block(
     x0: Option<TsrView>,
     tol: f64,
     max_cycle: usize,
+    max_space: usize,
     lindep: f64,
 ) -> Tsr {
     let device = b.device().clone();
     let n = b.shape()[0];
     let nset = b.shape()[1];
 
-    // Subtract the contribution of the initial guess from the RHS.
-    let b: Tsr = match x0.as_ref() {
-        Some(x0v) => &b - (x0v + aop(x0v.view())),
-        None => b.to_owned(),
+    let b_orig = b.to_owned();
+
+    // x_accum plays the role of a running initial guess that is refined on each
+    // hard restart. After every restart we re-form the residual b - (I+A) x_accum
+    // and rebuild the Krylov subspace from scratch.
+    let mut x_accum: Tsr = match x0.as_ref() {
+        Some(x0v) => x0v.to_owned(),
+        None => rt::zeros(([n, nset], &device)),
     };
 
-    // Initialize: orthogonalize the columns of b.
-    let (mut x1, mut innerprod) = orth_block(b.view(), lindep);
-
-    if x1.shape()[1] == 0 {
-        let mut result: Tsr = rt::zeros(([n, nset], &device));
-        if let Some(x0v) = x0 {
-            result += x0v;
-        }
-        return result;
-    }
-
-    // Pre-allocate basis storage: at most nset vectors per cycle plus the
-    // initial block, so cap at nset * (max_cycle + 1) columns.
-    let max_basis = nset * (max_cycle + 1);
+    // Pre-allocate basis storage at the bounded restart size. The slabs are
+    // overwritten in place on each restart by resetting `nd = 0`.
+    let max_basis = nset * (max_space + 1);
     let mut xs: Tsr = rt::zeros(([n, max_basis], &device));
     let mut ax: Tsr = rt::zeros(([n, max_basis], &device));
     let mut all_innerprod: Vec<f64> = Vec::with_capacity(max_basis);
-    let mut nd: usize = 0;
 
     let conv_thresh = lindep.max(tol * tol);
 
-    for cycle in 0..max_cycle {
-        let nblock = x1.shape()[1];
+    let mut total_cycles: usize = 0;
+    let mut restart_idx: usize = 0;
 
-        // Apply operator to current trial block.
-        let axt = aop(x1.view());
+    // We must remember the last completed inner loop's subspace and the residual
+    // that produced it, so that the final projected solve uses a consistent pair.
+    let mut last_nd: usize = 0;
+    let mut last_b: Tsr = b_orig.clone();
 
-        // Append current (x1, axt, innerprod) to the subspace.
-        xs.i_mut((.., nd..nd + nblock)).assign(&x1);
-        ax.i_mut((.., nd..nd + nblock)).assign(&axt);
-        all_innerprod.extend_from_slice(&innerprod);
-        nd += nblock;
+    while total_cycles < max_cycle {
+        // Form this restart's RHS: b - (I+A) x_accum. On the first pass with no
+        // initial guess this is just b (skip the extra aop evaluation).
+        let b_residual: Tsr =
+            if restart_idx == 0 && x0.is_none() { b_orig.clone() } else { &b_orig - (&x_accum + aop(x_accum.view())) };
 
-        // Orthogonalize axt against the full subspace. For non-normalized
-        // orthogonal columns xs[:, i] with ||xs[:, i]||^2 = all_innerprod[i]:
-        //   coeffs[i, k] = (xs[:, i] . axt[:, k]) / all_innerprod[i]
-        //              = (xs_slc.T @ axt)[i, k] / all_innerprod[i]
-        //   x1_new[:, k] = axt[:, k] - sum_i coeffs[i, k] * xs[:, i]
-        //              = axt - xs_slc @ coeffs
-        let xs_slc = xs.i((.., ..nd));
-        let ip_vec = rt::asarray((&all_innerprod, &device));
-        let coeffs = (xs_slc.t() % &axt) / ip_vec.i((.., None));
-        let x1_new = axt - &xs_slc % &coeffs;
+        // Orthogonalize the columns of the residual.
+        let (mut x1, mut innerprod) = orth_block(b_residual.view(), lindep);
 
-        // Orthogonalize the new trial block among itself.
-        let (next_x1, next_ip) = orth_block(x1_new.view(), lindep);
-
-        let max_innerprod = next_ip.iter().copied().fold(0.0_f64, f64::max);
-        let r = max_innerprod.sqrt();
-        println!(
-            "Cycle {}: max(||new_trial_vec_i||^2) = {:.3e}, max(||new_trial_vec_i||) = {:.3e}",
-            cycle + 1,
-            max_innerprod,
-            r
-        );
-
-        x1 = next_x1;
-        innerprod = next_ip;
-
-        if max_innerprod < conv_thresh {
+        if x1.shape()[1] == 0 {
+            // Residual is already (numerically) zero; x_accum is the answer.
+            last_nd = 0;
+            last_b = b_residual;
             break;
         }
+
+        // Reset the subspace for this restart.
+        all_innerprod.clear();
+        let mut nd: usize = 0;
+        let mut inner_converged = false;
+
+        for inner in 0..max_space {
+            if total_cycles >= max_cycle {
+                break;
+            }
+            total_cycles += 1;
+            let nblock = x1.shape()[1];
+
+            let axt = aop(x1.view());
+
+            xs.i_mut((.., nd..nd + nblock)).assign(&x1);
+            ax.i_mut((.., nd..nd + nblock)).assign(&axt);
+            all_innerprod.extend_from_slice(&innerprod);
+            nd += nblock;
+
+            // Orthogonalize axt against the full subspace; same algebra as before.
+            let xs_slc = xs.i((.., ..nd));
+            let ip_vec = rt::asarray((&all_innerprod, &device));
+            let coeffs = (xs_slc.t() % &axt) / ip_vec.i((.., None));
+            let x1_new = axt - &xs_slc % &coeffs;
+
+            let (next_x1, next_ip) = orth_block(x1_new.view(), lindep);
+
+            let max_innerprod = next_ip.iter().copied().fold(0.0_f64, f64::max);
+            let r = max_innerprod.sqrt();
+            println!(
+                "restart {} inner {} (total cycle {}): max(||v||^2) = {:.3e}, max(||v||) = {:.3e}",
+                restart_idx,
+                inner + 1,
+                total_cycles,
+                max_innerprod,
+                r
+            );
+
+            x1 = next_x1;
+            innerprod = next_ip;
+
+            if max_innerprod < conv_thresh {
+                inner_converged = true;
+                break;
+            }
+        }
+
+        last_nd = nd;
+        last_b = b_residual;
+
+        if inner_converged || total_cycles >= max_cycle {
+            break;
+        }
+
+        // Hard restart: solve the projected system, fold x_partial into x_accum,
+        // discard the subspace, and continue the outer loop.
+        let x_partial = projected_solve(xs.i((.., ..nd)), ax.i((.., ..nd)), &all_innerprod, last_b.view());
+        x_accum += &x_partial;
+        restart_idx += 1;
+        println!("---- restart {restart_idx}: x_accum refined, subspace reset ----");
     }
 
-    // Build and solve the projected system: (I + A_projected) c = b_projected.
-    let xs_slc = xs.i((.., ..nd));
-    let ax_slc = ax.i((.., ..nd));
+    // Final projected solve on the last subspace, using the matching residual.
+    if last_nd == 0 {
+        return x_accum;
+    }
+    let x_final = projected_solve(xs.i((.., ..last_nd)), ax.i((.., ..last_nd)), &all_innerprod, last_b.view());
+    x_accum + x_final
+}
 
-    // h[i, j] = dot(xs[:, i], ax[:, j]) + delta_ij * ||xs[:, i]||^2
-    //        = (xs_slc.T @ ax_slc)[i, j] + diagonal correction
+/// Solve the projected `(I + A_proj) c = g` system and reconstruct `Xs c`.
+///
+/// `xs_slc` and `ax_slc` are the subspace and its image under A, both `[n, nd]`. `inner` is the
+/// per-column squared norm of `xs_slc` (length `nd`). `b_proj_src` is the RHS that produced this
+/// subspace; the returned tensor has shape `[n, nset]`.
+fn projected_solve(xs_slc: TsrView, ax_slc: TsrView, inner: &[f64], b_proj_src: TsrView) -> Tsr {
+    let nd = xs_slc.shape()[1];
+    // h[i, j] = (xs.T @ ax)[i, j] + delta_ij * ||xs[:, i]||^2
     let mut h: Tsr = xs_slc.t() % &ax_slc;
     for i in 0..nd {
-        h[[i, i]] += all_innerprod[i];
+        h[[i, i]] += inner[i];
     }
-
-    // g[i, k] = dot(b[:, k], xs[:, i]) = (xs_slc.T @ b)[i, k]
-    let g: Tsr = xs_slc.t() % &b;
-
-    // Solve h c = g, then reconstruct x[:, k] = sum_i c[i, k] * xs[:, i] = xs c.
+    // g[i, k] = (xs.T @ b)[i, k]
+    let g: Tsr = xs_slc.t() % &b_proj_src;
     let c = rt::linalg::solve_general((h, g));
-    let mut x: Tsr = &xs_slc % &c;
-
-    if let Some(x0v) = x0 {
-        x += x0v;
-    }
-    x
+    &xs_slc % &c
 }
 
 /// Modified Gram-Schmidt over the **columns** of `vec`, keeping non-normalized
