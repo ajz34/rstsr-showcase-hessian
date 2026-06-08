@@ -75,6 +75,10 @@ pub fn krylov_block(
     // that produced it, so that the final projected solve uses a consistent pair.
     let mut last_nd: usize = 0;
     let mut last_b: Tsr = b_orig.clone();
+    // Track the most recent convergence signal so we can detect non-convergence
+    // at the end. Initialised to 0.0 so the "empty residual" early-exit at the
+    // top of the outer loop is treated as already-converged.
+    let mut last_max_innerprod: f64 = 0.0;
 
     while total_cycles < max_cycle {
         // Form this restart's RHS: b - (I+A) x_accum. On the first pass with no
@@ -132,6 +136,7 @@ pub fn krylov_block(
 
             x1 = next_x1;
             innerprod = next_ip;
+            last_max_innerprod = max_innerprod;
 
             if max_innerprod < conv_thresh {
                 inner_converged = true;
@@ -155,11 +160,24 @@ pub fn krylov_block(
     }
 
     // Final projected solve on the last subspace, using the matching residual.
-    if last_nd == 0 {
-        return x_accum;
+    let x_out: Tsr = if last_nd == 0 {
+        x_accum
+    } else {
+        let x_final = projected_solve(xs.i((.., ..last_nd)), ax.i((.., ..last_nd)), &all_innerprod, last_b.view());
+        x_accum + x_final
+    };
+
+    // Hard fail on non-convergence: a silently unconverged x propagates as a
+    // subtly wrong Hessian downstream, which is worse than crashing here.
+    if last_max_innerprod >= conv_thresh {
+        panic!(
+            "krylov_block failed to converge: max(||v||^2) = {:.3e} >= tol^2 = {:.3e} after {} cycles \
+             ({} restarts, max_cycle = {}, max_space = {}). Increase max_cycle or check the operator.",
+            last_max_innerprod, conv_thresh, total_cycles, restart_idx, max_cycle, max_space,
+        );
     }
-    let x_final = projected_solve(xs.i((.., ..last_nd)), ax.i((.., ..last_nd)), &all_innerprod, last_b.view());
-    x_accum + x_final
+
+    x_out
 }
 
 /// Solve the projected `(I + A_proj) c = g` system and reconstruct `Xs c`.

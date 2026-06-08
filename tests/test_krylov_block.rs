@@ -79,3 +79,19 @@ fn test_krylov_block_with_restart() {
     println!("[restart] max |residue| = {max_residue:.3e}");
     assert!(max_residue < 1e-5, "residue too large: {max_residue:.3e}");
 }
+
+#[test]
+#[should_panic(expected = "krylov_block failed to converge")]
+fn test_krylov_block_panics_on_nonconvergence() {
+    // Starve the solver: only 2 total cycles is far too few to reach tol = 1e-10
+    // on this 50x50 fixture (the well-resourced run takes 6 cycles). Returning
+    // a wrong x silently would propagate as a bad Hessian downstream, so the
+    // solver MUST panic instead.
+    let dict = read_npz_dict("02-7-krylov_testing_data.npz");
+    let a: Tsr = dict["A"].to_owned();
+    let b: Tsr = dict["b"].to_owned().into_reverse_axes();
+
+    let aop = |x: TsrView| -> Tsr { &a % &x };
+
+    let _ = krylov_block(aop, b.view(), None, 1e-10, 2, 14, 1e-13);
+}
