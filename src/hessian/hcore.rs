@@ -102,20 +102,19 @@ pub fn generator_hcore_deriv2(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usiz
 ///
 /// # Returns
 ///
-/// - `de_hcore` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian contribution from the core
-///   Hamiltonian.
+/// - `de_hcore` : shape `[3, 3, natm, natm]`. The Hessian contribution from the core Hamiltonian.
 pub fn get_hess_hcore(mol: &CInt, dm0: TsrView, atm_list: Option<&[usize]>) -> Tsr {
     let device = dm0.device();
     let nao = mol.nao();
     let (_aoslices, atm_indices) = filter_aoslices(mol, atm_list);
-    let natm_sel = atm_indices.len();
+    let natm = atm_indices.len();
 
     check_shape!(dm0.shape(), [nao, nao], "density matrix shape not correct.");
 
-    let mut de_hcore = rt::zeros(([3, 3, natm_sel, natm_sel], device));
+    let mut de_hcore = rt::zeros(([3, 3, natm, natm], device));
     let mut gen_hcore_deriv2 = generator_hcore_deriv2(mol, device);
 
-    for A in 0..natm_sel {
+    for A in 0..natm {
         let A_glob = atm_indices[A];
         for B in 0..=A {
             let B_glob = atm_indices[B];

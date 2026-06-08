@@ -6,13 +6,14 @@ use crate::prelude::*;
 ///
 /// - `mol` : [`CInt`]. The molecule object.
 /// - `device` : [`DeviceTsr`]. The device on which the returned tensor is allocated.
-/// - `atm_list` : optional list of atom indices for the Hessian. If `None`, all atoms are
-///   computed.
+/// - `atm_list` : optional list of atom indices for the Hessian. If `None`, all atoms are computed.
 ///
 /// # Returns
-/// -------
-/// - `de_nuc` : shape [3, 3, natm_sel, natm_sel]. The nuclear repulsion Hessian.
+///
+/// - `de_nuc` : shape `[3, 3, natm, natm]`. The nuclear repulsion Hessian.
 pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr, atm_list: Option<&[usize]>) -> Tsr {
+    // Note this is the number of atoms in the original molecule, not the selected atoms. We will select
+    // the sub-block at the end.
     let natm = mol.natm();
 
     // de_nuc: shape [3, 3, natm, natm]. The nuclear repulsion Hessian.
@@ -54,16 +55,7 @@ pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr, atm_list: Option<&[usiz
 
     match atm_list {
         None => de_nuc,
-        Some(list) => {
-            let natm_sel = list.len();
-            let mut de_nuc_sel: Tsr = rt::zeros(([3, 3, natm_sel, natm_sel], device));
-            for (a_loc, &a_glob) in list.iter().enumerate() {
-                for (b_loc, &b_glob) in list.iter().enumerate() {
-                    *&mut de_nuc_sel.i_mut((.., .., b_loc, a_loc)) += de_nuc.i((.., .., b_glob, a_glob));
-                }
-            }
-            de_nuc_sel
-        }
+        Some(list) => de_nuc.index_select(-1, list).index_select(-2, list),
     }
 }
 

@@ -23,6 +23,9 @@ fn test_atm_list_nuc_repl(hess_case: &CaseAmoniaRHF) {
     let full = hess.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), None);
     let sel = hess.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), Some(ATM_LIST));
     let expected = select_atoms(full.view(), ATM_LIST);
+
+    println!("full:\n{expected:12.6}");
+    println!("sel:\n{sel:12.6}");
     assert!(rt::allclose(sel.view(), expected.view(), (1e-10, 1e-12)));
 }
 

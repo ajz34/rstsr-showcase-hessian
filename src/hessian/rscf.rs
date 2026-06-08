@@ -32,6 +32,7 @@ pub struct RHessSCF<'a> {
 }
 
 impl<'a> RHessSCF<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mo_coeff: Tsr,
         mo_occ: Tsr,
@@ -420,10 +421,10 @@ impl<'a> RHessSCF<'a> {
         let mo_occ = self.mo_occ.view();
         let mo_energy = self.mo_energy.view();
         let dme0 = get_dme0_restricted(mo_coeff, mo_occ, mo_energy);
-        let atm_list_owned = self.atm_list.clone();
+        let atm_list = self.atm_list.clone();
 
         let de_skeleton = self.make_skeleton_hess();
-        let de_ovlp = self.ovlp_obj.make_hess(dme0.view(), atm_list_owned.as_deref());
+        let de_ovlp = self.ovlp_obj.make_hess(dme0.view(), atm_list.as_deref());
         let de_cphf = self.make_cphf_hess();
         de_skeleton + de_ovlp + de_cphf
     }

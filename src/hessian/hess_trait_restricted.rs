@@ -29,8 +29,8 @@ pub trait RHessCoreAPI {
     ///
     /// # Returns
     ///
-    /// - `hess` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian matrix for current SCF component,
-    ///   where `natm_sel = atm_list.len()` if `atm_list` is `Some`, else `mol.natm()`.
+    /// - `hess` : shape `[3, 3, natm, natm]`. The Hessian matrix for current SCF component, where
+    ///   `natm = atm_list.len()` if `atm_list` is `Some`, else `mol.natm()`.
     ///
     ///   Note the hessian should be of indices `[s, t, B, A]` for column major.
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr;
@@ -79,7 +79,7 @@ pub trait RHessElecInteractAPI {
     ///
     /// # Returns
     ///
-    /// - `hess` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian matrix for current SCF component.
+    /// - `hess` : shape `[3, 3, natm, natm]`. The Hessian matrix for current SCF component.
     ///
     ///   Note the hessian should be of indices `[s, t, B, A]` for column major.
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr;
@@ -94,8 +94,7 @@ pub trait RHessElecInteractAPI {
     ///
     /// # Returns
     ///
-    /// - `deriv_ao` : shape `[nao, nao, 3, natm_sel]`. The first-order skeleton derivative in AO
-    ///   basis.
+    /// - `deriv_ao` : shape `[nao, nao, 3, natm]`. The first-order skeleton derivative in AO basis.
     fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr;
 
     /// First order skeleton derivative in half-transformed MO basis.
@@ -108,7 +107,7 @@ pub trait RHessElecInteractAPI {
     ///
     /// # Returns
     ///
-    /// - `deriv_bra` : shape `[natm_sel, 3, nao, nocc]`. The first-order skeleton derivative in
+    /// - `deriv_bra` : shape `[nao, nocc, 3, natm]`. The first-order skeleton derivative in
     ///   half-transformed MO basis. Note that this function will handle the order of occupied
     ///   orbitals. If occupation number is not sorted contiguously, you may be extra cautious to
     ///   this function.

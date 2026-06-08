@@ -18,21 +18,21 @@ use crate::prelude::*;
 ///
 /// Returns
 /// -------
-/// - `de_ovlp` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian contribution from the overlap
-///   matrix derivative.
+/// - `de_ovlp` : shape `[3, 3, natm, natm]`. The Hessian contribution from the overlap matrix
+///   derivative.
 pub fn get_hess_ovlp(mol: &CInt, dme0: TsrView, atm_list: Option<&[usize]>) -> Tsr {
     let device = dme0.device();
     let nao = mol.nao();
     let (aoslices, _atm_indices) = filter_aoslices(mol, atm_list);
-    let natm_sel = aoslices.len();
+    let natm = aoslices.len();
 
     check_shape!(dme0.shape(), [nao, nao], "density matrix shape not correct.");
 
     let s2_aa = hess_intor(mol, "int1e_ipipovlp", "s1", None, device);
     let s2_ab = hess_intor(mol, "int1e_ipovlpip", "s1", None, device);
 
-    let mut de_ovlp = rt::zeros(([3, 3, natm_sel, natm_sel], device));
-    for A in 0..natm_sel {
+    let mut de_ovlp = rt::zeros(([3, 3, natm, natm], device));
+    for A in 0..natm {
         let [_, _, p0A, p1A] = aoslices[A];
         let slcA = rt::slice!(p0A, p1A);
         let scr = -2 * (s2_aa.i(slcA) * dme0.i(slcA)).sum_axes([0, 1]);
