@@ -326,4 +326,77 @@ impl<'a> RHessSCF<'a> {
         }
         de_cphf
     }
+
+    /// Compute the CP-HF contribution to the Hessian by running through the entire CP-HF workflow.
+    ///
+    /// - Compute the dimensionless CPHF right-hand side and necessary intermediates.
+    /// - Prepare the response for CPHF calculation.
+    /// - Solve the dimensionless CP-HF equation using a Krylov solver.
+    /// - Finalize the CP-HF results by computing necessary intermediates for Hessian assembly.
+    /// - Compute the CP-HF contribution to the Hessian using the finalized CP-HF results.
+    ///
+    /// # Returns
+    ///
+    /// - `de_cphf` : shape `[3, 3, natm, natm]`. The CP-HF contribution to the Hessian.
+    pub fn make_cphf_hess(&mut self) -> Tsr {
+        let pre_cphf_dict = self.compute_dimless_cphf_rhs();
+        let f1mo = pre_cphf_dict["f1mo"].view();
+        let s1mo = pre_cphf_dict["s1mo"].view();
+        let rhs = pre_cphf_dict["rhs"].view();
+
+        self.make_response_preparation();
+        let mo1 = self.solve_dimless_cphf(rhs.view());
+        let finalize_dict = self.finalize_cphf(f1mo.view(), s1mo.view(), mo1.view());
+        let mo1 = finalize_dict["mo1"].view();
+        let mo_e1 = finalize_dict["mo_e1"].view();
+
+        self.get_cphf_hess(f1mo.view(), s1mo.view(), mo1.view(), mo_e1.view())
+    }
+
+    /// Compute the total skeleton contribution to the Hessian.
+    ///
+    /// **Total** means that we sum over all skeleton contributions from both core and
+    /// electron-interaction objects.
+    ///
+    /// # Parameters
+    ///
+    /// - `mo_coeff` : shape `[nao, nmo]`. The molecular orbital coefficients.
+    /// - `mo_occ` : shape `[nmo]`. The orbital occupations.
+    ///
+    /// # Returns
+    ///
+    /// - `de_skeleton` : shape `[3, 3, natm, natm]`. The total skeleton contribution to the
+    ///   Hessian.
+    pub fn make_skeleton_hess(&mut self) -> Tsr {
+        let natm = self.natm();
+        let mo_coeff = self.mo_coeff.view();
+        let mo_occ = self.mo_occ.view();
+
+        let device = self.mo_coeff.device().clone();
+        let mut de_skeleton = rt::zeros(([3, 3, natm, natm], &device));
+        for core_obj in self.core_list.iter_mut() {
+            de_skeleton += core_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view());
+        }
+        for el_obj in self.el_list.iter_mut() {
+            de_skeleton += el_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view());
+        }
+        de_skeleton
+    }
+
+    /// Compute the total Hessian by summing over skeleton, overlap, and CP-HF contributions.
+    ///
+    /// # Returns
+    ///
+    /// - `de_hess` : shape `[3, 3, natm, natm]`. The total Hessian.
+    pub fn make_hess(&mut self) -> Tsr {
+        let mo_coeff = self.mo_coeff.view();
+        let mo_occ = self.mo_occ.view();
+        let mo_energy = self.mo_energy.view();
+        let dme0 = get_dme0_restricted(mo_coeff, mo_occ, mo_energy);
+
+        let de_skeleton = self.make_skeleton_hess();
+        let de_ovlp = self.ovlp_obj.make_hess(dme0.view());
+        let de_cphf = self.make_cphf_hess();
+        de_skeleton + de_ovlp + de_cphf
+    }
 }

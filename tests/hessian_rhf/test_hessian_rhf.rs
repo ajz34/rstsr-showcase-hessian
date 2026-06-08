@@ -28,9 +28,10 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
     let mo_occ = mo_occ.view().into_contig(ColMajor);
     let mo_energy = mo_energy.view().into_contig(ColMajor);
     let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
+    let mut nuc_repl_obj = HessNucRepl::new(mol);
     let mut hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
     let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
-    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
+    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
     let config = RHessSCFConfig::default();
     let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config);
@@ -66,4 +67,26 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
     let ref_de_cphf = ref_dict["de_cphf"].transpose([2, 3, 0, 1]);
     assert!(rt::allclose(de_cphf.view(), ref_de_cphf.view(), (1e-4, 1e-6)));
     assert_abs_diff_eq!(fp(de_cphf.view()), 1.0888788930763051, epsilon = 1e-6);
+}
+
+#[rstest]
+fn test_make_hess(hess_case: &CaseAmoniaRHF) {
+    let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, mo_energy, ref_dict } = hess_case;
+
+    let mo_coeff = mo_coeff.view().into_contig(ColMajor);
+    let mo_occ = mo_occ.view().into_contig(ColMajor);
+    let mo_energy = mo_energy.view().into_contig(ColMajor);
+    let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
+    let mut nuc_repl_obj = HessNucRepl::new(mol);
+    let mut hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
+    let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
+    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
+    let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
+    let config = RHessSCFConfig::default();
+    let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config);
+
+    let de_hess = hess_scf.make_hess();
+    let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
+    assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 1e-6)));
+    assert_abs_diff_eq!(fp(de_hess.view()), 1.4704252379360374, epsilon = 1e-6);
 }

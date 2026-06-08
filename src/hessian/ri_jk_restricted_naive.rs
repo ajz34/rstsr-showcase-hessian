@@ -896,8 +896,10 @@ impl RHessRIJKNaive {
 
 impl RHessElecInteractAPI for RHessRIJKNaive {
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
-        let de_J_skeleton_dict = get_rij_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
-        let de_K_skeleton_dict = get_rik_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+        let de_J_skeleton_dict =
+            get_decomposed_rij_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+        let de_K_skeleton_dict =
+            get_decomposed_rik_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
         let result = &mut self.result;
         result.extend(de_J_skeleton_dict);
         result.extend(de_K_skeleton_dict);
