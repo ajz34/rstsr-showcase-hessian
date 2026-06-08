@@ -28,6 +28,7 @@ pub struct RHessSCF<'a> {
     pub core_list: Vec<&'a mut dyn RHessCoreAPI>,
     pub el_list: Vec<&'a mut dyn RHessElecInteractAPI>,
     pub config: RHessSCFConfig,
+    pub atm_list: Option<Vec<usize>>,
 }
 
 impl<'a> RHessSCF<'a> {
@@ -39,13 +40,36 @@ impl<'a> RHessSCF<'a> {
         core_list: Vec<&'a mut dyn RHessCoreAPI>,
         el_list: Vec<&'a mut dyn RHessElecInteractAPI>,
         config: RHessSCFConfig,
+        atm_list: Option<&[usize]>,
     ) -> Self {
-        Self { mo_coeff, mo_occ, mo_energy, ovlp_obj, core_list, el_list, config }
+        Self {
+            mo_coeff,
+            mo_occ,
+            mo_energy,
+            ovlp_obj,
+            core_list,
+            el_list,
+            config,
+            atm_list: atm_list.map(|x| x.to_vec()),
+        }
     }
 
-    /// Number of atoms in the molecule, for which the hessian is computed.
+    /// Number of atoms over which the Hessian is computed. This is `atm_list.len()` if
+    /// `atm_list` is `Some`, otherwise the total number of atoms in the molecule.
     pub fn natm(&self) -> usize {
-        self.ovlp_obj.natm()
+        match &self.atm_list {
+            Some(list) => list.len(),
+            None => self.ovlp_obj.natm(),
+        }
+    }
+
+    /// Return the list of (global) atom indices the Hessian is computed for, ordered the same
+    /// way as the local indexing used in the returned Hessian.
+    pub fn atm_indices(&self) -> Vec<usize> {
+        match &self.atm_list {
+            Some(list) => list.clone(),
+            None => (0..self.ovlp_obj.natm()).collect(),
+        }
     }
 
     /// Compute the dimensionless CPHF right-hand side, along with necessary intermediates for later
@@ -83,6 +107,8 @@ impl<'a> RHessSCF<'a> {
         let evir = mo_energy.bool_select(-1, &viridx);
         let nocc = occidx.iter().filter(|&&x| x).count();
         let natm = self.natm();
+        let atm_indices = self.atm_indices();
+        let atm_list = self.atm_list.as_deref();
 
         let e_ai = evir.i((.., None)) - eocc.i((None, ..));
         let e_ai_shift = &e_ai + level_shift;
@@ -93,8 +119,8 @@ impl<'a> RHessSCF<'a> {
         let mut f1ao_core: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
         for core_obj in self.core_list.iter() {
             if let Some(mut gen_core_deriv1) = core_obj.generator_deriv1() {
-                for A in 0..natm {
-                    *&mut f1ao_core.i_mut((Ellipsis, A)) += gen_core_deriv1(A);
+                for (A_loc, &A_glob) in atm_indices.iter().enumerate() {
+                    *&mut f1ao_core.i_mut((Ellipsis, A_loc)) += gen_core_deriv1(A_glob);
                 }
             }
         }
@@ -102,7 +128,7 @@ impl<'a> RHessSCF<'a> {
         // fock skeleton derivative (electron interaction contribution, half-transformed to bra)
         let mut f1bra_el: Tsr = rt::zeros(([nao, nocc, 3, natm], &device));
         for el_obj in self.el_list.iter_mut() {
-            f1bra_el += el_obj.get_deriv1_bra(mo_coeff.view(), mo_occ.view());
+            f1bra_el += el_obj.get_deriv1_bra(mo_coeff.view(), mo_occ.view(), atm_list);
         }
 
         // construct whole f1mo
@@ -113,8 +139,8 @@ impl<'a> RHessSCF<'a> {
 
         let mut gen_ovlp_deriv1 = self.ovlp_obj.generator_deriv1();
         let mut s1ao: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
-        for A in 0..natm {
-            *&mut s1ao.i_mut((Ellipsis, A)) += gen_ovlp_deriv1(A);
+        for (A_loc, &A_glob) in atm_indices.iter().enumerate() {
+            *&mut s1ao.i_mut((Ellipsis, A_loc)) += gen_ovlp_deriv1(A_glob);
         }
         let s1mo = mo_coeff.t() % &s1ao % &mocc;
 
@@ -371,14 +397,15 @@ impl<'a> RHessSCF<'a> {
         let natm = self.natm();
         let mo_coeff = self.mo_coeff.view();
         let mo_occ = self.mo_occ.view();
+        let atm_list = self.atm_list.as_deref();
 
         let device = self.mo_coeff.device().clone();
         let mut de_skeleton = rt::zeros(([3, 3, natm, natm], &device));
         for core_obj in self.core_list.iter_mut() {
-            de_skeleton += core_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view());
+            de_skeleton += core_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), atm_list);
         }
         for el_obj in self.el_list.iter_mut() {
-            de_skeleton += el_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view());
+            de_skeleton += el_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), atm_list);
         }
         de_skeleton
     }
@@ -393,9 +420,10 @@ impl<'a> RHessSCF<'a> {
         let mo_occ = self.mo_occ.view();
         let mo_energy = self.mo_energy.view();
         let dme0 = get_dme0_restricted(mo_coeff, mo_occ, mo_energy);
+        let atm_list_owned = self.atm_list.clone();
 
         let de_skeleton = self.make_skeleton_hess();
-        let de_ovlp = self.ovlp_obj.make_hess(dme0.view());
+        let de_ovlp = self.ovlp_obj.make_hess(dme0.view(), atm_list_owned.as_deref());
         let de_cphf = self.make_cphf_hess();
         de_skeleton + de_ovlp + de_cphf
     }

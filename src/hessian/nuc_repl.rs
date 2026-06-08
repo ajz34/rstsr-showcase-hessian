@@ -6,11 +6,13 @@ use crate::prelude::*;
 ///
 /// - `mol` : [`CInt`]. The molecule object.
 /// - `device` : [`DeviceTsr`]. The device on which the returned tensor is allocated.
+/// - `atm_list` : optional list of atom indices for the Hessian. If `None`, all atoms are
+///   computed.
 ///
 /// # Returns
 /// -------
-/// - `de_nuc` : shape [3, 3, natm, natm]. The nuclear repulsion Hessian.
-pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr) -> Tsr {
+/// - `de_nuc` : shape [3, 3, natm_sel, natm_sel]. The nuclear repulsion Hessian.
+pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr, atm_list: Option<&[usize]>) -> Tsr {
     let natm = mol.natm();
 
     // de_nuc: shape [3, 3, natm, natm]. The nuclear repulsion Hessian.
@@ -50,7 +52,19 @@ pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr) -> Tsr {
         *&mut de_nuc.i_mut((.., .., A, ..)) += &tmp2;
     }
 
-    de_nuc
+    match atm_list {
+        None => de_nuc,
+        Some(list) => {
+            let natm_sel = list.len();
+            let mut de_nuc_sel: Tsr = rt::zeros(([3, 3, natm_sel, natm_sel], device));
+            for (a_loc, &a_glob) in list.iter().enumerate() {
+                for (b_loc, &b_glob) in list.iter().enumerate() {
+                    *&mut de_nuc_sel.i_mut((.., .., b_loc, a_loc)) += de_nuc.i((.., .., b_glob, a_glob));
+                }
+            }
+            de_nuc_sel
+        }
+    }
 }
 
 /// Hessian contribution from nuclear repulsion.
@@ -65,8 +79,8 @@ impl HessNucRepl {
 }
 
 impl RHessCoreAPI for HessNucRepl {
-    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, _mo_occ: TsrView) -> Tsr {
-        get_nuc_repl_hess(&self.mol, mo_coeff.device())
+    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, _mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
+        get_nuc_repl_hess(&self.mol, mo_coeff.device(), atm_list)
     }
 
     fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>> {

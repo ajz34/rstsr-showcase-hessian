@@ -15,7 +15,7 @@ fn test_f1ao(hess_case: &CaseAmoniaRHF) {
     let gen_h1ao = hess_hcore_obj.generator_deriv1().unwrap();
     let h1ao_list = (0..natm).map(gen_h1ao).collect_vec();
     let h1ao = rt::stack((h1ao_list, -1));
-    let jk1ao = hess_rijk_obj.get_deriv1_ao(mo_coeff.view(), mo_occ.view());
+    let jk1ao = hess_rijk_obj.get_deriv1_ao(mo_coeff.view(), mo_occ.view(), None);
     let f1ao = &h1ao + &jk1ao;
     assert_abs_diff_eq!(fp(f1ao.view().swapaxes(0, 1)), 0.03306328817997084, epsilon = 1e-6);
 }
@@ -34,7 +34,7 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
     let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
     let config = RHessSCFConfig::default();
-    let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config);
+    let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config, None);
 
     // before krylov, first obtain dimensionless rhs part
     let pre_cphf_dict = hess_scf.compute_dimless_cphf_rhs();
@@ -83,7 +83,7 @@ fn test_make_hess(hess_case: &CaseAmoniaRHF) {
     let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
     let config = RHessSCFConfig::default();
-    let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config);
+    let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config, None);
 
     let de_hess = hess_scf.make_hess();
     let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);

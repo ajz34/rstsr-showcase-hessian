@@ -24,13 +24,16 @@ pub trait RHessCoreAPI {
     /// - `mo_coeff` : shape `[nao, nmo]`. Molecular orbital coefficients.
     /// - `mo_occ` : shape `[nmo]`. Molecular orbital occupation numbers. In usual cases, the
     ///   occupied orbitals should have occupation 2, and virtual orbitals should have occupation 0.
+    /// - `atm_list` : optional list of atom indices to compute the Hessian for. If `None`, all
+    ///   atoms are computed.
     ///
     /// # Returns
     ///
-    /// - `hess` : shape `[3, 3, natm, natm]`. The Hessian matrix for current SCF component.
+    /// - `hess` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian matrix for current SCF component,
+    ///   where `natm_sel = atm_list.len()` if `atm_list` is `Some`, else `mol.natm()`.
     ///
     ///   Note the hessian should be of indices `[s, t, B, A]` for column major.
-    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr;
+    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr;
 
     /// Generate the function to compute the first-order derivative of core component.
     ///
@@ -39,7 +42,8 @@ pub trait RHessCoreAPI {
     ///
     /// # Parameters (in closure)
     ///
-    /// - `A` : usize. The atom index for which the derivative is taken.
+    /// - `A` : usize. The atom index (global, in original molecule) for which the derivative is
+    ///   taken.
     ///
     /// # Returns (in closure)
     ///
@@ -70,13 +74,15 @@ pub trait RHessElecInteractAPI {
     /// - `mo_coeff` : shape `[nao, nmo]`. Molecular orbital coefficients.
     /// - `mo_occ` : shape `[nmo]`. Molecular orbital occupation numbers. In usual cases, the
     ///   occupied orbitals should have occupation 2, and virtual orbitals should have occupation 0.
+    /// - `atm_list` : optional list of atom indices to compute the Hessian for. If `None`, all
+    ///   atoms are computed.
     ///
     /// # Returns
     ///
-    /// - `hess` : shape `[3, 3, natm, natm]`. The Hessian matrix for current SCF component.
+    /// - `hess` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian matrix for current SCF component.
     ///
     ///   Note the hessian should be of indices `[s, t, B, A]` for column major.
-    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr;
+    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr;
 
     /// First order skeleton derivative in AO basis.
     ///
@@ -84,11 +90,13 @@ pub trait RHessElecInteractAPI {
     ///
     /// - `mo_coeff` : shape `[nao, nmo]`. Molecular orbital coefficients.
     /// - `mo_occ` : shape `[nmo]`. Molecular orbital occupation numbers.
+    /// - `atm_list` : optional list of atom indices over which derivatives are computed.
     ///
     /// # Returns
     ///
-    /// - `deriv_ao` : shape `[nao, nao, 3, natm]`. The first-order skeleton derivative in AO basis.
-    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr;
+    /// - `deriv_ao` : shape `[nao, nao, 3, natm_sel]`. The first-order skeleton derivative in AO
+    ///   basis.
+    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr;
 
     /// First order skeleton derivative in half-transformed MO basis.
     ///
@@ -96,10 +104,11 @@ pub trait RHessElecInteractAPI {
     ///
     /// - `mo_coeff` : shape `[nao, nmo]`. Molecular orbital coefficients.
     /// - `mo_occ` : shape `[nmo]`. Molecular orbital occupation numbers.
+    /// - `atm_list` : optional list of atom indices over which derivatives are computed.
     ///
     /// # Returns
     ///
-    /// - `deriv_bra` : shape `[natm, 3, nao, nocc]`. The first-order skeleton derivative in
+    /// - `deriv_bra` : shape `[natm_sel, 3, nao, nocc]`. The first-order skeleton derivative in
     ///   half-transformed MO basis. Note that this function will handle the order of occupied
     ///   orbitals. If occupation number is not sorted contiguously, you may be extra cautious to
     ///   this function.
@@ -120,10 +129,10 @@ pub trait RHessElecInteractAPI {
     /// [`get_deriv1_ao`]
     ///
     /// [`get_deriv1_ao`]: Self::get_deriv1_ao
-    fn get_deriv1_bra(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
+    fn get_deriv1_bra(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         let occidx = mo_occ.view().greater(0).into_vec();
         let mocc = mo_coeff.bool_select(-1, &occidx);
-        self.get_deriv1_ao(mo_coeff, mo_occ) % mocc
+        self.get_deriv1_ao(mo_coeff, mo_occ, atm_list) % mocc
     }
 
     /// Prepare the data for response calculation.

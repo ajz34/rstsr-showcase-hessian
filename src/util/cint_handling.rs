@@ -78,3 +78,20 @@ pub fn get_ecp_atoms(mol: &CInt) -> Vec<usize> {
     // remove duplicates and sort
     mol.ecpbas.iter().map(|&ecpbas| ecpbas[ATOM_OF] as usize).sorted().dedup().collect_vec()
 }
+
+/// Filter the atom-slice array according to an optional list of atom indices.
+///
+/// When `atm_list` is `None`, returns the full slices (length `mol.natm()`) and all indices.
+/// When `atm_list` is `Some(&[i, j, ...])`, returns slices for only those atoms (length
+/// `list.len()`) and the same list as the index mapping (local → global).
+pub fn filter_aoslices(mol: &CInt, atm_list: Option<&[usize]>) -> (Vec<[usize; 4]>, Vec<usize>) {
+    let full_slices = mol.aoslice_by_atom();
+    match atm_list {
+        None => (full_slices, (0..mol.natm()).collect()),
+        Some(list) => {
+            let slices = list.iter().map(|&i| full_slices[i]).collect();
+            let indices = list.to_vec();
+            (slices, indices)
+        },
+    }
+}

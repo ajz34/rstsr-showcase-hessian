@@ -13,24 +13,26 @@ use crate::prelude::*;
 ///
 /// - `mol` : [`CInt`]. The molecule object.
 /// - `dme0` : shape `[nao, nao]`. The energy-weighted density matrix for current SCF component.
+/// - `atm_list` : optional list of atom indices to compute the Hessian for. If `None`, all atoms
+///   are computed.
 ///
 /// Returns
 /// -------
-/// - `de_ovlp` : shape `[3, 3, natm, natm]`. The Hessian contribution from the overlap matrix
-///   derivative.
-pub fn get_hess_ovlp(mol: &CInt, dme0: TsrView) -> Tsr {
+/// - `de_ovlp` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian contribution from the overlap
+///   matrix derivative.
+pub fn get_hess_ovlp(mol: &CInt, dme0: TsrView, atm_list: Option<&[usize]>) -> Tsr {
     let device = dme0.device();
-    let natm = mol.natm();
     let nao = mol.nao();
-    let aoslices = mol.aoslice_by_atom();
+    let (aoslices, _atm_indices) = filter_aoslices(mol, atm_list);
+    let natm_sel = aoslices.len();
 
     check_shape!(dme0.shape(), [nao, nao], "density matrix shape not correct.");
 
     let s2_aa = hess_intor(mol, "int1e_ipipovlp", "s1", None, device);
     let s2_ab = hess_intor(mol, "int1e_ipovlpip", "s1", None, device);
 
-    let mut de_ovlp = rt::zeros(([3, 3, natm, natm], device));
-    for A in 0..natm {
+    let mut de_ovlp = rt::zeros(([3, 3, natm_sel, natm_sel], device));
+    for A in 0..natm_sel {
         let [_, _, p0A, p1A] = aoslices[A];
         let slcA = rt::slice!(p0A, p1A);
         let scr = -2 * (s2_aa.i(slcA) * dme0.i(slcA)).sum_axes([0, 1]);
@@ -59,9 +61,9 @@ pub fn get_hess_ovlp(mol: &CInt, dme0: TsrView) -> Tsr {
 ///
 /// # Returns
 ///
-/// - `FnMut(A: usize, B: usize) -> Tsr`. A function that computes the first derivative of the
-///   overlap matrix with respect to the nuclear coordinates. Input is the atom index A. The
-///   returned array has shape [3, nao, nao].
+/// - `FnMut(A: usize) -> Tsr`. A function that computes the first derivative of the overlap matrix
+///   with respect to the nuclear coordinates. Input is the global atom index A. The returned array
+///   has shape `[nao, nao, 3]`.
 pub fn generator_ovlp_deriv1(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usize) -> Tsr {
     // preparation
     let device = device.clone();
@@ -100,8 +102,8 @@ impl RHessOvlp {
         Self { mol: mol.clone(), device: device.clone() }
     }
 
-    pub fn make_hess(&self, dme0: TsrView) -> Tsr {
-        get_hess_ovlp(&self.mol, dme0)
+    pub fn make_hess(&self, dme0: TsrView, atm_list: Option<&[usize]>) -> Tsr {
+        get_hess_ovlp(&self.mol, dme0, atm_list)
     }
 
     pub fn generator_deriv1(&self) -> impl FnMut(usize) -> Tsr {

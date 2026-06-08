@@ -97,22 +97,29 @@ pub fn generator_hcore_deriv2(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usiz
 ///
 /// - `mol` : [`CInt`]. The molecule object.
 /// - `dm0` : shape [nao, nao]. The SCF density matrix.
+/// - `atm_list` : optional list of atom indices to compute the Hessian for. If `None`, all atoms
+///   are computed.
 ///
 /// # Returns
-/// - `de_hcore` : shape [3, 3, natm, natm]. The Hessian contribution from the core Hamiltonian.
-pub fn get_hess_hcore(mol: &CInt, dm0: TsrView) -> Tsr {
+///
+/// - `de_hcore` : shape `[3, 3, natm_sel, natm_sel]`. The Hessian contribution from the core
+///   Hamiltonian.
+pub fn get_hess_hcore(mol: &CInt, dm0: TsrView, atm_list: Option<&[usize]>) -> Tsr {
     let device = dm0.device();
-    let natm = mol.natm();
     let nao = mol.nao();
+    let (_aoslices, atm_indices) = filter_aoslices(mol, atm_list);
+    let natm_sel = atm_indices.len();
 
     check_shape!(dm0.shape(), [nao, nao], "density matrix shape not correct.");
 
-    let mut de_hcore = rt::zeros(([3, 3, natm, natm], device));
+    let mut de_hcore = rt::zeros(([3, 3, natm_sel, natm_sel], device));
     let mut gen_hcore_deriv2 = generator_hcore_deriv2(mol, device);
 
-    for A in 0..natm {
+    for A in 0..natm_sel {
+        let A_glob = atm_indices[A];
         for B in 0..=A {
-            let hcore_deriv2 = gen_hcore_deriv2(A, B);
+            let B_glob = atm_indices[B];
+            let hcore_deriv2 = gen_hcore_deriv2(A_glob, B_glob);
             *&mut de_hcore.i_mut((.., .., B, A)) += (hcore_deriv2 * &dm0).sum_axes((0, 1));
         }
         for B in 0..A {
@@ -180,9 +187,9 @@ impl HessHcore {
 }
 
 impl RHessCoreAPI for HessHcore {
-    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
+    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         let dm0 = get_dm0_restricted(mo_coeff, mo_occ);
-        get_hess_hcore(&self.mol, dm0.view())
+        get_hess_hcore(&self.mol, dm0.view(), atm_list)
     }
 
     fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>> {

@@ -1,3 +1,6 @@
+#![allow(clippy::deref_addrof)]
+
+pub mod test_atm_list;
 pub mod test_component_core;
 pub mod test_component_rijk_naive;
 pub mod test_hessian_rhf;

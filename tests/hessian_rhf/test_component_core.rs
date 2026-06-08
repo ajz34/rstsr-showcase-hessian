@@ -10,7 +10,7 @@ fn test_hess_nuc_repl(hess_case: &CaseAmoniaRHF) {
 
     // compute results
     let mut hess_nuc_repl = HessNucRepl::new(mol);
-    let de_nuc_repl = hess_nuc_repl.make_skeleton_hess(mo_coeff.view(), mo_occ.view());
+    let de_nuc_repl = hess_nuc_repl.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), None);
 
     // compare to reference
     let de_nuc_repl_ref = ref_dict["de_nuc"].to_owned().into_transpose((2, 3, 0, 1));
@@ -35,7 +35,7 @@ fn test_hess_hcore(hess_case: &CaseAmoniaRHF) {
 
     // compute results
     let mut hess_hcore = HessHcore::new(mol, &DeviceTsr::default());
-    let de_hcore = hess_hcore.make_skeleton_hess(mo_coeff.view(), mo_occ.view());
+    let de_hcore = hess_hcore.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), None);
 
     // compare to reference
     let de_hcore_ref = ref_dict["de_hcore"].to_owned().into_reverse_axes();
@@ -60,7 +60,7 @@ fn test_hess_ovlp(hess_case: &CaseAmoniaRHF) {
     // compute results
     let dme0 = get_dme0_restricted(mo_coeff.view(), mo_occ.view(), mo_energy.view());
     let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
-    let de_ovlp = ovlp_obj.make_hess(dme0.view());
+    let de_ovlp = ovlp_obj.make_hess(dme0.view(), None);
 
     // compare to reference
     let de_ovlp_ref = ref_dict["de_ovlp"].to_owned().into_transpose((2, 3, 0, 1));

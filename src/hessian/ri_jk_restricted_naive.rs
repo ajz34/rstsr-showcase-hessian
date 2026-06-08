@@ -37,12 +37,13 @@ pub fn get_decomposed_rij_skeleton_deriv2_naive(
     aux: &CInt,
     mo_coeff: TsrView,
     mo_occ: TsrView,
+    atm_list: Option<&[usize]>,
 ) -> HashMap<&'static str, Tsr> {
     // some elementary information
-    let natm = mol.natm();
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
-    let aoslices = mol.aoslice_by_atom();
-    let auxslices = aux.aoslice_by_atom();
+    let (aoslices, _) = filter_aoslices(mol, atm_list);
+    let (auxslices, _) = filter_aoslices(aux, atm_list);
+    let natm = aoslices.len();
     let device = mo_coeff.device();
 
     // integrals we need
@@ -307,11 +308,12 @@ pub fn get_decomposed_rik_skeleton_deriv2_naive(
     aux: &CInt,
     mo_coeff: TsrView,
     mo_occ: TsrView,
+    atm_list: Option<&[usize]>,
 ) -> HashMap<&'static str, Tsr> {
     // some elementary information
-    let natm = mol.natm();
-    let aoslices = mol.aoslice_by_atom();
-    let auxslices = aux.aoslice_by_atom();
+    let (aoslices, _) = filter_aoslices(mol, atm_list);
+    let (auxslices, _) = filter_aoslices(aux, atm_list);
+    let natm = aoslices.len();
     let device = mo_coeff.device();
 
     // occupation: mocc_2 = mocc * sqrt(occ)
@@ -643,12 +645,13 @@ pub fn get_rij_deriv1_ao_naive(
     aux: &CInt,
     mo_coeff: TsrView,
     mo_occ: TsrView,
+    atm_list: Option<&[usize]>,
 ) -> HashMap<&'static str, Tsr> {
     // some elementary information
-    let natm = mol.natm();
     let nao = mol.nao();
-    let aoslices = mol.aoslice_by_atom();
-    let auxslices = aux.aoslice_by_atom();
+    let (aoslices, _) = filter_aoslices(mol, atm_list);
+    let (auxslices, _) = filter_aoslices(aux, atm_list);
+    let natm = aoslices.len();
     let device = mo_coeff.device();
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
 
@@ -742,12 +745,13 @@ pub fn get_rik_deriv1_ao_naive(
     aux: &CInt,
     mo_coeff: TsrView,
     mo_occ: TsrView,
+    atm_list: Option<&[usize]>,
 ) -> HashMap<&'static str, Tsr> {
     // some elementary information
-    let natm = mol.natm();
     let nao = mol.nao();
-    let aoslices = mol.aoslice_by_atom();
-    let auxslices = aux.aoslice_by_atom();
+    let (aoslices, _) = filter_aoslices(mol, atm_list);
+    let (auxslices, _) = filter_aoslices(aux, atm_list);
+    let natm = aoslices.len();
     let device = mo_coeff.device();
 
     // occupation: mocc_2 = mocc * sqrt(occ)
@@ -895,11 +899,11 @@ impl RHessRIJKNaive {
 }
 
 impl RHessElecInteractAPI for RHessRIJKNaive {
-    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
+    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         let de_J_skeleton_dict =
-            get_decomposed_rij_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+            get_decomposed_rij_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
         let de_K_skeleton_dict =
-            get_decomposed_rik_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+            get_decomposed_rik_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
         let result = &mut self.result;
         result.extend(de_J_skeleton_dict);
         result.extend(de_K_skeleton_dict);
@@ -908,9 +912,9 @@ impl RHessElecInteractAPI for RHessRIJKNaive {
         self.scale_j * de_J - 0.5 * self.scale_k * de_K
     }
 
-    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
-        let j1ao_dict = get_rij_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
-        let k1ao_dict = get_rik_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view());
+    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
+        let j1ao_dict = get_rij_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
+        let k1ao_dict = get_rik_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
         let result = &mut self.result;
         result.extend(j1ao_dict);
         result.extend(k1ao_dict);
