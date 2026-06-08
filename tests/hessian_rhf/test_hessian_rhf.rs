@@ -19,3 +19,24 @@ fn test_f1ao(hess_case: &CaseAmoniaRHF) {
     let f1ao = &h1ao + &jk1ao;
     assert_abs_diff_eq!(fp(f1ao.view().swapaxes(0, 1)), 0.03306328817997084, epsilon = 1e-6);
 }
+
+#[rstest]
+fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
+    let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, mo_energy, .. } = hess_case;
+
+    let mo_coeff = mo_coeff.view().into_contig(ColMajor);
+    let mo_occ = mo_occ.view().into_contig(ColMajor);
+    let mo_energy = mo_energy.view().into_contig(ColMajor);
+    let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
+    let mut hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
+    let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
+    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
+    let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
+    let config = RHessSCFConfig::default();
+    let mut rscf_hess = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config);
+    let pre_cphf_dict = rscf_hess.compute_dimless_cphf_rhs();
+
+    assert_abs_diff_eq!(fp(pre_cphf_dict["rhs"].swapaxes(0, 1)), -0.027755691019085788, epsilon = 1e-6);
+    assert_abs_diff_eq!(fp(pre_cphf_dict["f1mo"].swapaxes(0, 1)), 9.624352641672411, epsilon = 1e-6);
+    assert_abs_diff_eq!(fp(pre_cphf_dict["s1mo"].swapaxes(0, 1)), -3.0146480401818847, epsilon = 1e-6);
+}

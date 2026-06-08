@@ -162,7 +162,7 @@ class TestHessianRHF(unittest.TestCase):
         # numerical check
         self.assertAlmostEqual(lib.fp(resp), -0.2656880294075937)
 
-    def test_dimensionless_cphf_rhs(self):
+    def test_dimensionless_cphf(self):
         hess_impl = RHessSCF(
             mol,
             mf.mo_coeff,
@@ -176,6 +176,8 @@ class TestHessianRHF(unittest.TestCase):
         # before krylov, first obtain dimensionless rhs part
         pre_cphf_dict = hess_impl.compute_dimensionless_cphf_rhs()
         self.assertAlmostEqual(lib.fp(pre_cphf_dict["rhs"]), -0.027755691019085788)
+        self.assertAlmostEqual(lib.fp(pre_cphf_dict["f1mo"]), 9.624352641672411)
+        self.assertAlmostEqual(lib.fp(pre_cphf_dict["s1mo"]), -3.0146480401818847)
 
         # solve cphf
         rhs = pre_cphf_dict["rhs"]

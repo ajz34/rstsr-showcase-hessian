@@ -68,14 +68,14 @@ pub fn generator_ovlp_deriv1(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usize
     let nao = mol.nao();
     let aoslices = mol.aoslice_by_atom();
 
-    let int1e_ipovlpip = hess_intor(mol, "int1e_ipovlpip", "s1", None, &device);
+    let int1e_ipovlp = hess_intor(mol, "int1e_ipovlp", "s1", None, &device);
 
     move |A: usize| {
         let [_, _, p0, p1] = aoslices[A];
         let slc = rt::slice!(p0, p1);
         let mut s1ao = rt::zeros(([nao, nao, 3], &device));
-        *&mut s1ao.i_mut((slc, ..)) -= int1e_ipovlpip.i(slc);
-        *&mut s1ao.i_mut((.., slc)) -= int1e_ipovlpip.i(slc).swapaxes(0, 1);
+        *&mut s1ao.i_mut((slc, ..)) -= int1e_ipovlp.i(slc);
+        *&mut s1ao.i_mut((.., slc)) -= int1e_ipovlp.i(slc).swapaxes(0, 1);
         s1ao
     }
 }
@@ -106,5 +106,9 @@ impl RHessOvlp {
 
     pub fn generator_deriv1(&self) -> impl FnMut(usize) -> Tsr {
         generator_ovlp_deriv1(&self.mol, &self.device)
+    }
+
+    pub fn natm(&self) -> usize {
+        self.mol.natm()
     }
 }
