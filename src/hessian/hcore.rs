@@ -7,11 +7,11 @@ use crate::prelude::*;
 /// - `mol` : [`CInt`]. The molecule object.
 /// - `device` : [`DeviceTsr`]. The device on which the returned tensor is allocated.
 ///
-/// Returns
-/// -------
-/// - `get_hcore_deriv_at_atoms` : `FnMut(A: usize, B: usize) -> Tsr`. A function that computes the
-///   second derivative of the core Hamiltonian with respect to the nuclear coordinates. The
-///   returned array has shape [nao, nao, 3, 3].
+/// # Returns
+///
+/// - `FnMut(A: usize, B: usize) -> Tsr`. A function that computes the second derivative of the core
+///   Hamiltonian with respect to the nuclear coordinates. The returned array has shape [nao, nao,
+///   3, 3].
 pub fn generator_hcore_deriv2(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usize, usize) -> Tsr {
     // preparation
     let device = device.clone();

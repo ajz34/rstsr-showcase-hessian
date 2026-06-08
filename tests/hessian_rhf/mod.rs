@@ -13,6 +13,7 @@ pub struct CaseAmoniaRHF {
     pub aux: CInt,
     pub mo_coeff: Tsr,
     pub mo_occ: Tsr,
+    pub mo_energy: Tsr,
     pub ref_dict: HashMap<String, Tsr>,
 }
 
@@ -33,7 +34,8 @@ pub fn hess_case() -> CaseAmoniaRHF {
 
     let mo_coeff = read_npz("nh3_r_hf.npz", "mo_coeff").into_contig(ColMajor);
     let mo_occ = read_npz("nh3_r_hf.npz", "mo_occ").into_contig(ColMajor);
+    let mo_energy = read_npz("nh3_r_hf.npz", "mo_energy").into_contig(ColMajor);
     let ref_dict = read_npz_dict("nh3_r_hf_decomp.npz");
 
-    CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, ref_dict }
+    CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, mo_energy, ref_dict }
 }

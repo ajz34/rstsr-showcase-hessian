@@ -21,3 +21,27 @@ pub fn get_dm0_restricted(mo_coeff: TsrView, mo_occ: TsrView) -> Tsr {
     let occ = mo_occ.bool_select(-1, &occidx);
     &mocc * occ.i((None, ..)) % &mocc.t()
 }
+
+/// Generate the orbital-energy weighted density matrix for current SCF component.
+///
+/// # Parameters
+///
+/// - `mo_coeff` : shape `[nao, nmo]`. Molecular orbital coefficients.
+/// - `mo_occ` : shape `[nmo]`. Molecular orbital occupation numbers.
+/// - `mo_energy` : shape `[nmo]`. Molecular orbital energies.
+///
+/// # Returns
+///
+/// - `dme0` : shape `[nao, nao]`. The orbital-energy weighted density matrix for current SCF
+///   component.
+pub fn get_dme0_restricted(mo_coeff: TsrView, mo_occ: TsrView, mo_energy: TsrView) -> Tsr {
+    let [_nao, nmo] = mo_coeff.shape().to_vec().try_into().unwrap();
+    check_shape!(mo_occ.shape(), [nmo], "mo_occ shape not correct.");
+    check_shape!(mo_energy.shape(), [nmo], "mo_energy shape not correct.");
+
+    let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+    let mocc = mo_coeff.bool_select(-1, &occidx);
+    let occ = mo_occ.bool_select(-1, &occidx);
+    let eocc = mo_energy.bool_select(-1, &occidx);
+    &mocc * (occ * eocc).i((None, ..)) % &mocc.t()
+}
