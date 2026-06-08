@@ -230,4 +230,100 @@ impl<'a> RHessSCF<'a> {
         let mo1 = krylov_block(response_cphf_flattened, rhs.view(), None, tol, max_cycle, max_space, lindep);
         mo1.into_shape(rhs_shape)
     }
+
+    /// Finalize the CP-HF calculation by computing necessary intermediates for Hessian assembly.
+    ///
+    /// This includes:
+    /// - Re-computing the mo1 (as post-iteration computation), as well as removing the level shift.
+    /// - Computing the derivative of occupied orbital energy with respect to perturbation (mo_e1).
+    ///   Note occupied orbital energy (shape [nocc]) is diagonal of Fock, and Fock matrix is
+    ///   diagonal. However, with the definition that `U[occ, occ] = -0.5 S1[occ, occ]`, the
+    ///   off-diagonal part of derivative of Fock in occupied-occupied block is not zero. That's why
+    ///   this term is actually matrix.
+    ///
+    /// # Parameters
+    ///
+    /// - `mo1` : shape `[nmo, nocc, 3, natm]`. The perturbation in MO space obtained from Krylov
+    ///   solver.
+    /// - `pre_cphf_dict` : `HashMap<&str, Tsr>`. The dictionary returned by
+    ///   [`Self::compute_dimless_cphf_rhs`], containing necessary intermediates for finalizing
+    ///   CP-HF results.
+    ///
+    /// # Returns
+    ///
+    /// `HashMap<&str, Tsr>`
+    ///
+    /// - `mo1` : shape `[nmo, nocc, 3, natm]`. The finalized perturbation in MO space.
+    /// - `mo_e1` : shape `[nocc, nocc, 3, natm]`. The derivative of occupied orbital energies (Fock
+    ///   matrix) with respect to perturbation.
+    pub fn finalize_cphf(&self, f1mo: TsrView, s1mo: TsrView, mo1: TsrView) -> HashMap<&'static str, Tsr> {
+        let mo_occ = self.mo_occ.view();
+        let mo_energy = self.mo_energy.view();
+        let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+        let viridx = occidx.iter().map(|&x| !x).collect_vec();
+        let nocc = occidx.iter().filter(|&&x| x).count();
+        let nmo = mo_occ.shape()[0];
+        let eocc = mo_energy.bool_select(-1, &occidx);
+        let evir = mo_energy.bool_select(-1, &viridx);
+        let so = rt::slice!(0, nocc);
+        let sv = rt::slice!(nocc, nmo);
+        let e_ai = evir.i((.., None)) - eocc.i((None, ..));
+        let e_ij = eocc.i((.., None)) - eocc.i((None, ..));
+
+        // last-iter the cp-hf equation, and remove the level-shift
+        let b1mo = f1mo - s1mo * eocc.i((None, ..)) + self.response_mo(mo1.view());
+        let mut mo1 = mo1.to_owned();
+        mo1.i_mut(sv).assign(-b1mo.i(sv) / e_ai);
+
+        // get the derivative of fock matrix in occ-occ block (derivative of orbital energy with rotation)
+        let mo_e1 = b1mo.i(so) + mo1.i(so) * e_ij;
+
+        HashMap::from([("mo1", mo1), ("mo_e1", mo_e1)])
+    }
+
+    /// Compute the CP-HF contribution to the Hessian using the finalized CP-HF results.
+    ///
+    /// # Parameters
+    ///
+    /// - `f1mo` : shape `[nmo, nocc, 3, natm]`. The first-order derivative of the Fock matrix in MO
+    ///   basis, obtained from [`Self::compute_dimless_cphf_rhs`].
+    /// - `s1mo` : shape `[nmo, nocc, natm, 3]`. The first-order skeleton derivative of the overlap
+    ///   matrix in MO basis, obtained from [`Self::compute_dimless_cphf_rhs`].
+    /// - `mo1` : shape `[nmo, nocc, natm, 3]`. The finalized perturbation in MO space obtained from
+    ///   [`Self::finalize_cphf`].
+    /// - `mo_e1` : shape `[nocc, nocc, 3, natm]`. The derivative of occupied orbital energies (Fock
+    ///   matrix) with respect to perturbation, obtained from [`Self::finalize_cphf`].
+    ///
+    /// # Returns
+    ///
+    /// - `de_cphf` : shape `[3, 3, natm, natm]`. The CP-HF contribution to the Hessian.
+    pub fn get_cphf_hess(&self, f1mo: TsrView, s1mo: TsrView, mo1: TsrView, mo_e1: TsrView) -> Tsr {
+        let natm = self.natm();
+        let mo_occ = self.mo_occ.view();
+        let mo_energy = self.mo_energy.view();
+        let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+        let nocc = occidx.iter().filter(|&&x| x).count();
+        let eocc = mo_energy.bool_select(-1, &occidx);
+        let so = rt::slice!(0, nocc);
+        let device = mo1.device().clone();
+
+        let s1oo = s1mo.i(so);
+        let mut de_cphf = rt::zeros(([3, 3, natm, natm], &device));
+        // well, code style is ruined by rustfmt ...
+        for A in 0..natm {
+            for B in 0..=A {
+                let mut de_BA = de_cphf.i_mut((.., .., B, A));
+                de_BA += 4 * (f1mo.i((.., .., None, .., A)) * mo1.i((.., .., .., None, B))).sum_axes([0, 1]);
+                de_BA -= 4
+                    * (s1mo.i((.., .., None, .., A)) * mo1.i((.., .., .., None, B)) * eocc.i((None, ..)))
+                        .sum_axes([0, 1]);
+                de_BA -= 2 * (s1oo.i((.., .., None, .., A)) * mo_e1.i((.., .., .., None, B))).sum_axes([0, 1]);
+            }
+            for B in 0..A {
+                let de_to_copy = de_cphf.i((.., .., B, A)).t().to_owned();
+                *&mut de_cphf.i_mut((.., .., A, B)) += de_to_copy;
+            }
+        }
+        de_cphf
+    }
 }

@@ -48,4 +48,22 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
     let ref_mo1 = ref_dict["mo1"].transpose((2, 3, 1, 0));
     assert!(rt::allclose(mo1.view(), ref_mo1.view(), (1e-4, 1e-6)));
     assert_abs_diff_eq!(fp(mo1.swapaxes(0, 1)), -0.02385155247256418, epsilon = 1e-6);
+
+    // finalize cphf
+    let f1mo = pre_cphf_dict["f1mo"].view();
+    let s1mo = pre_cphf_dict["s1mo"].view();
+    let result_cphf = hess_scf.finalize_cphf(f1mo.view(), s1mo.view(), mo1.view());
+    let ref_mo_e1 = ref_dict["mo_e1"].transpose([2, 3, 1, 0]);
+    let mo1 = result_cphf["mo1"].view();
+    let mo_e1 = result_cphf["mo_e1"].view();
+    assert!(rt::allclose(mo1.view(), ref_mo1.view(), (1e-4, 1e-6)));
+    assert!(rt::allclose(mo_e1.view(), ref_mo_e1.view(), (1e-4, 1e-6)));
+    assert_abs_diff_eq!(fp(mo1.swapaxes(0, 1)), -0.02385155247256418, epsilon = 1e-6);
+    assert_abs_diff_eq!(fp(mo_e1.swapaxes(0, 1)), 0.2961618130386303, epsilon = 1e-6);
+
+    // compute de_cphf
+    let de_cphf = hess_scf.get_cphf_hess(f1mo.view(), s1mo.view(), mo1.view(), mo_e1.view());
+    let ref_de_cphf = ref_dict["de_cphf"].transpose([2, 3, 0, 1]);
+    assert!(rt::allclose(de_cphf.view(), ref_de_cphf.view(), (1e-4, 1e-6)));
+    assert_abs_diff_eq!(fp(de_cphf.view()), 1.0888788930763051, epsilon = 1e-6);
 }
