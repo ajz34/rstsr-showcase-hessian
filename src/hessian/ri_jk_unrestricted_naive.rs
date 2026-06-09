@@ -201,7 +201,12 @@ impl UHessElecInteractAPI for UHessRIJKNaive {
         self.scale_j * de_J - self.scale_k * de_K
     }
 
-    fn get_deriv1_ao(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>) -> Tsr {
+    fn get_deriv1_ao(
+        &mut self,
+        mo_coeff: &[TsrView; 2],
+        mo_occ: &[TsrView; 2],
+        atm_list: Option<&[usize]>,
+    ) -> [Tsr; 2] {
         let j1ao_dict = get_rij_deriv1_ao_unrestricted_naive(&self.mol, &self.aux, mo_coeff, mo_occ, atm_list);
         let k1ao_dict = get_rik_deriv1_ao_unrestricted_naive(&self.mol, &self.aux, mo_coeff, mo_occ, atm_list);
         let result = &mut self.result;
@@ -213,8 +218,10 @@ impl UHessElecInteractAPI for UHessRIJKNaive {
         let k1ao = &result["k1ao_aux0"] + &result["k1ao_aux1"];
 
         // Broadcast J to both spins: [2, nao, nao, 3, natm], then subtract per-spin K
-        let j1ao_broadcast = rt::stack(([j1ao.view(), j1ao.view()], -1));
-        self.scale_j * j1ao_broadcast - self.scale_k * k1ao
+        let [α, β] = [0, 1];
+        let deriv1_ao_α = self.scale_j * &j1ao - self.scale_k * k1ao.i((Ellipsis, α));
+        let deriv1_ao_β = self.scale_j * &j1ao - self.scale_k * k1ao.i((Ellipsis, β));
+        [deriv1_ao_α, deriv1_ao_β]
     }
 
     fn make_response_preparation(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2]) {

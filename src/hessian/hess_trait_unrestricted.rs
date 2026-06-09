@@ -92,14 +92,15 @@ pub trait UHessElecInteractAPI {
     ///
     /// # Returns
     ///
-    /// - `deriv_ao` : shape `[nao, nao, 3, natm, 2]`. The first-order skeleton derivative in AO
-    ///   basis.
+    /// - `deriv_ao` : shape `[nao, nao, 3, natm]` and `[nao, nao, 3, natm]`. The first-order
+    ///   skeleton derivative in AO basis.
     ///
     /// # See also
     ///
     /// [`RHessElecInteractAPI::get_deriv1_ao`]. Signature difference: `mo_coeff` and `mo_occ` type
     /// different, output shape different.
-    fn get_deriv1_ao(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>) -> Tsr;
+    fn get_deriv1_ao(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>)
+        -> [Tsr; 2];
 
     /// First order skeleton derivative in half-transformed MO basis.
     ///
@@ -138,7 +139,7 @@ pub trait UHessElecInteractAPI {
         let occidx = [mo_occ[α].view().greater(0).into_vec(), mo_occ[β].view().greater(0).into_vec()];
         let mocc = [mo_coeff[α].bool_select(-1, &occidx[α]), mo_coeff[β].bool_select(-1, &occidx[β])];
         let deriv1_ao = self.get_deriv1_ao(mo_coeff, mo_occ, atm_list);
-        [deriv1_ao.i((Ellipsis, α)) % &mocc[α], deriv1_ao.i((Ellipsis, β)) % &mocc[β]]
+        [&deriv1_ao[α] % &mocc[α], &deriv1_ao[β] % &mocc[β]]
     }
 
     /// Prepare the data for response calculation.
