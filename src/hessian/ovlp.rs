@@ -114,3 +114,28 @@ impl RHessOvlp {
         self.mol.natm()
     }
 }
+
+/// Hessian contribution from overlap matrix derivative for unrestricted SCF.
+pub struct UHessOvlp {
+    pub mol: CInt,
+    pub device: DeviceTsr,
+}
+
+impl UHessOvlp {
+    pub fn new(mol: &CInt, device: &DeviceTsr) -> Self {
+        Self { mol: mol.clone(), device: device.clone() }
+    }
+
+    pub fn make_hess(&self, dme0: [TsrView; 2], atm_list: Option<&[usize]>) -> Tsr {
+        let [上, 下] = [0, 1];
+        get_hess_ovlp(&self.mol, (&dme0[上] + &dme0[下]).view(), atm_list)
+    }
+
+    pub fn generator_deriv1(&self) -> impl FnMut(usize) -> Tsr {
+        generator_ovlp_deriv1(&self.mol, &self.device)
+    }
+
+    pub fn natm(&self) -> usize {
+        self.mol.natm()
+    }
+}

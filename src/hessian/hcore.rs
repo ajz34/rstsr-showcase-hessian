@@ -195,3 +195,28 @@ impl RHessCoreAPI for RHessHcore {
         Box::new(generator_hcore_deriv1(&self.mol, &self.device))
     }
 }
+
+/// Hessian contribution from the core Hamiltonian (unrestricted version).
+pub struct UHessHcore {
+    pub mol: CInt,
+    pub device: DeviceTsr,
+}
+
+impl UHessHcore {
+    pub fn new(mol: &CInt, device: &DeviceTsr) -> Self {
+        Self { mol: mol.clone(), device: device.clone() }
+    }
+}
+
+impl UHessCoreAPI for UHessHcore {
+    fn make_skeleton_hess(&mut self, mo_coeff: [TsrView; 2], mo_occ: [TsrView; 2], atm_list: Option<&[usize]>) -> Tsr {
+        let [上, 下] = [0, 1];
+        let dm0 = get_dm0_restricted(mo_coeff[上].view(), mo_occ[上].view())
+            + get_dm0_restricted(mo_coeff[下].view(), mo_occ[下].view());
+        get_hess_hcore(&self.mol, dm0.view(), atm_list)
+    }
+
+    fn generator_deriv1(&self) -> Box<dyn FnMut(usize) -> Tsr> {
+        Box::new(generator_hcore_deriv1(&self.mol, &self.device))
+    }
+}

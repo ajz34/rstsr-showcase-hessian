@@ -47,7 +47,7 @@ pub trait UHessCoreAPI {
     /// # See also
     ///
     /// [`RHessCoreAPI::generator_deriv1`]. Signature difference: no difference.
-    fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>>;
+    fn generator_deriv1(&self) -> Box<dyn FnMut(usize) -> Tsr>;
 }
 
 /// Abstract class for Hessian-related API for restricted SCF electronic interaction components.
