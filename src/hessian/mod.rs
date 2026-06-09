@@ -15,6 +15,7 @@ pub mod ri_jk_unrestricted_naive;
 
 // total hess implementations
 pub mod rscf;
+pub mod uscf;
 
 #[allow(unused_imports)]
 pub mod prelude {
@@ -26,5 +27,7 @@ pub mod prelude {
     pub use nuc_repl::HessNucRepl;
     pub use ovlp::{RHessOvlp, UHessOvlp};
     pub use ri_jk_restricted_naive::RHessRIJKNaive;
-    pub use rscf::{RHessSCF, RHessSCFConfig};
+    pub use ri_jk_unrestricted_naive::UHessRIJKNaive;
+    pub use rscf::{HessSCFConfig, RHessSCF};
+    pub use uscf::UHessSCF;
 }

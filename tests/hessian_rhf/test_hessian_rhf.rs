@@ -34,7 +34,7 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
     let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
     let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
-    let config = RHessSCFConfig::default();
+    let config = HessSCFConfig::default();
     let mut hess_scf =
         RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, nuc_list, hcore_list, el_list, config, None);
 
@@ -85,7 +85,7 @@ fn test_make_hess(hess_case: &CaseAmoniaRHF) {
     let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
     let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
-    let config = RHessSCFConfig::default();
+    let config = HessSCFConfig::default();
     let mut hess_scf =
         RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, nuc_list, hcore_list, el_list, config, None);
 

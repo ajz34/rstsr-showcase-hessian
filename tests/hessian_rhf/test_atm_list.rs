@@ -118,7 +118,7 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
         let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
         let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
         let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
-        let config = RHessSCFConfig::default();
+        let config = HessSCFConfig::default();
         let mut hess_scf = RHessSCF::new(
             mo_coeff_c.clone(),
             mo_occ_c.clone(),
@@ -142,7 +142,7 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
         let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
         let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
         let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
-        let config = RHessSCFConfig::default();
+        let config = HessSCFConfig::default();
         let mut hess_scf = RHessSCF::new(
             mo_coeff_c.clone(),
             mo_occ_c.clone(),

@@ -3,7 +3,7 @@
 use crate::prelude::*;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RHessSCFConfig {
+pub struct HessSCFConfig {
     pub level_shift: f64,
     pub cphf_tol: f64,
     pub cphf_max_cycle: usize,
@@ -11,7 +11,7 @@ pub struct RHessSCFConfig {
     pub cphf_lindep: f64,
 }
 
-impl Default for RHessSCFConfig {
+impl Default for HessSCFConfig {
     fn default() -> Self {
         Self { level_shift: 0.0, cphf_tol: 1e-8, cphf_max_cycle: 42, cphf_max_space: 14, cphf_lindep: 1e-14 }
     }
@@ -26,7 +26,7 @@ pub struct RHessSCF<'a> {
     pub nuc_list: Vec<&'a mut dyn HessNucAPI>,
     pub core_list: Vec<&'a mut dyn RHessCoreAPI>,
     pub el_list: Vec<&'a mut dyn RHessElecInteractAPI>,
-    pub config: RHessSCFConfig,
+    pub config: HessSCFConfig,
     pub atm_list: Option<Vec<usize>>,
 }
 
@@ -40,7 +40,7 @@ impl<'a> RHessSCF<'a> {
         nuc_list: Vec<&'a mut dyn HessNucAPI>,
         core_list: Vec<&'a mut dyn RHessCoreAPI>,
         el_list: Vec<&'a mut dyn RHessElecInteractAPI>,
-        config: RHessSCFConfig,
+        config: HessSCFConfig,
         atm_list: Option<&[usize]>,
     ) -> Self {
         Self {
