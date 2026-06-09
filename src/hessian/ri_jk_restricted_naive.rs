@@ -1,3 +1,16 @@
+//! Naive RI-JK Hessian implementation for restricted SCF.
+//!
+//! Algorithm is naive and of no reference.
+//!
+//! The correct value is compared to PySCF (written by Qiming Sun). Reference article:
+//! > Alchemy: A Quantum Chemistry Dataset for Benchmarking AI Models
+//! > Chen, et al. arXiv:1906.09427
+//!
+//! PySCF code referenced the ORCA's implementation:
+//! > Efficient implementation of the analytic second derivatives of Hartree-Fock and hybrid DFT
+//! > energies: a detailed analysis of different approximations
+//! > Bykov, et al. Mol Phys. 113, 1961 (2015). DOI: 10.1080/00268976.2015.1025114
+
 use crate::prelude::*;
 
 /// Get the skeleton of the second derivative of the Coulomb interaction.
