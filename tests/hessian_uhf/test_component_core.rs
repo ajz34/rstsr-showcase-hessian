@@ -54,5 +54,5 @@ fn test_hess_ovlp(hess_case: &CaseAmoniaUHF) {
     // compare to reference
     let de_ovlp_ref = ref_dict["de_ovlp"].to_owned().into_transpose((2, 3, 0, 1));
     assert!(rt::allclose(de_ovlp.view(), de_ovlp_ref.view(), (1e-4, 1e-6)));
-    assert_abs_diff_eq!(fp(de_ovlp.view()), 1.7951443986220537, epsilon = 1e-6);
+    assert_abs_diff_eq!(fp(de_ovlp.view()), 1.7951443986220534, epsilon = 1e-6);
 }

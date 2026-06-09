@@ -1,4 +1,5 @@
 mod test_component_core;
+mod test_component_rijk_naive;
 
 use crate::test_util::{read_npz, read_npz_dict};
 use libcint::prelude::*;
