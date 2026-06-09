@@ -32,21 +32,20 @@ pub fn get_decomposed_rik_skeleton_deriv2_unrestricted_naive(
     atm_list: Option<&[usize]>,
 ) -> HashMap<&'static str, Tsr> {
     // compute alpha and beta separately, then sum
-    const 上: usize = 0;
-    const 下: usize = 1;
+    let [α, β] = [0, 1];
 
     let de_rik_alpha = ri_jk_restricted_naive::get_decomposed_rik_skeleton_deriv2_naive(
         mol,
         aux,
-        mo_coeff[上].view(),
-        mo_occ[上].view(),
+        mo_coeff[α].view(),
+        mo_occ[α].view(),
         atm_list,
     );
     let de_rik_beta = ri_jk_restricted_naive::get_decomposed_rik_skeleton_deriv2_naive(
         mol,
         aux,
-        mo_coeff[下].view(),
-        mo_occ[下].view(),
+        mo_coeff[β].view(),
+        mo_occ[β].view(),
         atm_list,
     );
 

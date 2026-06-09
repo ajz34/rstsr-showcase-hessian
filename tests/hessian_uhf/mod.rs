@@ -37,10 +37,10 @@ pub fn hess_case() -> CaseAmoniaUHF {
     let mo_occ = read_npz("nh3_u_hf.npz", "mo_occ").into_contig(ColMajor);
     let mo_energy = read_npz("nh3_u_hf.npz", "mo_energy").into_contig(ColMajor);
 
-    let [上, 下] = [0, 1];
-    let mo_coeff = [mo_coeff.i(上).into_contig(ColMajor), mo_coeff.i(下).into_contig(ColMajor)];
-    let mo_occ = [mo_occ.i(上).to_owned(), mo_occ.i(下).to_owned()];
-    let mo_energy = [mo_energy.i(上).to_owned(), mo_energy.i(下).to_owned()];
+    let [α, β] = [0, 1];
+    let mo_coeff = [mo_coeff.i(α).into_contig(ColMajor), mo_coeff.i(β).into_contig(ColMajor)];
+    let mo_occ = [mo_occ.i(α).to_owned(), mo_occ.i(β).to_owned()];
+    let mo_energy = [mo_energy.i(α).to_owned(), mo_energy.i(β).to_owned()];
 
     CaseAmoniaUHF { mol, aux, mo_coeff, mo_occ, mo_energy, ref_dict }
 }

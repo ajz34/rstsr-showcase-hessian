@@ -128,19 +128,17 @@ pub trait UHessElecInteractAPI {
         atm_list: Option<&[usize]>,
     ) -> [Tsr; 2] {
         // Using `a` and `b` may be confusing for spin description. Using non-ASCII may be better.
-        // To my suprise, using Han instead of Greek is actually better solution for better Unicode
-        // programming. Well, the price to pay is a good monospaced font.
-        // See also rust lint `mixed_script_confusables`, RFCS-2457, PEP 3131, UTS #39.
-        // 我知道大家都喜欢看易语言的笑话；但实在是没想到用汉字真的是正解之一。
-        // 本来觉得“升”“降”的标识度更高，但我们不是在搞二次量子化。
-        // (正确说法是产生湮灭，但因为简谐振子解的原因习惯用升降算符了，大概算是我国文化特色)。
-        // 感觉还是正常的“上”“下”更合适。
-        let [上, 下] = [0, 1];
+        // Decision:
+        // - In code or comments, we may use Greek `α`, `β` (not Cyrillic). This violates UTS #39 and
+        //   RFCS-2457 (also related to rust lint `mixed_script_confusables`). But I think it's prettier for
+        //   reading, and more clear then 0/1 in meaning.
+        // - In dictionary keys, we use `0` and `1` to avoid any potential issues.
+        let [α, β] = [0, 1];
 
-        let occidx = [mo_occ[上].view().greater(0).into_vec(), mo_occ[下].view().greater(0).into_vec()];
-        let mocc = [mo_coeff[上].bool_select(-1, &occidx[上]), mo_coeff[下].bool_select(-1, &occidx[下])];
+        let occidx = [mo_occ[α].view().greater(0).into_vec(), mo_occ[β].view().greater(0).into_vec()];
+        let mocc = [mo_coeff[α].bool_select(-1, &occidx[α]), mo_coeff[β].bool_select(-1, &occidx[β])];
         let deriv1_ao = self.get_deriv1_ao(mo_coeff, mo_occ, atm_list);
-        [&deriv1_ao % &mocc[上], &deriv1_ao % &mocc[下]]
+        [&deriv1_ao % &mocc[α], &deriv1_ao % &mocc[β]]
     }
 
     /// Prepare the data for response calculation.

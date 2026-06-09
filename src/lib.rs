@@ -2,6 +2,7 @@
 #![allow(clippy::manual_is_multiple_of)]
 #![allow(non_snake_case)]
 #![allow(clippy::needless_range_loop)]
+#![allow(mixed_script_confusables)]
 
 pub mod hessian;
 pub mod util;

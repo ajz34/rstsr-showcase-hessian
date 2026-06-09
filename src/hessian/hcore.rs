@@ -215,9 +215,9 @@ impl UHessCoreAPI for UHessHcore {
         mo_occ: &[TsrView; 2],
         atm_list: Option<&[usize]>,
     ) -> Tsr {
-        let [上, 下] = [0, 1];
-        let dm0 = get_dm0_restricted(mo_coeff[上].view(), mo_occ[上].view())
-            + get_dm0_restricted(mo_coeff[下].view(), mo_occ[下].view());
+        let [α, β] = [0, 1];
+        let dm0 = get_dm0_restricted(mo_coeff[α].view(), mo_occ[α].view())
+            + get_dm0_restricted(mo_coeff[β].view(), mo_occ[β].view());
         get_hess_hcore(&self.mol, dm0.view(), atm_list)
     }
 

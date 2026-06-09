@@ -40,14 +40,14 @@ fn test_hess_ovlp(hess_case: &CaseAmoniaUHF) {
     use rstsr_showcase_hessian::util::density_matrices::get_dme0_restricted;
     let CaseAmoniaUHF { mol, mo_coeff, mo_occ, mo_energy, ref_dict, .. } = hess_case;
 
-    let [上, 下] = [0, 1];
+    let [α, β] = [0, 1];
 
     // compute results
     let dme0 = [
-        get_dme0_restricted(mo_coeff[上].view(), mo_occ[上].view(), mo_energy[上].view()),
-        get_dme0_restricted(mo_coeff[下].view(), mo_occ[下].view(), mo_energy[下].view()),
+        get_dme0_restricted(mo_coeff[α].view(), mo_occ[α].view(), mo_energy[α].view()),
+        get_dme0_restricted(mo_coeff[β].view(), mo_occ[β].view(), mo_energy[β].view()),
     ];
-    let dme0 = [dme0[上].view(), dme0[下].view()];
+    let dme0 = [dme0[α].view(), dme0[β].view()];
     let ovlp_obj = UHessOvlp::new(mol, &DeviceTsr::default());
     let de_ovlp = ovlp_obj.make_hess(dme0, None);
 

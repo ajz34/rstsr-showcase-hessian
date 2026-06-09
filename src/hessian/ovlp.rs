@@ -127,8 +127,8 @@ impl UHessOvlp {
     }
 
     pub fn make_hess(&self, dme0: [TsrView; 2], atm_list: Option<&[usize]>) -> Tsr {
-        let [上, 下] = [0, 1];
-        get_hess_ovlp(&self.mol, (&dme0[上] + &dme0[下]).view(), atm_list)
+        let [α, β] = [0, 1];
+        get_hess_ovlp(&self.mol, (&dme0[α] + &dme0[β]).view(), atm_list)
     }
 
     pub fn generator_deriv1(&self) -> impl FnMut(usize) -> Tsr {
