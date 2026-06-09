@@ -127,9 +127,9 @@ pub fn get_uijk_response_bra_naive(
 
     let occidx = [mo_occ[0].view().greater(0).into_vec(), mo_occ[1].view().greater(0).into_vec()];
     let mocc = [mo_coeff[0].bool_select(-1, &occidx[0]), mo_coeff[1].bool_select(-1, &occidx[1])];
-    let nocc = [mocc[0].shape()[0], mocc[1].shape()[0]];
+    let nocc = [mocc[0].shape()[1], mocc[1].shape()[1]];
     let in_shapes = [bra[0].shape(), bra[1].shape()];
-    let bra = [bra[0].reshape((-1, nao, nocc[0])), bra[1].reshape((-1, nao, nocc[0]))];
+    let bra = [bra[0].reshape((nao, nocc[0], -1)), bra[1].reshape((nao, nocc[1], -1))];
 
     let int2c2e = hess_intor(aux, "int2c2e", "s1", None, &device);
     let int2c2e_inv = rt::linalg::inv(int2c2e.view());
@@ -139,26 +139,24 @@ pub fn get_uijk_response_bra_naive(
 
     for s in [0, 1] {
         let bra_s = bra[s].view();
-        let nocc_s = mocc[s].shape()[1];
-        let bra_s = bra_s.reshape((nao, nocc_s, -1));
 
         let mut r = rt::zeros_like(&bra_s);
 
         // J contribution (sees total density): sum over spin channel tau
         for tau in 0..2 {
-            let subscripts = "uvP, PQ, klQ, Akj, lj, vi -> Aui";
+            let subscripts = "uvP, PQ, klQ, kjA, lj, vi -> uiA";
             let operands =
                 [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra[tau].view(), mocc[tau].view(), mocc[s].view()];
             r += 2.0 * rt::tblis::einsum(subscripts, operands, true, None);
         }
 
         // K contribution (same-spin only), two terms
-        let subscripts = "uvP, PQ, klQ, Avj, lj, ki -> Aui";
+        let subscripts = "uvP, PQ, klQ, vjA, lj, ki -> uiA";
         let operands =
             [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra_s.view(), mocc[s].view(), mocc[s].view()];
         r -= rt::tblis::einsum(subscripts, operands, true, None);
 
-        let subscripts = "uvP, PQ, klQ, Akj, vj, li -> Aui";
+        let subscripts = "uvP, PQ, klQ, kjA, vj, li -> uiA";
         let operands =
             [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra_s.view(), mocc[s].view(), mocc[s].view()];
         r -= rt::tblis::einsum(subscripts, operands, true, None);
