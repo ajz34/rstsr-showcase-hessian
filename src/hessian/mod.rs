@@ -19,11 +19,11 @@ pub mod rscf;
 pub mod prelude {
     use super::*;
 
-    pub use hcore::RHessHcore;
+    pub use hcore::{RHessHcore, UHessHcore};
     pub use hess_trait_restricted::{HessNucAPI, RHessCoreAPI, RHessElecInteractAPI};
     pub use hess_trait_unrestricted::{UHessCoreAPI, UHessElecInteractAPI};
     pub use nuc_repl::HessNucRepl;
-    pub use ovlp::RHessOvlp;
+    pub use ovlp::{RHessOvlp, UHessOvlp};
     pub use ri_jk_restricted_naive::RHessRIJKNaive;
     pub use rscf::{RHessSCF, RHessSCFConfig};
 }
