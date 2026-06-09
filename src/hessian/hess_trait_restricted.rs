@@ -61,7 +61,7 @@ pub trait RHessCoreAPI {
     ///
     /// - `deriv1` : shape `[nao, nao, 3]`. The first-order derivative of core component with
     ///   respect to the position of atom `A`.
-    fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>>;
+    fn generator_deriv1(&self) -> Box<dyn FnMut(usize) -> Tsr>;
 }
 
 /// Abstract class for Hessian-related API for restricted SCF electronic interaction components.

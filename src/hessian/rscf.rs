@@ -122,10 +122,9 @@ impl<'a> RHessSCF<'a> {
         // fock skeleton derivative (core contribution)
         let mut f1ao_core: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
         for core_obj in self.core_list.iter() {
-            if let Some(mut gen_core_deriv1) = core_obj.generator_deriv1() {
-                for (A_loc, &A_glob) in atm_indices.iter().enumerate() {
-                    *&mut f1ao_core.i_mut((Ellipsis, A_loc)) += gen_core_deriv1(A_glob);
-                }
+            let mut gen_core_deriv1 = core_obj.generator_deriv1();
+            for (A_loc, &A_glob) in atm_indices.iter().enumerate() {
+                *&mut f1ao_core.i_mut((Ellipsis, A_loc)) += gen_core_deriv1(A_glob);
             }
         }
 

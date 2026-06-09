@@ -191,7 +191,7 @@ impl RHessCoreAPI for RHessHcore {
         get_hess_hcore(&self.mol, dm0.view(), atm_list)
     }
 
-    fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>> {
-        Some(Box::new(generator_hcore_deriv1(&self.mol, &self.device)))
+    fn generator_deriv1(&self) -> Box<dyn FnMut(usize) -> Tsr> {
+        Box::new(generator_hcore_deriv1(&self.mol, &self.device))
     }
 }
