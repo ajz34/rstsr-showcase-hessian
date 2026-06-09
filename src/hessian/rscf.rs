@@ -2,8 +2,6 @@
 
 use crate::prelude::*;
 
-const TOL_OCC: f64 = 1e-15;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct RHessSCFConfig {
     pub level_shift: f64,
@@ -104,7 +102,7 @@ impl<'a> RHessSCF<'a> {
         let device = mo_coeff.device().clone();
 
         let [nao, nmo] = mo_coeff.shape().to_vec().try_into().unwrap();
-        let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+        let occidx = mo_occ.view().greater(0).into_vec();
         let viridx = occidx.iter().map(|&x| !x).collect_vec();
         let mocc = mo_coeff.bool_select(-1, &occidx);
         let eocc = mo_energy.bool_select(-1, &occidx);
@@ -205,7 +203,7 @@ impl<'a> RHessSCF<'a> {
         let mo_occ = self.mo_occ.view();
         let mo_energy = self.mo_energy.view();
         let level_shift = self.config.level_shift;
-        let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+        let occidx = mo_occ.view().greater(0).into_vec();
         let viridx = occidx.iter().map(|&x| !x).collect_vec();
         let nocc = occidx.iter().filter(|&&x| x).count();
         let nmo = mo_occ.shape()[0];
@@ -288,7 +286,7 @@ impl<'a> RHessSCF<'a> {
     pub fn finalize_cphf(&self, f1mo: TsrView, s1mo: TsrView, mo1: TsrView) -> HashMap<&'static str, Tsr> {
         let mo_occ = self.mo_occ.view();
         let mo_energy = self.mo_energy.view();
-        let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+        let occidx = mo_occ.view().greater(0).into_vec();
         let viridx = occidx.iter().map(|&x| !x).collect_vec();
         let nocc = occidx.iter().filter(|&&x| x).count();
         let nmo = mo_occ.shape()[0];
@@ -330,7 +328,7 @@ impl<'a> RHessSCF<'a> {
         let natm = self.natm();
         let mo_occ = self.mo_occ.view();
         let mo_energy = self.mo_energy.view();
-        let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+        let occidx = mo_occ.view().greater(0).into_vec();
         let nocc = occidx.iter().filter(|&&x| x).count();
         let eocc = mo_energy.bool_select(-1, &occidx);
         let so = rt::slice!(0, nocc);

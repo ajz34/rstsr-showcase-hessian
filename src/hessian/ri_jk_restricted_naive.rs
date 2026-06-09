@@ -1,7 +1,5 @@
 use crate::prelude::*;
 
-const TOL_OCC: f64 = 1e-15;
-
 /// Get the skeleton of the second derivative of the Coulomb interaction.
 ///
 /// This is naive implementation:
@@ -317,7 +315,7 @@ pub fn get_decomposed_rik_skeleton_deriv2_naive(
     let device = mo_coeff.device();
 
     // occupation: mocc_2 = mocc * sqrt(occ)
-    let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+    let occidx = mo_occ.view().greater(0).into_vec();
     let mocc = mo_coeff.bool_select(-1, &occidx);
     let occ = mo_occ.bool_select(-1, &occidx);
     let mocc_2 = &mocc * occ.sqrt().i((None, ..));
@@ -755,7 +753,7 @@ pub fn get_rik_deriv1_ao_naive(
     let device = mo_coeff.device();
 
     // occupation: mocc_2 = mocc * sqrt(occ)
-    let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+    let occidx = mo_occ.view().greater(0).into_vec();
     let mocc = mo_coeff.bool_select(-1, &occidx);
     let occ = mo_occ.bool_select(-1, &occidx);
     let mocc_2 = &mocc * occ.sqrt().i((None, ..));
@@ -850,7 +848,7 @@ pub fn get_rik_deriv1_ao_naive(
 pub fn get_rijk_response_bra_naive(mol: &CInt, aux: &CInt, mo_coeff: TsrView, mo_occ: TsrView, bra: TsrView) -> Tsr {
     // preparation
     let nao = mol.nao();
-    let occidx = mo_occ.view().greater(TOL_OCC).into_vec();
+    let occidx = mo_occ.view().greater(0).into_vec();
     let mocc = mo_coeff.bool_select(-1, &occidx);
     let nocc = occidx.iter().filter(|&&x| x).count();
 

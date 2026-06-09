@@ -11,6 +11,7 @@ pub mod ovlp;
 
 // electron interaction hess implementations
 pub mod ri_jk_restricted_naive;
+pub mod ri_jk_unrestricted_naive;
 
 // total hess implementations
 pub mod rscf;
