@@ -18,10 +18,10 @@ fn select_atoms(full: TsrView, atm_list: &[usize]) -> Tsr {
 
 #[rstest]
 fn test_atm_list_nuc_repl(hess_case: &CaseAmoniaRHF) {
-    let CaseAmoniaRHF { mol, mo_coeff, mo_occ, .. } = hess_case;
-    let mut hess = HessNucRepl::new(mol);
-    let full = hess.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), None);
-    let sel = hess.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), Some(ATM_LIST));
+    let CaseAmoniaRHF { mol, .. } = hess_case;
+    let mut hess = HessNucRepl::new(mol, &DeviceTsr::default());
+    let full = hess.make_skeleton_hess(None);
+    let sel = hess.make_skeleton_hess(Some(ATM_LIST));
     let expected = select_atoms(full.view(), ATM_LIST);
 
     println!("full:\n{expected:12.6}");
@@ -112,10 +112,11 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
     // full hessian
     let full = {
         let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
-        let mut nuc_repl_obj = HessNucRepl::new(mol);
+        let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
         let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
         let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
-        let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
+        let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
+        let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
         let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
         let config = RHessSCFConfig::default();
         let mut hess_scf = RHessSCF::new(
@@ -123,6 +124,7 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
             mo_occ_c.clone(),
             mo_energy_c.clone(),
             ovlp_obj,
+            nuc_list,
             core_list,
             el_list,
             config,
@@ -134,10 +136,11 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
     // selected-atom hessian
     let sel = {
         let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
-        let mut nuc_repl_obj = HessNucRepl::new(mol);
+        let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
         let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
         let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
-        let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
+        let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
+        let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
         let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
         let config = RHessSCFConfig::default();
         let mut hess_scf = RHessSCF::new(
@@ -145,6 +148,7 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
             mo_occ_c.clone(),
             mo_energy_c.clone(),
             ovlp_obj,
+            nuc_list,
             core_list,
             el_list,
             config,

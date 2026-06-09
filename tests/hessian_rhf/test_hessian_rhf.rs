@@ -28,13 +28,15 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
     let mo_occ = mo_occ.view().into_contig(ColMajor);
     let mo_energy = mo_energy.view().into_contig(ColMajor);
     let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
-    let mut nuc_repl_obj = HessNucRepl::new(mol);
+    let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
     let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
-    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
+    let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
+    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
     let config = RHessSCFConfig::default();
-    let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config, None);
+    let mut hess_scf =
+        RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, nuc_list, hcore_list, el_list, config, None);
 
     // before krylov, first obtain dimensionless rhs part
     let pre_cphf_dict = hess_scf.compute_dimless_cphf_rhs();
@@ -77,13 +79,15 @@ fn test_make_hess(hess_case: &CaseAmoniaRHF) {
     let mo_occ = mo_occ.view().into_contig(ColMajor);
     let mo_energy = mo_energy.view().into_contig(ColMajor);
     let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
-    let mut nuc_repl_obj = HessNucRepl::new(mol);
+    let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
     let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
-    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
+    let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
+    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
     let config = RHessSCFConfig::default();
-    let mut hess_scf = RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, hcore_list, el_list, config, None);
+    let mut hess_scf =
+        RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, nuc_list, hcore_list, el_list, config, None);
 
     let de_hess = hess_scf.make_hess();
     let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);

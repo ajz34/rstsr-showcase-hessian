@@ -62,20 +62,17 @@ pub fn get_nuc_repl_hess(mol: &CInt, device: &DeviceTsr, atm_list: Option<&[usiz
 /// Hessian contribution from nuclear repulsion.
 pub struct HessNucRepl {
     pub mol: CInt,
+    pub device: DeviceTsr,
 }
 
 impl HessNucRepl {
-    pub fn new(mol: &CInt) -> Self {
-        Self { mol: mol.clone() }
+    pub fn new(mol: &CInt, device: &DeviceTsr) -> Self {
+        Self { mol: mol.clone(), device: device.clone() }
     }
 }
 
-impl RHessCoreAPI for HessNucRepl {
-    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, _mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
-        get_nuc_repl_hess(&self.mol, mo_coeff.device(), atm_list)
-    }
-
-    fn generator_deriv1(&self) -> Option<Box<dyn FnMut(usize) -> Tsr>> {
-        None
+impl HessNucAPI for HessNucRepl {
+    fn make_skeleton_hess(&mut self, atm_list: Option<&[usize]>) -> Tsr {
+        get_nuc_repl_hess(&self.mol, &self.device, atm_list)
     }
 }

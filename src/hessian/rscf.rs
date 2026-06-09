@@ -25,6 +25,7 @@ pub struct RHessSCF<'a> {
     pub mo_occ: Tsr,
     pub mo_energy: Tsr,
     pub ovlp_obj: RHessOvlp,
+    pub nuc_list: Vec<&'a mut dyn HessNucAPI>,
     pub core_list: Vec<&'a mut dyn RHessCoreAPI>,
     pub el_list: Vec<&'a mut dyn RHessElecInteractAPI>,
     pub config: RHessSCFConfig,
@@ -38,6 +39,7 @@ impl<'a> RHessSCF<'a> {
         mo_occ: Tsr,
         mo_energy: Tsr,
         ovlp_obj: RHessOvlp,
+        nuc_list: Vec<&'a mut dyn HessNucAPI>,
         core_list: Vec<&'a mut dyn RHessCoreAPI>,
         el_list: Vec<&'a mut dyn RHessElecInteractAPI>,
         config: RHessSCFConfig,
@@ -48,6 +50,7 @@ impl<'a> RHessSCF<'a> {
             mo_occ,
             mo_energy,
             ovlp_obj,
+            nuc_list,
             core_list,
             el_list,
             config,
@@ -402,6 +405,9 @@ impl<'a> RHessSCF<'a> {
 
         let device = self.mo_coeff.device().clone();
         let mut de_skeleton = rt::zeros(([3, 3, natm, natm], &device));
+        for nuc_obj in self.nuc_list.iter_mut() {
+            de_skeleton += nuc_obj.make_skeleton_hess(atm_list);
+        }
         for core_obj in self.core_list.iter_mut() {
             de_skeleton += core_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), atm_list);
         }

@@ -6,11 +6,11 @@ use rstsr_showcase_hessian::prelude::*;
 
 #[rstest]
 fn test_hess_nuc_repl(hess_case: &CaseAmoniaRHF) {
-    let CaseAmoniaRHF { mol, mo_coeff, mo_occ, ref_dict, .. } = hess_case;
+    let CaseAmoniaRHF { mol, ref_dict, .. } = hess_case;
 
     // compute results
-    let mut hess_nuc_repl = HessNucRepl::new(mol);
-    let de_nuc_repl = hess_nuc_repl.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), None);
+    let mut hess_nuc_repl = HessNucRepl::new(mol, &DeviceTsr::default());
+    let de_nuc_repl = hess_nuc_repl.make_skeleton_hess(None);
 
     // compare to reference
     let de_nuc_repl_ref = ref_dict["de_nuc"].to_owned().into_transpose((2, 3, 0, 1));
