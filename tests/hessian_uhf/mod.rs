@@ -1,5 +1,6 @@
 mod test_component_core;
 mod test_component_rijk_naive;
+mod test_hessian_uhf;
 
 use crate::test_util::{read_npz, read_npz_dict};
 use libcint::prelude::*;

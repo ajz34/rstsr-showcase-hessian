@@ -138,7 +138,7 @@ pub trait UHessElecInteractAPI {
         let occidx = [mo_occ[α].view().greater(0).into_vec(), mo_occ[β].view().greater(0).into_vec()];
         let mocc = [mo_coeff[α].bool_select(-1, &occidx[α]), mo_coeff[β].bool_select(-1, &occidx[β])];
         let deriv1_ao = self.get_deriv1_ao(mo_coeff, mo_occ, atm_list);
-        [&deriv1_ao % &mocc[α], &deriv1_ao % &mocc[β]]
+        [deriv1_ao.i((Ellipsis, α)) % &mocc[α], deriv1_ao.i((Ellipsis, β)) % &mocc[β]]
     }
 
     /// Prepare the data for response calculation.

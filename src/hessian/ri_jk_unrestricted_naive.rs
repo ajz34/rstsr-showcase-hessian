@@ -213,7 +213,7 @@ impl UHessElecInteractAPI for UHessRIJKNaive {
         let k1ao = &result["k1ao_aux0"] + &result["k1ao_aux1"];
 
         // Broadcast J to both spins: [2, nao, nao, 3, natm], then subtract per-spin K
-        let j1ao_broadcast = rt::stack(([j1ao.view(), j1ao.view()], 0));
+        let j1ao_broadcast = rt::stack(([j1ao.view(), j1ao.view()], -1));
         self.scale_j * j1ao_broadcast - self.scale_k * k1ao
     }
 

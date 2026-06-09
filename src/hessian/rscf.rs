@@ -143,7 +143,7 @@ impl<'a> RHessSCF<'a> {
         for (A_loc, &A_glob) in atm_indices.iter().enumerate() {
             *&mut s1ao.i_mut((Ellipsis, A_loc)) += gen_ovlp_deriv1(A_glob);
         }
-        let s1mo = mo_coeff.t() % &s1ao % &mocc;
+        let s1mo = mo_coeff.t() % (&s1ao % &mocc);
 
         // --- dimensionless cphf rhs --- //
 
