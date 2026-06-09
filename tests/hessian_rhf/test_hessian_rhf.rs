@@ -8,7 +8,7 @@ use rstsr_showcase_hessian::prelude::*;
 fn test_f1ao(hess_case: &CaseAmoniaRHF) {
     let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, .. } = hess_case;
 
-    let hess_hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
+    let hess_hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     let mut hess_rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
 
     let natm = mol.natm();
@@ -29,7 +29,7 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaRHF) {
     let mo_energy = mo_energy.view().into_contig(ColMajor);
     let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
     let mut nuc_repl_obj = HessNucRepl::new(mol);
-    let mut hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
+    let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
     let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
@@ -78,7 +78,7 @@ fn test_make_hess(hess_case: &CaseAmoniaRHF) {
     let mo_energy = mo_energy.view().into_contig(ColMajor);
     let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
     let mut nuc_repl_obj = HessNucRepl::new(mol);
-    let mut hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
+    let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
     let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];

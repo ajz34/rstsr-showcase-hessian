@@ -54,7 +54,7 @@ pub trait UHessCoreAPI {
 ///
 /// Difference to [`RHessElecInteractAPI`] is that we may need different signature. Basic ideas are
 /// exactly the same.
-pub trait UHElecInteractAPI {
+pub trait UHessElecInteractAPI {
     /// Generate the **skeleton** contribution of Hessian for current SCF component.
     ///
     /// # Parameters

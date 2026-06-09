@@ -32,7 +32,7 @@ fn test_atm_list_nuc_repl(hess_case: &CaseAmoniaRHF) {
 #[rstest]
 fn test_atm_list_hcore(hess_case: &CaseAmoniaRHF) {
     let CaseAmoniaRHF { mol, mo_coeff, mo_occ, .. } = hess_case;
-    let mut hess = HessHcore::new(mol, &DeviceTsr::default());
+    let mut hess = RHessHcore::new(mol, &DeviceTsr::default());
     let full = hess.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), None);
     let sel = hess.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), Some(ATM_LIST));
     let expected = select_atoms(full.view(), ATM_LIST);
@@ -113,7 +113,7 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
     let full = {
         let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
         let mut nuc_repl_obj = HessNucRepl::new(mol);
-        let mut hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
+        let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
         let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
         let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
         let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
@@ -135,7 +135,7 @@ fn test_atm_list_make_hess(hess_case: &CaseAmoniaRHF) {
     let sel = {
         let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
         let mut nuc_repl_obj = HessNucRepl::new(mol);
-        let mut hcore_obj = HessHcore::new(mol, &DeviceTsr::default());
+        let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
         let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 1.0);
         let core_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut nuc_repl_obj, &mut hcore_obj];
         let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];

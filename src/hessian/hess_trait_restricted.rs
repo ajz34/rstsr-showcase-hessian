@@ -1,16 +1,28 @@
 use crate::prelude::*;
 
+/// Abstract class for Hessian-related API for nuclear repulsion contribution.
+///
+/// # Term Explanation
+///
+/// **Nuc component** here actually means the term is of zero-order with right of (electron) density
+/// matrix. Usually this is only related to nuclear repulsion, but should denote all components that
+/// do not depend on density matrix (like DFT-D3).
+///
+/// This hessian contribution is not related to density, so no RHF/UHF/GHF distinguishment required.
+pub trait HessNucAPI {
+    fn make_skeleton_hess(&mut self, atm_list: Option<&[usize]>) -> Tsr;
+}
+
 /// Abstract class for Hessian-related API for restricted SCF core components.
 ///
 /// # Term Explanation
 ///
-/// **Core component** here actually means the term is of zero/one-order with right of (electron)
+/// **Core component** here actually means the term is of first-order with right of (electron)
 /// density matrix.
 ///
-/// - Nuclear repulsion is zero-order (unrelated to density matrix).
-/// - Core Hamiltonian is one-order (linear to density matrix).
+/// - Core Hamiltonian is first-order (linear to density matrix).
 /// - External field may have nuclear and electronic contributions. For dipole field, as an example,
-///   the electronic contribution is of one-order, and can be counted in core-hamiltonian in some
+///   the electronic contribution is of first-order, and can be counted in core-hamiltonian in some
 ///   frameworks.
 ///
 /// We have function `make_skeleton_hess` here to count the **skeleton** contribution of the

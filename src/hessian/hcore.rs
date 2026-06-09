@@ -174,18 +174,18 @@ pub fn generator_hcore_deriv1(mol: &CInt, device: &DeviceTsr) -> impl FnMut(usiz
 }
 
 /// Hessian contribution from the core Hamiltonian.
-pub struct HessHcore {
+pub struct RHessHcore {
     pub mol: CInt,
     pub device: DeviceTsr,
 }
 
-impl HessHcore {
+impl RHessHcore {
     pub fn new(mol: &CInt, device: &DeviceTsr) -> Self {
         Self { mol: mol.clone(), device: device.clone() }
     }
 }
 
-impl RHessCoreAPI for HessHcore {
+impl RHessCoreAPI for RHessHcore {
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         let dm0 = get_dm0_restricted(mo_coeff, mo_occ);
         get_hess_hcore(&self.mol, dm0.view(), atm_list)

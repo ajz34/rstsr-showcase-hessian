@@ -34,7 +34,7 @@ fn test_hess_hcore(hess_case: &CaseAmoniaRHF) {
     let CaseAmoniaRHF { mol, mo_coeff, mo_occ, ref_dict, .. } = hess_case;
 
     // compute results
-    let mut hess_hcore = HessHcore::new(mol, &DeviceTsr::default());
+    let mut hess_hcore = RHessHcore::new(mol, &DeviceTsr::default());
     let de_hcore = hess_hcore.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), None);
 
     // compare to reference
@@ -46,7 +46,7 @@ fn test_hess_hcore(hess_case: &CaseAmoniaRHF) {
 #[rstest]
 fn test_generator_hcore_deriv1(hess_case: &CaseAmoniaRHF) {
     let CaseAmoniaRHF { mol, .. } = hess_case;
-    let hess_core = HessHcore::new(mol, &DeviceTsr::default());
+    let hess_core = RHessHcore::new(mol, &DeviceTsr::default());
     let mut gen_hcore_deriv1 = hess_core.generator_deriv1().unwrap();
     assert_abs_diff_eq!(fp(gen_hcore_deriv1(0).view()), -19.44142929546185, epsilon = 1e-6);
     assert_abs_diff_eq!(fp(gen_hcore_deriv1(3).view()), 23.88285913576012, epsilon = 1e-6);
