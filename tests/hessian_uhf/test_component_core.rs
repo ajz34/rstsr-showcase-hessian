@@ -27,7 +27,7 @@ fn test_hess_hcore(hess_case: &CaseAmoniaUHF) {
 
     // compute results
     let mut hess_hcore = UHessHcore::new(mol, &DeviceTsr::default());
-    let de_hcore = hess_hcore.make_skeleton_hess(mo_coeff, mo_occ, None);
+    let de_hcore = hess_hcore.make_skeleton_hess(&mo_coeff, &mo_occ, None);
 
     // compare to reference
     let de_hcore_ref = ref_dict["de_hcore"].to_owned().into_reverse_axes();

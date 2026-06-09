@@ -209,7 +209,12 @@ impl UHessHcore {
 }
 
 impl UHessCoreAPI for UHessHcore {
-    fn make_skeleton_hess(&mut self, mo_coeff: [TsrView; 2], mo_occ: [TsrView; 2], atm_list: Option<&[usize]>) -> Tsr {
+    fn make_skeleton_hess(
+        &mut self,
+        mo_coeff: &[TsrView; 2],
+        mo_occ: &[TsrView; 2],
+        atm_list: Option<&[usize]>,
+    ) -> Tsr {
         let [上, 下] = [0, 1];
         let dm0 = get_dm0_restricted(mo_coeff[上].view(), mo_occ[上].view())
             + get_dm0_restricted(mo_coeff[下].view(), mo_occ[下].view());

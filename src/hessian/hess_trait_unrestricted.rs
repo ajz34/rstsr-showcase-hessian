@@ -28,7 +28,8 @@ pub trait UHessCoreAPI {
     ///
     /// [`RHessCoreAPI::make_skeleton_hess`]. Signature difference: `mo_coeff` and `mo_occ` type
     /// different.
-    fn make_skeleton_hess(&mut self, mo_coeff: [TsrView; 2], mo_occ: [TsrView; 2], atm_list: Option<&[usize]>) -> Tsr;
+    fn make_skeleton_hess(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>)
+        -> Tsr;
 
     /// Generate the function to compute the first-order derivative of core component.
     ///
@@ -77,7 +78,8 @@ pub trait UHessElecInteractAPI {
     ///
     /// [`RHessElecInteractAPI::make_skeleton_hess`]. Signature difference: `mo_coeff` and `mo_occ`
     /// type different.
-    fn make_skeleton_hess(&mut self, mo_coeff: [TsrView; 2], mo_occ: [TsrView; 2], atm_list: Option<&[usize]>) -> Tsr;
+    fn make_skeleton_hess(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>)
+        -> Tsr;
 
     /// First order skeleton derivative in AO basis.
     ///
@@ -97,7 +99,7 @@ pub trait UHessElecInteractAPI {
     ///
     /// [`RHessElecInteractAPI::get_deriv1_ao`]. Signature difference: `mo_coeff` and `mo_occ` type
     /// different, output shape different.
-    fn get_deriv1_ao(&mut self, mo_coeff: [TsrView; 2], mo_occ: [TsrView; 2], atm_list: Option<&[usize]>) -> Tsr;
+    fn get_deriv1_ao(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>) -> Tsr;
 
     /// First order skeleton derivative in half-transformed MO basis.
     ///
@@ -119,7 +121,12 @@ pub trait UHessElecInteractAPI {
     ///
     /// [`RHessElecInteractAPI::get_deriv1_bra`]. Signature difference: `mo_coeff` and `mo_occ` type
     /// different, output type different.
-    fn get_deriv1_bra(&mut self, mo_coeff: [TsrView; 2], mo_occ: [TsrView; 2], atm_list: Option<&[usize]>) -> [Tsr; 2] {
+    fn get_deriv1_bra(
+        &mut self,
+        mo_coeff: &[TsrView; 2],
+        mo_occ: &[TsrView; 2],
+        atm_list: Option<&[usize]>,
+    ) -> [Tsr; 2] {
         // Using `a` and `b` may be confusing for spin description. Using non-ASCII may be better.
         // To my suprise, using Han instead of Greek is actually better solution for better Unicode
         // programming. Well, the price to pay is a good monospaced font.
@@ -148,7 +155,7 @@ pub trait UHessElecInteractAPI {
     ///
     /// [`RHessElecInteractAPI::make_response_preparation`]. Signature difference: `mo_coeff` and
     /// `mo_occ` type different.
-    fn make_response_preparation(&mut self, mo_coeff: [TsrView; 2], mo_occ: [TsrView; 2]);
+    fn make_response_preparation(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2]);
 
     /// Get the response contribution for current SCF component.
     ///
@@ -167,5 +174,5 @@ pub trait UHessElecInteractAPI {
     ///
     /// [`RHessElecInteractAPI::get_response_bra`]. Signature difference: input and output type
     /// different.
-    fn get_response_bra(&self, bra: [TsrView; 2]) -> [Tsr; 2];
+    fn get_response_bra(&self, bra: &[TsrView; 2]) -> [Tsr; 2];
 }
