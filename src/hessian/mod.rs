@@ -1,14 +1,19 @@
 // trait definitions
 pub mod hess_trait_restricted;
+pub mod hess_trait_unrestricted;
 
 // core hess implementations
 pub mod hcore;
 pub mod nuc_repl;
+
+// overlap hess implementations
 pub mod ovlp;
-pub mod rscf;
 
 // electron interaction hess implementations
 pub mod ri_jk_restricted_naive;
+
+// total hess implementations
+pub mod rscf;
 
 #[allow(unused_imports)]
 pub mod prelude {

@@ -114,14 +114,12 @@ pub trait RHessElecInteractAPI {
     ///
     /// # Notes
     ///
-    /// If [`get_deriv1_ao`] implemented, this function should behave like
-    /// `deriv_bra = deriv_ao @ mocc`, where `mocc` is the occupied molecular coefficients (as
-    /// ket).
+    /// If [`get_deriv1_ao`] implemented, this function should behave like `deriv_bra = deriv_ao @
+    /// mocc`, where `mocc` is the occupied molecular coefficients (as ket).
     ///
-    /// However, in some cases, it is probably better to skip the usage of
-    /// [`get_deriv1_ao`] and directly use this function. By ket
-    /// half-transformation, some RI-JK or DFT methods will benefit from boost by using low-rank
-    /// occupied orbitals, instead of using full AO basis.
+    /// However, in some cases, it is probably better to skip the usage of [`get_deriv1_ao`] and
+    /// directly use this function. By ket half-transformation, some RI-JK or DFT methods will
+    /// benefit from boost by using low-rank occupied orbitals, instead of using full AO basis.
     ///
     /// # See also
     ///
@@ -162,12 +160,12 @@ pub trait RHessElecInteractAPI {
     ///
     /// # Parameters
     ///
-    /// - `bra` : shape [..., nao, nocc]. The bra part for response calculation. This is usually the
-    ///   derivative of MO coefficients (like $U_{\mu i}^\mathbb{A}$ given by CP-HF).
+    /// - `bra` : shape `[nao, nocc, ...]`. The bra part for response calculation. This is usually
+    ///   the derivative of MO coefficients (like $U_{\mu i}^\mathbb{A}$ given by CP-HF).
     ///
     /// # Returns
     ///
-    /// - `resp_bra` : shape [..., nao, nocc]. The response potential (related to second order of
+    /// - `resp_bra` : shape `[nao, nocc, ...]`. The response potential (related to second order of
     ///   density matrix derivative to energy).
     ///
     /// # Notes
