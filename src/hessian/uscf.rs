@@ -409,4 +409,53 @@ impl<'a> UHessSCF<'a> {
 
         self.get_cphf_hess(&f1mo, &s1mo, &mo1, &mo_e1)
     }
+
+    /// Compute the total skeleton contribution to the Hessian.
+    ///
+    /// **Total** means that we sum over all skeleton contributions from both core and
+    /// electron-interaction objects.
+    ///
+    /// # Returns
+    ///
+    /// - `de_skeleton` : shape `[3, 3, natm, natm]`. The total skeleton contribution to the
+    ///   Hessian.
+    pub fn make_skeleton_hess(&mut self) -> Tsr {
+        let [α, β] = [0, 1];
+        let natm = self.natm();
+        let mo_coeff = [self.mo_coeff[α].view(), self.mo_coeff[β].view()];
+        let mo_occ = [self.mo_occ[α].view(), self.mo_occ[β].view()];
+        let atm_list = self.atm_list.as_deref();
+
+        let device = self.mo_coeff[α].device().clone();
+        let mut de_skeleton = rt::zeros(([3, 3, natm, natm], &device));
+        for nuc_obj in self.nuc_list.iter_mut() {
+            de_skeleton += nuc_obj.make_skeleton_hess(atm_list);
+        }
+        for core_obj in self.core_list.iter_mut() {
+            de_skeleton += core_obj.make_skeleton_hess(&mo_coeff, &mo_occ, atm_list);
+        }
+        for el_obj in self.el_list.iter_mut() {
+            de_skeleton += el_obj.make_skeleton_hess(&mo_coeff, &mo_occ, atm_list);
+        }
+        de_skeleton
+    }
+
+    /// Compute the total Hessian by summing over skeleton, overlap, and CP-HF contributions.
+    ///
+    /// # Returns
+    ///
+    /// - `de_hess` : shape `[3, 3, natm, natm]`. The total Hessian.
+    pub fn make_hess(&mut self) -> Tsr {
+        let [α, β] = [0, 1];
+        let dme0 = [
+            get_dme0_restricted(self.mo_coeff[α].view(), self.mo_occ[α].view(), self.mo_energy[α].view()),
+            get_dme0_restricted(self.mo_coeff[β].view(), self.mo_occ[β].view(), self.mo_energy[β].view()),
+        ];
+        let atm_list = self.atm_list.clone();
+
+        let de_skeleton = self.make_skeleton_hess();
+        let de_ovlp = self.ovlp_obj.make_hess([dme0[α].view(), dme0[β].view()], atm_list.as_deref());
+        let de_cphf = self.make_cphf_hess();
+        de_skeleton + de_ovlp + de_cphf
+    }
 }

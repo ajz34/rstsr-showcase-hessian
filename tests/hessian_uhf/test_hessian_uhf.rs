@@ -74,3 +74,33 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaUHF) {
     assert!(rt::allclose(de_cphf.view(), ref_de_cphf.view(), (1e-4, 1e-6)));
     assert_abs_diff_eq!(fp(de_cphf.view()), -0.40949468934990596, epsilon = 1e-5);
 }
+
+#[rstest]
+fn test_make_hess(hess_case: &CaseAmoniaUHF) {
+    let CaseAmoniaUHF { mol, aux, mo_coeff, mo_occ, mo_energy, ref_dict } = hess_case;
+
+    let ovlp_obj = UHessOvlp::new(mol, &DeviceTsr::default());
+    let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
+    let mut hcore_obj = UHessHcore::new(mol, &DeviceTsr::default());
+    let mut rijk_obj = UHessRIJKNaive::new(mol, aux, 1.0, 1.0);
+    let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
+    let hcore_list: Vec<&mut dyn UHessCoreAPI> = vec![&mut hcore_obj];
+    let el_list: Vec<&mut dyn UHessElecInteractAPI> = vec![&mut rijk_obj];
+    let config = HessSCFConfig::default();
+    let mut hess_scf = UHessSCF::new(
+        mo_coeff.clone(),
+        mo_occ.clone(),
+        mo_energy.clone(),
+        ovlp_obj,
+        nuc_list,
+        hcore_list,
+        el_list,
+        config,
+        None,
+    );
+
+    let de_hess = hess_scf.make_hess();
+    let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
+    assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 1e-5)));
+    assert_abs_diff_eq!(fp(de_hess.view()), 0.6241806384454698, epsilon = 1e-4);
+}
