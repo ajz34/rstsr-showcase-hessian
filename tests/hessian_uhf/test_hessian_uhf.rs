@@ -65,4 +65,12 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaUHF) {
     assert!(rt::allclose(mo_e1_1.view(), ref_mo_e1_1.view(), (1e-3, 1e-4)));
     assert_abs_diff_eq!(fp(mo_e1_0.swapaxes(0, 1)), -1.1979763394388616, epsilon = 1e-4);
     assert_abs_diff_eq!(fp(mo_e1_1.swapaxes(0, 1)), -0.20920766550023265, epsilon = 1e-4);
+
+    // compute de_cphf
+    let mo1 = [mo1_fin_0.view(), mo1_fin_1.view()];
+    let mo_e1 = [mo_e1_0.view(), mo_e1_1.view()];
+    let de_cphf = hess_scf.get_cphf_hess(&f1mo, &s1mo, &mo1, &mo_e1);
+    let ref_de_cphf = hess_case.ref_dict["de_cphf"].transpose([2, 3, 0, 1]);
+    assert!(rt::allclose(de_cphf.view(), ref_de_cphf.view(), (1e-4, 1e-6)));
+    assert_abs_diff_eq!(fp(de_cphf.view()), -0.40949468934990596, epsilon = 1e-5);
 }

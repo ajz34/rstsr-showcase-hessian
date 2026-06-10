@@ -195,6 +195,7 @@ class TestHessianUHF(unittest.TestCase):
 
         de_cphf = hess_impl.get_cphf_hess(pre_cphf_dict["f1mo"], pre_cphf_dict["s1mo"], mo1_fin, mo_e1)
         self.assertTrue(np.allclose(de_cphf, ref_value["de_cphf"], atol=1e-6, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(de_cphf), -0.40949468934990596, places=6)
 
     def test_make_hess(self):
         hess_impl = UHessSCF(

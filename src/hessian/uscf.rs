@@ -353,4 +353,60 @@ impl<'a> UHessSCF<'a> {
 
         HashMap::from([("mo1_0", mo1_α), ("mo1_1", mo1_β), ("mo_e1_0", mo_e1_α), ("mo_e1_1", mo_e1_β)])
     }
+
+    pub fn get_cphf_hess(
+        &self,
+        f1mo: &[TsrView; 2],
+        s1mo: &[TsrView; 2],
+        mo1: &[TsrView; 2],
+        mo_e1: &[TsrView; 2],
+    ) -> Tsr {
+        let [α, β] = [0, 1];
+        let natm = self.natm();
+        let mo_occ = [self.mo_occ[α].view(), self.mo_occ[β].view()];
+        let occidx = [mo_occ[α].view().greater(0).into_vec(), mo_occ[β].view().greater(0).into_vec()];
+        let nocc = [occidx[α].iter().filter(|&&x| x).count(), occidx[β].iter().filter(|&&x| x).count()];
+        let eocc = [
+            self.mo_energy[α].view().bool_select(-1, &occidx[α]),
+            self.mo_energy[β].view().bool_select(-1, &occidx[β]),
+        ];
+        let so = [rt::slice!(0, nocc[α]), rt::slice!(0, nocc[β])];
+        let s1oo = [s1mo[α].i(so[α]), s1mo[β].i(so[β])];
+        let device = f1mo[α].device().clone();
+
+        let mut de_cphf = rt::zeros(([3, 3, natm, natm], &device));
+        for A in 0..natm {
+            for B in 0..=A {
+                let mut de_BA = de_cphf.i_mut((.., .., B, A));
+                for σ in [α, β] {
+                    de_BA += 2 * (f1mo[σ].i((.., .., None, .., A)) * mo1[σ].i((.., .., .., None, B))).sum_axes([0, 1]);
+                    de_BA -= 2
+                        * (s1mo[σ].i((.., .., None, .., A)) * mo1[σ].i((.., .., .., None, B)) * eocc[σ].i((None, ..)))
+                            .sum_axes([0, 1]);
+                    de_BA -= (s1oo[σ].i((.., .., None, .., A)) * mo_e1[σ].i((.., .., .., None, B))).sum_axes([0, 1]);
+                }
+            }
+            for B in 0..A {
+                let de_to_copy = de_cphf.i((.., .., B, A)).t().to_owned();
+                *&mut de_cphf.i_mut((.., .., A, B)) += de_to_copy;
+            }
+        }
+        de_cphf
+    }
+
+    pub fn make_cphf_hess(&mut self) -> Tsr {
+        let pre_cphf_dict = self.compute_dimless_cphf_rhs();
+        let f1mo = [pre_cphf_dict.get("f1mo_0").unwrap().view(), pre_cphf_dict.get("f1mo_1").unwrap().view()];
+        let s1mo = [pre_cphf_dict.get("s1mo_0").unwrap().view(), pre_cphf_dict.get("s1mo_1").unwrap().view()];
+        let rhs = [pre_cphf_dict.get("rhs_0").unwrap().view(), pre_cphf_dict.get("rhs_1").unwrap().view()];
+
+        self.make_response_preparation();
+        let mo1 = self.solve_dimless_cphf(&rhs);
+        let mo1_view = [mo1[0].view(), mo1[1].view()];
+        let finalize_dict = self.finalize_cphf(&f1mo, &s1mo, &mo1_view);
+        let mo1 = [finalize_dict.get("mo1_0").unwrap().view(), finalize_dict.get("mo1_1").unwrap().view()];
+        let mo_e1 = [finalize_dict.get("mo_e1_0").unwrap().view(), finalize_dict.get("mo_e1_1").unwrap().view()];
+
+        self.get_cphf_hess(&f1mo, &s1mo, &mo1, &mo_e1)
+    }
 }
