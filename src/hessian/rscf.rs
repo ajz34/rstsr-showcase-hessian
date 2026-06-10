@@ -275,11 +275,12 @@ impl<'a> RHessSCF<'a> {
     ///
     /// # Parameters
     ///
+    /// - `f1mo` : shape `[nmo, nocc, 3, natm]`. The first-order derivative of the Fock matrix in MO
+    ///   basis, obtained from [`Self::compute_dimless_cphf_rhs`].
+    /// - `s1mo` : shape `[nmo, nocc, 3, natm]`. The first-order derivative of the overlap matrix in
+    ///   MO basis, obtained from [`Self::compute_dimless_cphf_rhs`].
     /// - `mo1` : shape `[nmo, nocc, 3, natm]`. The perturbation in MO space obtained from Krylov
     ///   solver.
-    /// - `pre_cphf_dict` : `HashMap<&str, Tsr>`. The dictionary returned by
-    ///   [`Self::compute_dimless_cphf_rhs`], containing necessary intermediates for finalizing
-    ///   CP-HF results.
     ///
     /// # Returns
     ///

@@ -183,11 +183,15 @@ class TestHessianUHF(unittest.TestCase):
         mo_e1 = result_cphf["mo_e1"]
         self.assertTrue(np.allclose(mo1_fin[0], mo1_a_ref, atol=1e-5, rtol=1e-4))
         self.assertTrue(np.allclose(mo1_fin[1], mo1_b_ref, atol=1e-5, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(mo1_fin[0]), 0.04797427280601669, places=4)
+        self.assertAlmostEqual(lib.fp(mo1_fin[1]), -1.1346573239117455, places=4)
         mo_e1_a_ref = ref_value["mo_e1_a"]
         mo_e1_b_ref = ref_value["mo_e1_b"]
         # mo_e1 depends on response of CPHF solution, so accuracy is one order lower than mo1.
         self.assertTrue(np.allclose(mo_e1[0], mo_e1_a_ref, atol=1e-4, rtol=1e-3))
         self.assertTrue(np.allclose(mo_e1[1], mo_e1_b_ref, atol=1e-4, rtol=1e-3))
+        self.assertAlmostEqual(lib.fp(mo_e1[0]), -1.1979763394388616, places=4)
+        self.assertAlmostEqual(lib.fp(mo_e1[1]), -0.20920766550023265, places=4)
 
         de_cphf = hess_impl.get_cphf_hess(pre_cphf_dict["f1mo"], pre_cphf_dict["s1mo"], mo1_fin, mo_e1)
         self.assertTrue(np.allclose(de_cphf, ref_value["de_cphf"], atol=1e-6, rtol=1e-4))

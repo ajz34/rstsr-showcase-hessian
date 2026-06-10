@@ -293,4 +293,68 @@ impl<'a> UHessSCF<'a> {
         let [mo1_α, mo1_β] = unpack_flattened(mo1_flattened.view());
         [mo1_α.into_shape(rhs_shape[α].to_vec()), mo1_β.into_shape(rhs_shape[β].to_vec())]
     }
+
+    /// Finalize the CP-HF calculation by computing necessary intermediates for Hessian assembly.
+    ///
+    ///
+    /// # Parameters
+    ///
+    /// - `f1mo` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
+    ///   first-order derivative of the Fock matrix in MO basis, obtained from
+    ///   [`Self::compute_dimless_cphf_rhs`].
+    /// - `s1mo` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
+    ///   first-order derivative of the overlap matrix in MO basis, obtained from
+    ///   [`Self::compute_dimless_cphf_rhs`].
+    /// - `mo1` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
+    ///   perturbation in MO space obtained from Krylov solver.
+    ///
+    /// # Returns
+    ///
+    /// `HashMap<&str, Tsr>`
+    ///
+    /// - `mo1_0`, `mo1_1` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
+    ///   finalized perturbation in MO space.
+    /// - `mo_e1_0`, `mo_e1_1` : shape `[nocc_alpha, nocc_alpha, 3, natm]` and `[nocc_beta,
+    ///   nocc_beta, 3, natm]`. The derivative of occupied orbital energies (Fock matrix) with
+    ///   respect to perturbation.
+    pub fn finalize_cphf(
+        &self,
+        f1mo: &[TsrView; 2],
+        s1mo: &[TsrView; 2],
+        mo1: &[TsrView; 2],
+    ) -> HashMap<&'static str, Tsr> {
+        let [α, β] = [0, 1];
+        let mo_occ = [self.mo_occ[α].view(), self.mo_occ[β].view()];
+        let occidx = [mo_occ[α].view().greater(0).into_vec(), mo_occ[β].view().greater(0).into_vec()];
+        let viridx = [occidx[α].iter().map(|&x| !x).collect_vec(), occidx[β].iter().map(|&x| !x).collect_vec()];
+        let nocc = [occidx[α].iter().filter(|&&x| x).count(), occidx[β].iter().filter(|&&x| x).count()];
+        let nmo = [mo_occ[α].shape()[0], mo_occ[β].shape()[0]];
+        let eocc = [
+            self.mo_energy[α].view().bool_select(-1, &occidx[α]),
+            self.mo_energy[β].view().bool_select(-1, &occidx[β]),
+        ];
+        let evir = [
+            self.mo_energy[α].view().bool_select(-1, &viridx[α]),
+            self.mo_energy[β].view().bool_select(-1, &viridx[β]),
+        ];
+        let so = [rt::slice!(0, nocc[α]), rt::slice!(0, nocc[β])];
+        let sv = [rt::slice!(nocc[α], nmo[α]), rt::slice!(nocc[β], nmo[β])];
+        let e_ai = [evir[α].i((.., None)) - eocc[α].i((None, ..)), evir[β].i((.., None)) - eocc[β].i((None, ..))];
+        let e_ij = [eocc[α].i((.., None)) - eocc[α].i((None, ..)), eocc[β].i((.., None)) - eocc[β].i((None, ..))];
+
+        // last-iter the cp-hf equation, and remove the level-shift
+        let last_resp = self.response_mo(mo1);
+        let b1mo_α = &f1mo[α] - &s1mo[α] * eocc[α].i((None, ..)) + &last_resp[α];
+        let b1mo_β = &f1mo[β] - &s1mo[β] * eocc[β].i((None, ..)) + &last_resp[β];
+        let mut mo1_α = mo1[α].to_owned();
+        let mut mo1_β = mo1[β].to_owned();
+        mo1_α.i_mut(sv[α]).assign(-b1mo_α.i(sv[α]) / &e_ai[α]);
+        mo1_β.i_mut(sv[β]).assign(-b1mo_β.i(sv[β]) / &e_ai[β]);
+
+        // get the derivative of fock matrix in occ-occ block (derivative of orbital energy with rotation)
+        let mo_e1_α = b1mo_α.i(so[α]) + &mo1_α.i(so[α]) * &e_ij[α];
+        let mo_e1_β = b1mo_β.i(so[β]) + &mo1_β.i(so[β]) * &e_ij[β];
+
+        HashMap::from([("mo1_0", mo1_α), ("mo1_1", mo1_β), ("mo_e1_0", mo_e1_α), ("mo_e1_1", mo_e1_β)])
+    }
 }
