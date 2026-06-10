@@ -139,4 +139,158 @@ impl<'a> UHessSCF<'a> {
             ("rhs_1", rhs_β),
         ])
     }
+
+    /// Prepare the response for CPHF calculation.
+    ///
+    /// This involves all electron-interaction objects.
+    pub fn make_response_preparation(&mut self) {
+        let mo_coeff = [self.mo_coeff[0].view(), self.mo_coeff[1].view()];
+        let mo_occ = [self.mo_occ[0].view(), self.mo_occ[1].view()];
+        for el_obj in self.el_list.iter_mut() {
+            el_obj.make_response_preparation(&mo_coeff, &mo_occ);
+        }
+    }
+
+    /// Compute the response of the system to a given perturbation in MO space (mo1), which is
+    /// needed for CPHF.
+    ///
+    /// # Parameters
+    ///
+    /// - `mo1` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The perturbation in MO
+    ///   space.
+    ///
+    /// # Returns
+    ///
+    /// - `resp` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The response in MO
+    ///   space.
+    pub fn response_mo(&self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
+        let [α, β] = [0, 1];
+        let ubra_α = &self.mo_coeff[α] % &mo1[α];
+        let ubra_β = &self.mo_coeff[β] % &mo1[β];
+        let mut resp_α = rt::zeros_like(&ubra_α);
+        let mut resp_β = rt::zeros_like(&ubra_β);
+
+        for el_obj in self.el_list.iter() {
+            let el_resp = el_obj.get_response_bra(&[ubra_α.view(), ubra_β.view()]);
+            resp_α += self.mo_coeff[α].t() % &el_resp[α];
+            resp_β += self.mo_coeff[β].t() % &el_resp[β];
+        }
+        [resp_α, resp_β]
+    }
+
+    /// Compute the dimensionless response for CP-HF calculation.
+    ///
+    /// # Parameters
+    ///
+    /// - `mo1` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The perturbation in MO
+    ///   space.
+    ///
+    /// # Returns
+    ///
+    /// - `resp` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The dimensionless
+    ///   response in MO space.
+    pub fn response_dimless_cphf(&self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
+        let [α, β] = [0, 1];
+        let mo_occ = [self.mo_occ[α].view(), self.mo_occ[β].view()];
+        let occidx = [mo_occ[α].view().greater(0).into_vec(), mo_occ[β].view().greater(0).into_vec()];
+        let viridx = [occidx[α].iter().map(|&x| !x).collect_vec(), occidx[β].iter().map(|&x| !x).collect_vec()];
+        let nocc = [occidx[α].iter().filter(|&&x| x).count(), occidx[β].iter().filter(|&&x| x).count()];
+        let nmo = [mo_occ[α].shape()[0], mo_occ[β].shape()[0]];
+        let eocc = [
+            self.mo_energy[α].view().bool_select(-1, &occidx[α]),
+            self.mo_energy[β].view().bool_select(-1, &occidx[β]),
+        ];
+        let evir = [
+            self.mo_energy[α].view().bool_select(-1, &viridx[α]),
+            self.mo_energy[β].view().bool_select(-1, &viridx[β]),
+        ];
+        let e_ai = [evir[α].i((.., None)) - eocc[α].i((None, ..)), evir[β].i((.., None)) - eocc[β].i((None, ..))];
+        let level_shift = self.config.level_shift;
+        let e_ai_shift = [&e_ai[0] + level_shift, &e_ai[1] + level_shift];
+        let so = [rt::slice!(0, nocc[α]), rt::slice!(0, nocc[β])];
+        let sv = [rt::slice!(nocc[α], nmo[α]), rt::slice!(nocc[β], nmo[β])];
+
+        let mut resp = self.response_mo(mo1);
+
+        // handle dimension less denominator and occupied response part
+        if level_shift != 0.0 {
+            *&mut resp[α] -= level_shift * &mo1[α];
+            *&mut resp[β] -= level_shift * &mo1[β];
+        }
+        *&mut resp[α].i_mut(sv[α]) /= &e_ai_shift[α];
+        *&mut resp[β].i_mut(sv[β]) /= &e_ai_shift[β];
+        resp[α].i_mut(so[α]).fill(0.0);
+        resp[β].i_mut(so[β]).fill(0.0);
+        resp
+    }
+
+    /// Solve the dimensionless CP-HF equation using a Krylov solver.
+    ///
+    /// # Parameters
+    ///
+    /// - `rhs` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. Dimensionless
+    ///   right-hand side.
+    ///
+    /// # Returns
+    ///
+    /// - `mo1` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. Perturbation in MO
+    ///   space that solves the dimensionless CP-HF equation.
+    pub fn solve_dimless_cphf(&self, rhs: &[TsrView; 2]) -> [Tsr; 2] {
+        let [α, β] = [0, 1];
+        let rhs_shape = [rhs[α].shape().to_vec(), rhs[β].shape().to_vec()];
+        let nmo = [rhs[α].shape()[0], rhs[β].shape()[0]];
+        let nocc = [rhs[α].shape()[1], rhs[β].shape()[1]];
+        let rhs = [rhs[α].reshape((nmo[α], nocc[α], -1)), rhs[β].reshape((nmo[β], nocc[β], -1))];
+        let device = rhs[α].device().clone();
+
+        let pack_flattened = |x: &[TsrView; 2]| -> Tsr {
+            // original: [nmo_α, nocc_α, nprop] and [nmo_β, nocc_β, nprop]
+            // target: [nmo_α * nocc_α + nmo_β * nocc_β, nprop]
+            check_shape!(x[α].ndim(), 3, "Expected x[α] to have shape [nmo_α, nocc_α, nprop]");
+            check_shape!(x[β].ndim(), 3, "Expected x[β] to have shape [nmo_β, nocc_β, nprop]");
+            let nprop = x[α].shape()[2];
+            let mut x_flattened = rt::zeros(([nmo[α] * nocc[α] + nmo[β] * nocc[β], nprop], &device));
+            for A in 0..nprop {
+                x_flattened.i_mut((..nmo[α] * nocc[α], A)).assign(x[α].i((.., .., A)).reshape(-1));
+                x_flattened.i_mut((nmo[α] * nocc[α].., A)).assign(x[β].i((.., .., A)).reshape(-1));
+            }
+            x_flattened
+        };
+
+        let unpack_flattened = |x: TsrView| -> [Tsr; 2] {
+            // original: [nmo_α * nocc_α + nmo_β * nocc_β, nprop]
+            // target: [nmo_α, nocc_α, nprop] and [nmo_β, nocc_β, nprop]
+            check_shape!(x.ndim(), 2, "Expected x to have shape [nmo_α * nocc_α + nmo_β * nocc_β, nprop]");
+            let nprop = x.shape()[1];
+            let idx_split = nmo[α] * nocc[α];
+            let mut x_α = rt::zeros(([nmo[α], nocc[α], nprop], &device));
+            let mut x_β = rt::zeros(([nmo[β], nocc[β], nprop], &device));
+            for A in 0..nprop {
+                x_α.i_mut((.., .., A)).assign(x.i((..idx_split, A)).reshape((nmo[α], nocc[α])));
+                x_β.i_mut((.., .., A)).assign(x.i((idx_split.., A)).reshape((nmo[β], nocc[β])));
+            }
+            [x_α, x_β]
+        };
+
+        let response_cphf_flattened = |x: TsrView| -> Tsr {
+            // split x by spin and reshape to original shape
+            let [x_α, x_β] = unpack_flattened(x);
+            // compute response by usual means
+            let resp = self.response_dimless_cphf(&[x_α.view(), x_β.view()]);
+            // flatten resp to shape (nmo*nocc, nprop)
+            let resp_view = resp.iter().map(|r| r.view()).collect_array().unwrap();
+            pack_flattened(&resp_view)
+        };
+
+        let tol = self.config.cphf_tol;
+        let max_cycle = self.config.cphf_max_cycle;
+        let max_space = self.config.cphf_max_space;
+        let lindep = self.config.cphf_lindep;
+        let rhs_view = rhs.iter().map(|r| r.view()).collect_array().unwrap();
+        let rhs_packed = pack_flattened(&rhs_view);
+        let mo1_flattened =
+            krylov_block(response_cphf_flattened, rhs_packed.view(), None, tol, max_cycle, max_space, lindep);
+        let [mo1_α, mo1_β] = unpack_flattened(mo1_flattened.view());
+        [mo1_α.into_shape(rhs_shape[α].to_vec()), mo1_β.into_shape(rhs_shape[β].to_vec())]
+    }
 }

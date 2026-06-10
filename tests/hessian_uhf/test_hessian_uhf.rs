@@ -32,4 +32,16 @@ fn test_dimensionless_cphf_rhs(hess_case: &CaseAmoniaUHF) {
     let pre_cphf_dict = hess_scf.compute_dimless_cphf_rhs();
     assert_abs_diff_eq!(fp(pre_cphf_dict["rhs_0"].swapaxes(0, 1)), -0.01785256539468953, epsilon = 1e-5);
     assert_abs_diff_eq!(fp(pre_cphf_dict["rhs_1"].swapaxes(0, 1)), 0.14550989432158085, epsilon = 1e-5);
+
+    // solve cphf
+    let rhs = [pre_cphf_dict["rhs_0"].view(), pre_cphf_dict["rhs_1"].view()];
+    hess_scf.make_response_preparation();
+    let mo1 = hess_scf.solve_dimless_cphf(&rhs);
+
+    let ref_mo1_0 = hess_case.ref_dict["mo1_a"].transpose((2, 3, 1, 0));
+    let ref_mo1_1 = hess_case.ref_dict["mo1_b"].transpose((2, 3, 1, 0));
+    assert!(rt::allclose(mo1[0].view(), ref_mo1_0.view(), (1e-3, 1e-4)));
+    assert!(rt::allclose(mo1[1].view(), ref_mo1_1.view(), (1e-3, 1e-4)));
+    assert_abs_diff_eq!(fp(mo1[0].swapaxes(0, 1)), 0.04797427280601669, epsilon = 1e-4);
+    assert_abs_diff_eq!(fp(mo1[1].swapaxes(0, 1)), -1.1346573239117455, epsilon = 1e-4);
 }

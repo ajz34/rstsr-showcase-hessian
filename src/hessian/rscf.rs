@@ -85,6 +85,9 @@ impl<'a> RHessSCF<'a> {
     ///   to carefully handle the CP-HF equation. this behavior should be similar to PySCF's
     ///   `solve_withs1`.
     ///
+    /// Note **dimless** here means the CP-HF equation is of no quantity dimension (量纲), but not
+    /// the tensor structure is dimensionless.
+    ///
     /// # Returns
     ///     
     /// A dictionary containing:
@@ -165,6 +168,7 @@ impl<'a> RHessSCF<'a> {
             el_obj.make_response_preparation(self.mo_coeff.view(), self.mo_occ.view());
         }
     }
+
     /// Compute the response of the system to a given perturbation in MO space (mo1), which is
     /// needed for CPHF.
     ///
@@ -174,7 +178,7 @@ impl<'a> RHessSCF<'a> {
     ///
     /// # Returns
     ///
-    /// - `resp` : shape `[..., nmo, nocc]`. The response in MO space.
+    /// - `resp` : shape `[nmo, nocc, ...]`. The response in MO space.
     pub fn response_mo(&self, mo1: TsrView) -> Tsr {
         let mo_coeff = self.mo_coeff.view();
         let ubra = &mo_coeff % &mo1;
@@ -184,6 +188,7 @@ impl<'a> RHessSCF<'a> {
         }
         resp
     }
+
     /// Compute the dimensionless response for CP-HF calculation.
     ///
     /// Compared to usual CP-HF response, this additionally handles
@@ -232,12 +237,12 @@ impl<'a> RHessSCF<'a> {
     ///
     /// # Parameters
     ///
-    /// - `rhs` : shape `[nmo, nocc, 3, natm]`. Dimensionless right-hand side.
+    /// - `rhs` : shape `[nmo, nocc, ...]`. Dimensionless right-hand side.
     ///
     /// # Returns
     ///
-    /// - `mo1` : shape `[nmo, nocc, 3, natm]`. Perturbation in MO space that solves the
-    ///   dimensionless CP-HF equation.
+    /// - `mo1` : shape `[nmo, nocc, ...]`. Perturbation in MO space that solves the dimensionless
+    ///   CP-HF equation.
     pub fn solve_dimless_cphf(&self, rhs: TsrView) -> Tsr {
         let rhs_shape = rhs.shape().to_vec();
         let nmo = rhs.shape()[0];

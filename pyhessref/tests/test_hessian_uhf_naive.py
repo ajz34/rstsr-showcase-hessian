@@ -175,6 +175,8 @@ class TestHessianUHF(unittest.TestCase):
         # Pre-finalize Krylov solution is accurate to ~1e-5 (matches RHF behavior).
         self.assertTrue(np.allclose(mo1[0], mo1_a_ref, atol=1e-4, rtol=1e-3))
         self.assertTrue(np.allclose(mo1[1], mo1_b_ref, atol=1e-4, rtol=1e-3))
+        self.assertAlmostEqual(lib.fp(mo1[0]), 0.04797427280601669, places=4)
+        self.assertAlmostEqual(lib.fp(mo1[1]), -1.1346573239117455, places=4)
 
         result_cphf = hess_impl.finalize_cphf(mo1, pre_cphf_dict)
         mo1_fin = result_cphf["mo1"]
