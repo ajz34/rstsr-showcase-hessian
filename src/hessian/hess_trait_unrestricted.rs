@@ -9,11 +9,10 @@ pub trait UHessCoreAPI {
     ///
     /// # Parameters
     ///
-    /// - `mo_coeff` : shape `[nao, nmo_alpha]` and `[nao, nmo_beta]`. Molecular orbital
-    ///   coefficients.
-    /// - `mo_occ` : shape `[nmo_alpha]` and `[nmo_beta]`. Molecular orbital occupation numbers. In
-    ///   usual cases, the occupied orbitals should have occupation 1 (unrestricted), and virtual
-    ///   orbitals should have occupation 0.
+    /// - `mo_coeff` : shape `[nao, nmo_α]` and `[nao, nmo_β]`. Molecular orbital coefficients.
+    /// - `mo_occ` : shape `[nmo_α]` and `[nmo_β]`. Molecular orbital occupation numbers. In usual
+    ///   cases, the occupied orbitals should have occupation 1 (unrestricted), and virtual orbitals
+    ///   should have occupation 0.
     /// - `atm_list` : optional list of atom indices to compute the Hessian for. If `None`, all
     ///   atoms are computed.
     ///
@@ -60,11 +59,10 @@ pub trait UHessElecInteractAPI {
     ///
     /// # Parameters
     ///
-    /// - `mo_coeff` : shape `[nao, nmo_alpha]` and `[nao, nmo_beta]`. Molecular orbital
-    ///   coefficients.
-    /// - `mo_occ` : shape `[nmo_alpha]` and `[nmo_beta]`. Molecular orbital occupation numbers. In
-    ///   usual cases, the occupied orbitals should have occupation 1, and virtual orbitals should
-    ///   have occupation 0.
+    /// - `mo_coeff` : shape `[nao, nmo_α]` and `[nao, nmo_β]`. Molecular orbital coefficients.
+    /// - `mo_occ` : shape `[nmo_α]` and `[nmo_β]`. Molecular orbital occupation numbers. In usual
+    ///   cases, the occupied orbitals should have occupation 1, and virtual orbitals should have
+    ///   occupation 0.
     /// - `atm_list` : optional list of atom indices to compute the Hessian for. If `None`, all
     ///   atoms are computed.
     ///
@@ -85,9 +83,8 @@ pub trait UHessElecInteractAPI {
     ///
     /// # Parameters
     ///
-    /// - `mo_coeff` : shape `[nao, nmo_alpha]` and `[nao, nmo_beta]`. Molecular orbital
-    ///   coefficients.
-    /// - `mo_occ` : shape `[nmo_alpha]` and `[nmo_beta]`. Molecular orbital occupation numbers.
+    /// - `mo_coeff` : shape `[nao, nmo_α]` and `[nao, nmo_β]`. Molecular orbital coefficients.
+    /// - `mo_occ` : shape `[nmo_α]` and `[nmo_β]`. Molecular orbital occupation numbers.
     /// - `atm_list` : optional list of atom indices over which derivatives are computed.
     ///
     /// # Returns
@@ -106,17 +103,16 @@ pub trait UHessElecInteractAPI {
     ///
     /// # Parameters
     ///
-    /// - `mo_coeff` : shape `[nao, nmo_alpha]` and `[nao, nmo_beta]`. Molecular orbital
-    ///   coefficients.
-    /// - `mo_occ` : shape `[nmo_alpha]` and `[nmo_beta]`. Molecular orbital occupation numbers.
+    /// - `mo_coeff` : shape `[nao, nmo_α]` and `[nao, nmo_β]`. Molecular orbital coefficients.
+    /// - `mo_occ` : shape `[nmo_α]` and `[nmo_β]`. Molecular orbital occupation numbers.
     /// - `atm_list` : optional list of atom indices over which derivatives are computed.
     ///
     /// # Returns
     ///
-    /// - `deriv_bra` : shape `[nao, nocc_alpha, 3, natm]` and `[nao, nocc_beta, 3, natm]`. The
-    ///   first-order skeleton derivative in half-transformed MO basis. Note that this function will
-    ///   handle the order of occupied orbitals. If occupation number is not sorted contiguously,
-    ///   you may be extra cautious to this function.
+    /// - `deriv_bra` : shape `[nao, nocc_α, 3, natm]` and `[nao, nocc_β, 3, natm]`. The first-order
+    ///   skeleton derivative in half-transformed MO basis. Note that this function will handle the
+    ///   order of occupied orbitals. If occupation number is not sorted contiguously, you may be
+    ///   extra cautious to this function.
     ///
     /// # See also
     ///
@@ -146,9 +142,8 @@ pub trait UHessElecInteractAPI {
     ///
     /// # Parameters
     ///
-    /// - `mo_coeff` : shape `[nao, nmo_alpha]` and `[nao, nmo_beta]`. Molecular orbital
-    ///   coefficients.
-    /// - `mo_occ` : shape `[nmo_alpha]` and `[nmo_beta]`. Molecular orbital occupation numbers.
+    /// - `mo_coeff` : shape `[nao, nmo_α]` and `[nao, nmo_β]`. Molecular orbital coefficients.
+    /// - `mo_occ` : shape `[nmo_α]` and `[nmo_β]`. Molecular orbital occupation numbers.
     ///
     /// # See also
     ///
@@ -161,13 +156,13 @@ pub trait UHessElecInteractAPI {
     ///
     /// # Parameters
     ///
-    /// - `bra` : shape `[nao, nocc_alpha, ...]` and `[nao, nocc_beta, ...]`. The bra part for
-    ///   response calculation.
+    /// - `bra` : shape `[nao, nocc_α, ...]` and `[nao, nocc_β, ...]`. The bra part for response
+    ///   calculation.
     ///
     /// # Returns
     ///
-    /// - `resp_bra` : shape `[nao, nocc_alpha, ...]` and `[nao, nocc_beta, ...]`. The response
-    ///   potential (related to second order of density matrix derivative to energy).
+    /// - `resp_bra` : shape `[nao, nocc_α, ...]` and `[nao, nocc_β, ...]`. The response potential
+    ///   (related to second order of density matrix derivative to energy).
     ///
     /// # See also
     ///

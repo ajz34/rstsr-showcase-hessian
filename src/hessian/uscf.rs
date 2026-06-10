@@ -54,12 +54,12 @@ impl<'a> UHessSCF<'a> {
     /// # Returns
     ///     
     /// A dictionary containing:
-    /// - `rhs : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
-    ///   dimensionless CPHF right-hand side.
-    /// - `f1mo` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
-    ///   first-order derivative of the Fock matrix in MO basis.
-    /// - `s1mo` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
-    ///   first-order derivative of the overlap matrix in MO basis.
+    /// - `rhs : shape `[nmo, nocc_α, 3, natm]` and `[nmo, nocc_β, 3, natm]`. The dimensionless CPHF
+    ///   right-hand side.
+    /// - `f1mo` : shape `[nmo, nocc_α, 3, natm]` and `[nmo, nocc_β, 3, natm]`. The first-order
+    ///   derivative of the Fock matrix in MO basis.
+    /// - `s1mo` : shape `[nmo, nocc_α, 3, natm]` and `[nmo, nocc_β, 3, natm]`. The first-order
+    ///   derivative of the overlap matrix in MO basis.
     pub fn compute_dimless_cphf_rhs(&mut self) -> HashMap<&'static str, Tsr> {
         let [α, β] = [0, 1];
         let mo_coeff = [self.mo_coeff[α].view(), self.mo_coeff[β].view()];
@@ -156,13 +156,11 @@ impl<'a> UHessSCF<'a> {
     ///
     /// # Parameters
     ///
-    /// - `mo1` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The perturbation in MO
-    ///   space.
+    /// - `mo1` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. The perturbation in MO space.
     ///
     /// # Returns
     ///
-    /// - `resp` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The response in MO
-    ///   space.
+    /// - `resp` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. The response in MO space.
     pub fn response_mo(&self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
         let [α, β] = [0, 1];
         let ubra_α = &self.mo_coeff[α] % &mo1[α];
@@ -182,13 +180,12 @@ impl<'a> UHessSCF<'a> {
     ///
     /// # Parameters
     ///
-    /// - `mo1` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The perturbation in MO
-    ///   space.
+    /// - `mo1` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. The perturbation in MO space.
     ///
     /// # Returns
     ///
-    /// - `resp` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. The dimensionless
-    ///   response in MO space.
+    /// - `resp` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. The dimensionless response
+    ///   in MO space.
     pub fn response_dimless_cphf(&self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
         let [α, β] = [0, 1];
         let mo_occ = [self.mo_occ[α].view(), self.mo_occ[β].view()];
@@ -228,13 +225,13 @@ impl<'a> UHessSCF<'a> {
     ///
     /// # Parameters
     ///
-    /// - `rhs` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. Dimensionless
-    ///   right-hand side.
+    /// - `rhs` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. Dimensionless right-hand
+    ///   side.
     ///
     /// # Returns
     ///
-    /// - `mo1` : shape `[nmo, nocc_alpha, ...]` and `[nmo, nocc_beta, ...]`. Perturbation in MO
-    ///   space that solves the dimensionless CP-HF equation.
+    /// - `mo1` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. Perturbation in MO space that
+    ///   solves the dimensionless CP-HF equation.
     pub fn solve_dimless_cphf(&self, rhs: &[TsrView; 2]) -> [Tsr; 2] {
         let [α, β] = [0, 1];
         let rhs_shape = [rhs[α].shape().to_vec(), rhs[β].shape().to_vec()];
@@ -299,24 +296,23 @@ impl<'a> UHessSCF<'a> {
     ///
     /// # Parameters
     ///
-    /// - `f1mo` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
-    ///   first-order derivative of the Fock matrix in MO basis, obtained from
+    /// - `f1mo` : shape `[nmo_α, nocc_α, 3, natm]` and `[nmo_β, nocc_β, 3, natm]`. The first-order
+    ///   derivative of the Fock matrix in MO basis, obtained from
     ///   [`Self::compute_dimless_cphf_rhs`].
-    /// - `s1mo` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
-    ///   first-order derivative of the overlap matrix in MO basis, obtained from
+    /// - `s1mo` : shape `[nmo_α, nocc_α, 3, natm]` and `[nmo_β, nocc_β, 3, natm]`. The first-order
+    ///   derivative of the overlap matrix in MO basis, obtained from
     ///   [`Self::compute_dimless_cphf_rhs`].
-    /// - `mo1` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
-    ///   perturbation in MO space obtained from Krylov solver.
+    /// - `mo1` : shape `[nmo_α, nocc_α, 3, natm]` and `[nmo_β, nocc_β, 3, natm]`. The perturbation
+    ///   in MO space obtained from Krylov solver.
     ///
     /// # Returns
     ///
     /// `HashMap<&str, Tsr>`
     ///
-    /// - `mo1_0`, `mo1_1` : shape `[nmo, nocc_alpha, 3, natm]` and `[nmo, nocc_beta, 3, natm]`. The
+    /// - `mo1_0`, `mo1_1` : shape `[nmo_α, nocc_α, 3, natm]` and `[nmo_β, nocc_β, 3, natm]`. The
     ///   finalized perturbation in MO space.
-    /// - `mo_e1_0`, `mo_e1_1` : shape `[nocc_alpha, nocc_alpha, 3, natm]` and `[nocc_beta,
-    ///   nocc_beta, 3, natm]`. The derivative of occupied orbital energies (Fock matrix) with
-    ///   respect to perturbation.
+    /// - `mo_e1_0`, `mo_e1_1` : shape `[nocc_α, nocc_α, 3, natm]` and `[nocc_β, nocc_β, 3, natm]`.
+    ///   The derivative of occupied orbital energies (Fock matrix) with respect to perturbation.
     pub fn finalize_cphf(
         &self,
         f1mo: &[TsrView; 2],
