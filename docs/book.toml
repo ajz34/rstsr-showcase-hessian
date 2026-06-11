@@ -1,0 +1,7 @@
+[book]
+title = "rstsr-showcase-hessian"
+authors = ["ajz34"]
+language = "zh-CN"
+
+[preprocessor.katex]
+after = ["links"]
