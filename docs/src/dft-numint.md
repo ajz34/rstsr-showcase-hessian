@@ -46,7 +46,7 @@ $$
 \xi_{g \mu \nu}^\chi = \begin{cases}
 \phi_{g \mu} \phi_{g \nu} & \chi = \rho \\
 \phi_{g \mu}^r \phi_{g \nu} + \phi_{g \mu} \phi_{g \nu}^r & \chi = \rho^r \\
-\sum_r \phi_{g \mu}^r \phi_{g \nu}^r & \chi = \tau
+\sum_r \frac{1}{2} \phi_{g \mu}^r \phi_{g \nu}^r & \chi = \tau
 \end{cases} 
 $$
 
