@@ -252,15 +252,13 @@ $$
 ### 5.1 普通部分中间量 `dao_vxc`
 
 $$
-\frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} \leftarrow 2 \sum_{g \chi \mu \nu} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} D_{\mu \nu} \delta_{\mu \in A} \delta_{\nu \in B} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
+\frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} \leftarrow \sum_{g \chi \mu \nu} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} D_{\mu \nu} \delta_{\mu \in A} \delta_{\nu \in B} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)} + \text{swap} (A_t, B_s)
 $$
-
-其中的 2 倍来源于 $\partial_t$ 也可以对 $\nu$ 求导、对应地 $\partial_s$ 对 $\mu$ 求导。
 
 普通部分需要对两个原子轨道 $\mu, \nu$ 各求一次导数。与对角情况不同，这时我们不再适合先边际掉其中一个原子轨道，而是需要保留所有原子轨道。我们将定义下述中间量 `dao_vxc` $\mathscr{T}_{\mu \nu}^{t s}$ (在 row-major 下维度 $(t, s, \mu, \nu)$，大小 $(3, 3, n_\text{AO}, n_\text{AO})$)：
 
 $$
-\mathscr{T}_{\mu \nu}^{t s} = 2 \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
+\mathscr{T}_{\mu \nu}^{t s} = \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)} + \text{swap} (t \mu, s \nu)
 $$
 
 ### 5.2 LDA (RHO)
@@ -274,7 +272,7 @@ $$
 代入 $\mathscr{T}_{\mu \nu}^{ts}$ 的定义：
 
 $$
-\mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= 2 \sum_g w_g f_g^{\rho} \phi_{g \mu}^t \phi_{g \nu}^s
+\mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= \sum_g w_g f_g^{\rho} \phi_{g \mu}^t \phi_{g \nu}^s + \text{swap} (t \mu, s \nu)
 $$
 
 程序上，这是一组 9 个 $(n_\mathrm{AO}, n_\mathrm{grids})$ 将格点指标边际掉的矩阵乘法。其中 $\phi^t$ 即 `ao` 张量在 $t \in \{x, y, z\}$ 上的 3 个分量；$w_g f_g^\rho$ 即 `wv[0]`。
@@ -294,7 +292,7 @@ $$
 代入 $\mathscr{T}_{\mu \nu}^{ts}$ 的定义：
 
 $$
-\mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= 2 \sum_{g r} w_g f_g^{\rho^r} \left( \phi_{g \mu}^{t r} \phi_{g \nu}^s + \phi_{g \mu}^t \phi_{g \nu}^{s r} \right)
+\mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= \sum_{g r} w_g f_g^{\rho^r} \left( \phi_{g \mu}^{t r} \phi_{g \nu}^s + \phi_{g \mu}^t \phi_{g \nu}^{s r} \right) + \text{swap} (t \mu, s \nu)
 $$
 
 注意到 $\mathscr{T}_{\mu \nu}^{ts}$ 在联合交换 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 下对称，而上式第二项即为第一项在该联合交换下的像。因此**只需算第一项**，最后做一次转置-对称化即可得到第二项的贡献。
@@ -315,5 +313,26 @@ $$
 
 至此 LDA + GGA 部分的 $\mathscr{T}_{\mu \nu}^{ts}$ 全部完成。注意这里我们将 LDA (RHO) 与 GGA (SIGMA) 合并在一起算，是为了节省一组 ket 端 $\phi_{g \nu}^s$ 的矩阵乘法；这与第 4 节 `dao_vxc_diag` 中将 LDA 项与 GGA 第二项合并为一次缩并的优化是同样的策略。
 
-该项的最大计算量出现在 9 个 $(\widetilde{\phi}^t)^\dagger \phi^s$ 的矩阵乘法上，即 $2 \times 3^2 n_\mathrm{AO}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度。这里没有像 LDA 一样利用 $(ts) \leftrightarrow (st)$ 的对称性，是因为 $\widetilde{\phi}^t$ 内部混合了 LDA 与 GGA 的项，难以直接利用 $(ts)$ 对称性；而对称化反而是放在矩阵乘法之后通过转置完成的。
+该项的最大计算量出现在 9 个 $(\widetilde{\phi}^t)^\dagger \phi^s$ 的矩阵乘法上，即 $3^2 \times 2 n_\mathrm{AO}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度。这里没有像 LDA 一样利用 $(ts) \leftrightarrow (st)$ 的对称性，是因为 $\widetilde{\phi}^t$ 内部混合了 LDA 与 GGA 的项，难以直接利用 $(ts)$ 对称性；而对称化反而是放在矩阵乘法之后通过转置完成的。
 
+### 5.4 MGGA (TAU)
+
+MGGA (TAU) 部分对应 $\chi = \tau$，$\xi_{g \mu \nu}^{\chi = \tau} = \frac{1}{2} \sum_r \phi_{g \mu}^r \phi_{g \nu}^r$。$\partial_t$ 仅作用在 $\mu$、$\partial_s$ 仅作用在 $\nu$，
+
+$$
+\frac{\partial^2 \xi_{g \mu \nu}^{\chi = \tau}}{\partial t \partial s} = \frac{1}{2} \sum_r \phi_{g \mu}^{t r} \phi_{g \nu}^{s r} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
+$$
+
+代入 $\mathscr{T}_{\mu \nu}^{ts}$ 的定义：
+
+$$
+\mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= \frac{1}{2} \sum_{g r} w_g f_g^\tau \phi_{g \mu}^{t r} \phi_{g \nu}^{s r} + \text{swap} (t \mu, s \nu)
+$$
+
+上式的 $t, s$ 是对称的，因此仍然可以使用 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 的 6 分量来计算，剩下的 $(yx, zx, zy)$ 通过转置补齐。该计算量会比较大，涉及到 $6 \times 3 \times 2 n_\mathrm{AO}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度；其中，$6$ 来源于 $(ts)$ 的分量数，$3$ 来源于 $r$ 的分量数。
+
+### 5.5 代码实现决定
+
+`vxc` 普通部分应该是计算量最大的部分了。我们这里采用的是 $(t, s, \mu, \nu)$ 中间量策略，在 mGGA 下需要 27 个 $2 n_\mathrm{AO}^2 n_\mathrm{grid}$ FMAs。这个计算量要大于前面的 `fxc` 与 `vxc` 对角部分不少。
+
+这个问题是否有其他解决方法？最直观的方法是，采用与 `fxc` 一样的策略，直接计算得到二阶导数密度格点 $\partial_{A_t} \partial_{B_s} \xi^\chi_g$ 即 $(n_\mathrm{atm}, n_\mathrm{atm}, 3, 3, n_\mathrm{var}, n_\mathrm{grids})$ 的张量，随后与 vxc 作缩并。具体实现上当然可以分批给出 $\partial_{A_t} \partial_{B_s} \xi^\chi_g$ 的分量，但其包含了格点数量，且导数密度格点会是被缩并维度非常小 (一个原子的原子轨道数量) 的长条形矩阵乘法，对缓存可能不算太友好。同时，FMA 的数量我相信与上述中间量策略是差不多的。
