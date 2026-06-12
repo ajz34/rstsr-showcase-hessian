@@ -156,7 +156,7 @@ DFT 相比于 J/K 积分，
 - DFT 是 2 中心而 J/K 是 4 中心，要考虑的原子轨道导数组合少了很多；
 - DFT 要区分 LDA/GGA/MGGA，要考虑的项又多了不少。
 
-### 4.2 对角部分中间量
+### 4.2 对角部分中间量 `dao_vxc_diag`
 
 这里我们采用先处理电子导数，再处理原子核导数的策略。留意由于我们两次偏导了原子核，两个负号相互抵消了。
 
@@ -179,7 +179,7 @@ $$
 因此，我们将会给出一个中间量 `dao_vxc_diag` $\mathscr{T}_{\mu}^{(ts)}$ (维度 $((ts), \mu)$，大小 $(6, n_\mathrm{AO})$)：
 
 $$
-\mathscr{T}_{\mu}^{(ts)} = 2 \sum_{g \chi \mu} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} D_{\mu \nu} \quad \text{(restrict $\partial$ to $\mu$)}
+\mathscr{T}_{\mu}^{(ts)} = 2 \sum_{g \chi \nu} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} D_{\mu \nu} \quad \text{(restrict $\partial$ to $\mu$)}
 $$
 
 随后引入原子依赖的求和计算：
@@ -190,4 +190,59 @@ $$
 
 很显然上面一步是没有什么计算量的。至此，我们将问题化归为如何求取 `dao_vxc_diag` $\mathscr{T}_{\mu}^{(ts)}$ 中间量。在计算复杂度分析上，它与 `fxc` 倒是非常相似：其最大的计算量在 `ao_dm0` $\bar{\phi}_{g \mu}$ 的计算上，剩下的是大量复杂的 $O(N^2)$ 缩并。
 
-### 4.2 LDA (RHO)
+在继续讨论前，我们指出，$w_g f_g^\chi$ 总是成对出现的。因此，我们可以先将 $w_g$ 与 $f_g^\chi$ 相乘，存储到 `wv` 或 `wvxc` 变量中。
+
+下面我们对 LDA (RHO), GGA (SIGMA), MGGA (TAU) 分别给出 `dao_vxc_diag` 的具体公式。我们注意，对于 GGA 与 MGGA 任务，下述贡献项都需要叠加在一起，即 GGA 需要 LDA + SIGMA，MGGA 需要 LDA + SIGMA + TAU。
+
+### 4.3 LDA (RHO)
+
+LDA 部分对应 $\chi = \rho$，$\xi_{g \mu \nu}^{\chi = \rho} = \phi_{g \mu} \phi_{g \nu}$。仅对 $\mu$ 作偏导，
+
+$$
+\frac{\partial^2 \xi_{g \mu \nu}^{\chi = \rho}}{\partial t \partial s} = \phi_{g \mu}^{ts} \phi_{g \nu} \quad \text{(restrict $\partial$ to $\mu$)}
+$$
+
+代入 $\mathscr{T}_\mu^{(ts)}$ 的定义，并将 $\nu$ 缩并到 `ao_dm0` $\bar{\phi}_{g \mu} = \sum_\nu \phi_{g \nu} D_{\mu \nu}$ 上：
+
+$$
+\mathscr{T}_{\mu}^{(ts)} \mathrel{+}= 2 \sum_g w_g f_g^{\rho} \phi_{g \mu}^{ts} \bar{\phi}_{g \mu}
+$$
+
+程序上，$\phi_{g \mu}^{ts}$ 是 `ao` 张量在 $ts \in \{xx, xy, xz, yy, yz, zz\}$ 上的 6 个分量；$w_g f_g^\rho$ 即 `wv[0]`。该项是 $O(n_\mathrm{AO} n_\mathrm{grid})$ 复杂度。
+
+### 4.4 GGA (SIGMA)
+
+GGA 部分对应 $\chi = \rho^r$，$\xi_{g \mu \nu}^{\chi = \rho^r} = \phi_{g \mu}^r \phi_{g \nu} + \phi_{g \mu} \phi_{g \nu}^r$。仅对 $\mu$ 作偏导，
+
+$$
+\frac{\partial^2 \xi_{g \mu \nu}^{\chi = \rho^r}}{\partial t \partial s} = \phi_{g \mu}^{tsr} \phi_{g \nu} + \phi_{g \mu}^{ts} \phi_{g \nu}^r \quad \text{(restrict $\partial$ to $\mu$)}
+$$
+
+代入 $\mathscr{T}_\mu^{(ts)}$ 的定义。第一项以 $\bar{\phi}_{g \mu} = \sum_\nu \phi_{g \nu} D_{\mu \nu}$ 缩并 $\nu$，第二项以 $\bar{\phi}_{g \mu}^r = \sum_\nu \phi_{g \nu}^r D_{\mu \nu}$ 缩并 $\nu$：
+
+$$
+\mathscr{T}_{\mu}^{(ts)} \mathrel{+}= 2 \sum_{g r} w_g f_g^{\rho^r} \left( \phi_{g \mu}^{tsr} \bar{\phi}_{g \mu} + \phi_{g \mu}^{ts} \bar{\phi}_{g \mu}^r \right)
+$$
+
+其中：
+
+- 第一项需要 $\phi_{g \mu}^{tsr}$ 即原子轨道的三阶电子坐标导数。具体而言，对每个 $(ts)$ 分量需要取 `ao` 中的三阶导分量 (例如 $(ts) = (xx)$ 时对应 $\{xxx, xxy, xxz\}$)；其与 `wv[1:4]` $w_g f_g^{\rho^r}$ ($r \in \{x, y, z\}$) 相乘后再与 $\bar{\phi}_{g \mu}$ 缩并。
+- 第二项中，$\bar{\phi}_{g \mu}^r$ 即 `ao_dm0` 的 $r \in \{x, y, z\}$ 分量；其与 `wv[1:4]` 相乘后求和，再与 $\phi_{g \mu}^{ts}$ 缩并。事实上，该缩并可以与 LDA (RHO) 部分共用 $\phi_{g \mu}^{ts}$ 的访问，从而合并为一次缩并，节省计算量。
+
+整体也是 $O(n_\mathrm{AO} n_\mathrm{grid})$ 复杂度。
+
+### 4.5 MGGA (TAU)
+
+MGGA (TAU) 部分对应 $\chi = \tau$，$\xi_{g \mu \nu}^{\chi = \tau} = \frac{1}{2} \sum_r \phi_{g \mu}^r \phi_{g \nu}^r$。仅对 $\mu$ 作偏导，
+
+$$
+\frac{\partial^2 \xi_{g \mu \nu}^{\chi = \tau}}{\partial t \partial s} = \frac{1}{2} \sum_r \phi_{g \mu}^{tsr} \phi_{g \nu}^r \quad \text{(restrict $\partial$ to $\mu$)}
+$$
+
+代入 $\mathscr{T}_\mu^{(ts)}$ 的定义，以 $\bar{\phi}_{g \mu}^r = \sum_\nu \phi_{g \nu}^r D_{\mu \nu}$ 缩并 $\nu$，并与 $\mathscr{T}_\mu^{(ts)}$ 定义中的 $2$ 系数相消：
+
+$$
+\mathscr{T}_{\mu}^{(ts)} \mathrel{+}= \sum_{g r} w_g f_g^\tau \phi_{g \mu}^{tsr} \bar{\phi}_{g \mu}^r
+$$
+
+程序上的对应与 GGA 第一项类似：对每个 $(ts)$ 分量，从 `ao` 中取出 $\phi_{g \mu}^{tsr}$ 共 3 个三阶导分量，与 `ao_dm0` 的 $r \in \{x, y, z\}$ 分量逐项配对，并以 `wv[4]` $w_g f_g^\tau$ 加权后缩并。同样是 $O(n_\mathrm{AO} n_\mathrm{grid})$ 复杂度。
