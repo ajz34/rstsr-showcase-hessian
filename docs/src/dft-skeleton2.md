@@ -246,3 +246,74 @@ $$
 $$
 
 程序上的对应与 GGA 第一项类似：对每个 $(ts)$ 分量，从 `ao` 中取出 $\phi_{g \mu}^{tsr}$ 共 3 个三阶导分量，与 `ao_dm0` 的 $r \in \{x, y, z\}$ 分量逐项配对，并以 `wv[4]` $w_g f_g^\tau$ 加权后缩并。同样是 $O(n_\mathrm{AO} n_\mathrm{grid})$ 复杂度。
+
+## 5. `vxc` 普通部分实现细节
+
+### 5.1 普通部分中间量 `dao_vxc`
+
+$$
+\frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} \leftarrow 2 \sum_{g \chi \mu \nu} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} D_{\mu \nu} \delta_{\mu \in A} \delta_{\nu \in B} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
+$$
+
+其中的 2 倍来源于 $\partial_t$ 也可以对 $\nu$ 求导、对应地 $\partial_s$ 对 $\mu$ 求导。
+
+普通部分需要对两个原子轨道 $\mu, \nu$ 各求一次导数。与对角情况不同，这时我们不再适合先边际掉其中一个原子轨道，而是需要保留所有原子轨道。我们将定义下述中间量 `dao_vxc` $\mathscr{T}_{\mu \nu}^{t s}$ (在 row-major 下维度 $(t, s, \mu, \nu)$，大小 $(3, 3, n_\text{AO}, n_\text{AO})$)：
+
+$$
+\mathscr{T}_{\mu \nu}^{t s} = 2 \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
+$$
+
+### 5.2 LDA (RHO)
+
+LDA 部分对应 $\chi = \rho$，$\xi_{g \mu \nu}^{\chi = \rho} = \phi_{g \mu} \phi_{g \nu}$。$\partial_t$ 仅作用在 $\mu$、$\partial_s$ 仅作用在 $\nu$，
+
+$$
+\frac{\partial^2 \xi_{g \mu \nu}^{\chi = \rho}}{\partial t \partial s} = \phi_{g \mu}^t \phi_{g \nu}^s \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
+$$
+
+代入 $\mathscr{T}_{\mu \nu}^{ts}$ 的定义：
+
+$$
+\mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= 2 \sum_g w_g f_g^{\rho} \phi_{g \mu}^t \phi_{g \nu}^s
+$$
+
+程序上，这是一组 9 个 $(n_\mathrm{AO}, n_\mathrm{grids})$ 将格点指标边际掉的矩阵乘法。其中 $\phi^t$ 即 `ao` 张量在 $t \in \{x, y, z\}$ 上的 3 个分量；$w_g f_g^\rho$ 即 `wv[0]`。
+
+我们注意到 $\mathscr{T}_{\mu \nu}^{ts}$ 关于 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 的联合交换是对称的 (因为 $\xi_{g \mu \nu}^\chi = \xi_{g \nu \mu}^\chi$，而 $(t, s)$ 仅作为对称记号)。因此原先 $3 \times 3 = 9$ 的矩阵乘法可以只算 $6$ 个 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 分量，剩下的 $(yx, zx, zy)$ 通过转置补齐。
+
+该项的最大计算量是 $6 \times 2 n_\mathrm{AO}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度。
+
+### 5.3 GGA (SIGMA)
+
+GGA 部分对应 $\chi = \rho^r$，$\xi_{g \mu \nu}^{\chi = \rho^r} = \phi_{g \mu}^r \phi_{g \nu} + \phi_{g \mu} \phi_{g \nu}^r$。$\partial_t$ 仅作用在 $\mu$、$\partial_s$ 仅作用在 $\nu$，
+
+$$
+\frac{\partial^2 \xi_{g \mu \nu}^{\chi = \rho^r}}{\partial t \partial s} = \phi_{g \mu}^{t r} \phi_{g \nu}^s + \phi_{g \mu}^t \phi_{g \nu}^{s r} \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
+$$
+
+代入 $\mathscr{T}_{\mu \nu}^{ts}$ 的定义：
+
+$$
+\mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= 2 \sum_{g r} w_g f_g^{\rho^r} \left( \phi_{g \mu}^{t r} \phi_{g \nu}^s + \phi_{g \mu}^t \phi_{g \nu}^{s r} \right)
+$$
+
+注意到 $\mathscr{T}_{\mu \nu}^{ts}$ 在联合交换 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 下对称，而上式第二项即为第一项在该联合交换下的像。因此**只需算第一项**，最后做一次转置-对称化即可得到第二项的贡献。
+
+进一步注意到，第一项与 LDA (RHO) 的右因子 $\phi_{g \nu}^s$ 是相同的；只是左因子从 $\phi_{g \mu}^t$ 变为 $\phi_{g \mu}^{tr}$ 并对 $r$ 求和。因此，我们可以将 LDA 的左因子与 GGA 的左因子先合并为一个**带权 ket 端中间量**，再统一与 $\phi_{g \nu}^s$ 做矩阵乘法：
+
+$$
+\widetilde{\phi}_{g \mu}^{t} = \frac{1}{2} w_g f_g^\rho \phi_{g \mu}^t + \sum_r w_g f_g^{\rho^r} \phi_{g \mu}^{t r} \quad (\texttt{aowv})
+$$
+
+注意第一项中 $\frac{1}{2}$ 的来源：LDA 项 $2 w_g f_g^\rho \phi_{g \mu}^t \phi_{g \nu}^s$ 经过下面对称化会被算两次，因此需要预除以 $2$ 才能与 GGA 项合在一起做一次对称化。GGA 项 $2 w_g f_g^{\rho^r} \phi_{g \mu}^{tr} \phi_{g \nu}^s$ 自身只贡献一次 (第二项由对称化补出)，因此 $\widetilde{\phi}$ 内不需要 $\frac{1}{2}$ 系数。
+
+随后做矩阵乘法 (留意角标 $t, s$ 与 $\mu, \nu$ 的对应顺序)，并作对称化：
+
+$$
+\mathscr{T}_{\mu \nu}^{ts} = 2 \sum_g \widetilde{\phi}_{g \mu}^t \phi_{g \nu}^s + \text{swap} (t \mu, s \nu)
+$$
+
+至此 LDA + GGA 部分的 $\mathscr{T}_{\mu \nu}^{ts}$ 全部完成。注意这里我们将 LDA (RHO) 与 GGA (SIGMA) 合并在一起算，是为了节省一组 ket 端 $\phi_{g \nu}^s$ 的矩阵乘法；这与第 4 节 `dao_vxc_diag` 中将 LDA 项与 GGA 第二项合并为一次缩并的优化是同样的策略。
+
+该项的最大计算量出现在 9 个 $(\widetilde{\phi}^t)^\dagger \phi^s$ 的矩阵乘法上，即 $2 \times 3^2 n_\mathrm{AO}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度。这里没有像 LDA 一样利用 $(ts) \leftrightarrow (st)$ 的对称性，是因为 $\widetilde{\phi}^t$ 内部混合了 LDA 与 GGA 的项，难以直接利用 $(ts)$ 对称性；而对称化反而是放在矩阵乘法之后通过转置完成的。
+
