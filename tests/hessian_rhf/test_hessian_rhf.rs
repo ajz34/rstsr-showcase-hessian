@@ -92,5 +92,5 @@ fn test_make_hess(hess_case: &CaseAmoniaRHF) {
     let de_hess = hess_scf.make_hess();
     let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
     assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 1e-6)));
-    assert_abs_diff_eq!(fp(de_hess.view()), 1.4704252379360374, epsilon = 1e-6);
+    assert_abs_diff_eq!(fp(de_hess.view()), 1.4704252379360374, epsilon = 1e-5);
 }

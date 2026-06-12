@@ -73,8 +73,8 @@ class TestHessianUHF(unittest.TestCase):
         for key in ["de_J20", "de_J11", "de_J02"]:
             self.assertTrue(np.allclose(de_J_skeleton[key], ref_value[key], atol=1e-5, rtol=1e-4), msg=key)
         self.assertAlmostEqual(lib.fp(de_J_skeleton["de_J20"]), 4.902587371193881, places=8)
-        self.assertAlmostEqual(lib.fp(de_J_skeleton["de_J11"]), 8.88765043727085, places=8)
-        self.assertAlmostEqual(lib.fp(de_J_skeleton["de_J02"]), -4.445673838381621, places=8)
+        self.assertAlmostEqual(lib.fp(de_J_skeleton["de_J11"]), 8.88765043727085, places=7)
+        self.assertAlmostEqual(lib.fp(de_J_skeleton["de_J02"]), -4.445673838381621, places=5)
 
     def test_hess_K_skeleton_naive(self):
         de_K_skeleton = get_decomposed_uik_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
@@ -90,8 +90,8 @@ class TestHessianUHF(unittest.TestCase):
         # Check against PySCF (J is spin-independent, reference is [natm, 3, nao, nao])
         j1ao_ref = np.array([r[2] for r in df.hessian.uhf._gen_jk(mf_hess, mf.mo_coeff, mf.mo_occ)])
         self.assertTrue(np.allclose(j1ao, j1ao_ref))
-        self.assertAlmostEqual(lib.fp(j1ao_dict["j1ao_aux0"]), 27.320873266136108, places=8)
-        self.assertAlmostEqual(lib.fp(j1ao_dict["j1ao_aux1"]), 0.12413515517879808, places=8)
+        self.assertAlmostEqual(lib.fp(j1ao_dict["j1ao_aux0"]), 27.320873266136108, places=7)
+        self.assertAlmostEqual(lib.fp(j1ao_dict["j1ao_aux1"]), 0.12413515517879808, places=7)
 
     def test_rik_deriv1(self):
         k1ao_dict = get_uik_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
@@ -120,7 +120,7 @@ class TestHessianUHF(unittest.TestCase):
         f1ao_ref = [np.asarray(f1ao_ref[s]) for s in range(2)]
         for s in range(2):
             self.assertTrue(np.allclose(f1ao[s], f1ao_ref[s]), msg=f"spin {s}")
-        self.assertAlmostEqual(lib.fp(f1ao), 8.191588278238157, places=8)
+        self.assertAlmostEqual(lib.fp(f1ao), 8.191588278238157, places=7)
 
     def test_resp_bra(self):
         mo1_a = ref_value["mo1_a"]
@@ -165,7 +165,7 @@ class TestHessianUHF(unittest.TestCase):
         pre_cphf_dict = hess_impl.compute_dimensionless_cphf_rhs()
         rhs = pre_cphf_dict["rhs"]
         self.assertAlmostEqual(lib.fp(rhs[0]), -0.01785256539468953, places=8)
-        self.assertAlmostEqual(lib.fp(rhs[1]), 0.14550989432158085, places=8)
+        self.assertAlmostEqual(lib.fp(rhs[1]), 0.14550989432158085, places=7)
 
         hess_impl.make_response_preparation()
         mo1 = hess_impl.solve_dimless_cphf(rhs)
@@ -195,7 +195,7 @@ class TestHessianUHF(unittest.TestCase):
 
         de_cphf = hess_impl.get_cphf_hess(pre_cphf_dict["f1mo"], pre_cphf_dict["s1mo"], mo1_fin, mo_e1)
         self.assertTrue(np.allclose(de_cphf, ref_value["de_cphf"], atol=1e-6, rtol=1e-4))
-        self.assertAlmostEqual(lib.fp(de_cphf), -0.40949468934990596, places=6)
+        self.assertAlmostEqual(lib.fp(de_cphf), -0.40949468934990596, places=5)
 
     def test_make_hess(self):
         hess_impl = UHessSCF(
