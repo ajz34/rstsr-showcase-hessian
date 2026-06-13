@@ -3,10 +3,13 @@
 #![allow(non_snake_case)]
 #![allow(clippy::needless_range_loop)]
 #![allow(mixed_script_confusables)]
+#![allow(confusable_idents)]
 
 pub mod hessian;
+pub mod numint_matmul;
 pub mod ri_jk;
 pub mod util;
+pub mod xceff;
 
 pub mod prelude {
     #![allow(unused)]
@@ -17,6 +20,12 @@ pub mod prelude {
     pub(crate) use crate::check_shape;
     pub(crate) use crate::prelude_dev::*;
     pub(crate) use crate::util::prelude::*;
+
+    pub use crate::numint_matmul::flags::*;
+    pub use crate::numint_matmul::nimatmul::*;
+    pub use crate::xceff::libxc_wrap::*;
+
+    pub(crate) use crate::numint_matmul::flags::NIDenType::*;
 }
 
 pub mod prelude_dev {
