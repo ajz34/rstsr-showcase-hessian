@@ -2,8 +2,8 @@ use crate::hessian_uhf::*;
 use crate::test_util::*;
 use approx::assert_abs_diff_eq;
 use rstest::rstest;
-use rstsr_showcase_hessian::hessian::ri_jk_unrestricted_naive::*;
 use rstsr_showcase_hessian::prelude::*;
+use rstsr_showcase_hessian::ri_jk::hess_u_naive::*;
 
 #[rstest]
 fn test_hess_rij_skeleton_naive(hess_case: &CaseAmoniaUHF) {

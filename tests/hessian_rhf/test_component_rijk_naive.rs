@@ -3,7 +3,7 @@ use crate::test_util::*;
 use approx::assert_abs_diff_eq;
 use rstest::rstest;
 
-use rstsr_showcase_hessian::hessian::ri_jk_restricted_naive::*;
+use rstsr_showcase_hessian::ri_jk::hess_r_naive::*;
 
 #[rstest]
 fn test_hess_ri_jk_skeleton_naive(hess_case: &CaseAmoniaRHF) {

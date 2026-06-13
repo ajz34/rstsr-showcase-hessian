@@ -4,8 +4,8 @@
 use crate::hessian_rhf::*;
 use crate::test_util::{Tsr, TsrView};
 use rstest::rstest;
-use rstsr_showcase_hessian::hessian::ri_jk_restricted_naive::*;
 use rstsr_showcase_hessian::prelude::*;
+use rstsr_showcase_hessian::ri_jk::hess_r_naive::*;
 use rstsr_showcase_hessian::util::density_matrices::get_dme0_restricted;
 
 /// Subset of atoms used across all atm_list tests. NH3 has 4 atoms (indices 0..=3).

@@ -5,12 +5,14 @@
 #![allow(mixed_script_confusables)]
 
 pub mod hessian;
+pub mod ri_jk;
 pub mod util;
 
 pub mod prelude {
     #![allow(unused)]
 
     pub use crate::hessian::prelude::*;
+    pub use crate::ri_jk::prelude::*;
 
     pub(crate) use crate::check_shape;
     pub(crate) use crate::prelude_dev::*;

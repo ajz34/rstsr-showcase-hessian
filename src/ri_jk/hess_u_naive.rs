@@ -1,4 +1,4 @@
-use crate::hessian::ri_jk_restricted_naive;
+use super::hess_r_naive;
 use crate::prelude::*;
 
 pub fn get_decomposed_rij_skeleton_deriv2_unrestricted_naive(
@@ -15,7 +15,7 @@ pub fn get_decomposed_rij_skeleton_deriv2_unrestricted_naive(
     let mo_coeff_stack: Tsr = rt::concatenate((mo_coeff, -1));
     let mo_occ_stack: Tsr = rt::concatenate((mo_occ, -1));
 
-    ri_jk_restricted_naive::get_decomposed_rij_skeleton_deriv2_naive(
+    hess_r_naive::get_decomposed_rij_skeleton_deriv2_naive(
         mol,
         aux,
         mo_coeff_stack.view(),
@@ -34,14 +34,14 @@ pub fn get_decomposed_rik_skeleton_deriv2_unrestricted_naive(
     // compute alpha and beta separately, then sum
     let [α, β] = [0, 1];
 
-    let de_rik_alpha = ri_jk_restricted_naive::get_decomposed_rik_skeleton_deriv2_naive(
+    let de_rik_alpha = hess_r_naive::get_decomposed_rik_skeleton_deriv2_naive(
         mol,
         aux,
         mo_coeff[α].view(),
         mo_occ[α].view(),
         atm_list,
     );
-    let de_rik_beta = ri_jk_restricted_naive::get_decomposed_rik_skeleton_deriv2_naive(
+    let de_rik_beta = hess_r_naive::get_decomposed_rik_skeleton_deriv2_naive(
         mol,
         aux,
         mo_coeff[β].view(),
@@ -79,7 +79,7 @@ pub fn get_rij_deriv1_ao_unrestricted_naive(
     let mo_occ: [TsrView; 2] = mo_occ.iter().map(|x| x.view()).collect_array().unwrap();
     let mo_coeff_stack: Tsr = rt::concatenate((mo_coeff, -1));
     let mo_occ_stack: Tsr = rt::concatenate((mo_occ, -1));
-    ri_jk_restricted_naive::get_rij_deriv1_ao_naive(mol, aux, mo_coeff_stack.view(), mo_occ_stack.view(), atm_list)
+    hess_r_naive::get_rij_deriv1_ao_naive(mol, aux, mo_coeff_stack.view(), mo_occ_stack.view(), atm_list)
 }
 
 /// Get the first-order skeleton derivative of the exchange interaction in AO basis (UHF).
@@ -97,10 +97,8 @@ pub fn get_rik_deriv1_ao_unrestricted_naive(
     mo_occ: &[TsrView; 2],
     atm_list: Option<&[usize]>,
 ) -> HashMap<&'static str, Tsr> {
-    let k1ao_alpha =
-        ri_jk_restricted_naive::get_rik_deriv1_ao_naive(mol, aux, mo_coeff[0].view(), mo_occ[0].view(), atm_list);
-    let k1ao_beta =
-        ri_jk_restricted_naive::get_rik_deriv1_ao_naive(mol, aux, mo_coeff[1].view(), mo_occ[1].view(), atm_list);
+    let k1ao_alpha = hess_r_naive::get_rik_deriv1_ao_naive(mol, aux, mo_coeff[0].view(), mo_occ[0].view(), atm_list);
+    let k1ao_beta = hess_r_naive::get_rik_deriv1_ao_naive(mol, aux, mo_coeff[1].view(), mo_occ[1].view(), atm_list);
 
     let mut result = HashMap::new();
     for &key in k1ao_alpha.keys() {
