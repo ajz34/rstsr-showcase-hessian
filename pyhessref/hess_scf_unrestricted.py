@@ -229,7 +229,16 @@ class UHessSCF:
 
         mo1_packed = krylov_block(response_cphf_packed, rhs_packed)
         mo1_flat = unpack_uhf_mo_pair(mo1_packed, trailing_a, trailing_b)
-        return [mo1_flat[s].reshape(shapes[s]) for s in range(2)]
+        mo1 = [mo1_flat[s].reshape(shapes[s]) for s in range(2)]
+        # Pin mo1[oo] = rhs[oo] = -0.5*s1mo[oo] for each spin.  The
+        # response operator zeros the oo block, so the equation degenerates
+        # to mo1[oo] = rhs[oo] there; without this overwrite Krylov leaves
+        # ~1e-5 noise that propagates to mo_e1 and corrupts de_cphf for
+        # hybrid-DFT.  See restricted analogue in hess_scf_restricted.py.
+        _, _, _, nocc, _ = self._spin_descriptors()
+        for s in range(2):
+            mo1[s][..., : nocc[s], :] = rhs[s][..., : nocc[s], :]
+        return mo1
 
     def finalize_cphf(self, mo1: list[np.ndarray], pre_cphf_dict: dict) -> dict:
         """Finalize the CP-HF calculation: re-impose the exact CPHF for vir-occ block

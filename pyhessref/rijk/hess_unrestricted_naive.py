@@ -101,7 +101,8 @@ def get_uik_deriv1_ao_naive(
 
 
 def get_uijk_response_bra_naive(
-    mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray, bra: list[np.ndarray]
+    mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray, bra: list[np.ndarray],
+    scale_j: float = 1.0, scale_k: float = 1.0,
 ) -> list[np.ndarray]:
     r"""UHF response of RI-JK given bra (per-spin perturbed coefficients).
 
@@ -124,6 +125,11 @@ def get_uijk_response_bra_naive(
     bra : list[np.ndarray]
         ``[bra_alpha, bra_beta]``. Each entry has shape ``[..., nao, nocc_sigma]``
         and the leading dimensions must agree.
+    scale_j, scale_k : float, optional
+        J/K scaling factors.  Default 1.0 each (plain UHF).  Set
+        ``scale_k`` to the hybrid coefficient when this is embedded inside
+        a hybrid DFT response — matches the skeleton scaling
+        ``scale_j*de_J - scale_k*de_K`` in ``UHessRIJKNaive.make_skeleton_hess``.
 
     Returns
     -------
@@ -155,7 +161,7 @@ def get_uijk_response_bra_naive(
         r = np.zeros_like(bra[s])
         # J contribution (sees total density): sum over spin channel tau
         for tau in range(2):
-            r += 2 * einsum(
+            r += scale_j * 2 * einsum(
                 "uvP, PQ, klQ, Akj, lj, vi -> Aui",
                 int3c2e,
                 int2c2e_inv,
@@ -165,7 +171,7 @@ def get_uijk_response_bra_naive(
                 mocc[s],
             )
         # K contribution (same-spin only). Two contributions from symmetrization of D_1^sigma.
-        r -= einsum(
+        r -= scale_k * einsum(
             "uvP, PQ, klQ, Avj, lj, ki -> Aui",
             int3c2e,
             int2c2e_inv,
@@ -174,7 +180,7 @@ def get_uijk_response_bra_naive(
             mocc[s],
             mocc[s],
         )
-        r -= einsum(
+        r -= scale_k * einsum(
             "uvP, PQ, klQ, Akj, vj, li -> Aui",
             int3c2e,
             int2c2e_inv,
@@ -242,13 +248,7 @@ class UHessRIJKNaive(UHessElecInteractAPI):
         self.mo_occ = mo_occ
 
     def get_response_bra(self, bra: list[np.ndarray]) -> list[np.ndarray]:
-        resp = get_uijk_response_bra_naive(self.mol, self.aux, self.mo_coeff, self.mo_occ, bra)
-        # Apply scale_j to J part and scale_k to K part. Since the response routine combines
-        # J and K with default factors (scale 1), we need to redo if scales differ from defaults.
-        # For now, only support scale_j == scale_k == 1.0; raise if not.
-        if not (self.scale_j == 1.0 and self.scale_k == 1.0):
-            raise NotImplementedError(
-                "Non-trivial scale_j / scale_k not supported in UHessRIJKNaive.get_response_bra. "
-                "Decompose into J and K calls separately if needed."
-            )
-        return resp
+        return get_uijk_response_bra_naive(
+            self.mol, self.aux, self.mo_coeff, self.mo_occ, bra,
+            scale_j=self.scale_j, scale_k=self.scale_k,
+        )
