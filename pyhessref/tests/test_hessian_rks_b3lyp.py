@@ -50,3 +50,34 @@ class TestHessianRKS(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(result["de_vxc_off"]), -29.337474734527515, places=5)
         self.assertAlmostEqual(lib.fp(result["de_fxc"]), -21.249874465163057, places=5)
         self.assertAlmostEqual(lib.fp(result["vmat_deriv1"]), -3.8658927361526123, places=5)
+
+    def test_make_hessian_setup_batched(self):
+        """Run the setup in roughly equal grid batches (4 batches total)
+        and check the summed result matches the whole-grid reference.
+        Every output of make_hessian_setup_batch is linear in the grid
+        weights, so a sum over disjoint grid batches is exact (up to
+        floating-point error).
+        """
+        dm0 = get_dm0_restricted(mf.mo_coeff, mf.mo_occ)
+        ngrids = grids.weights.size
+        batch_size = ngrids // 4 + 1
+
+        result_sum = None
+        for start in range(0, ngrids, batch_size):
+            stop = min(start + batch_size, ngrids)
+            coords_batch = grids.coords[start:stop]
+            weights_batch = grids.weights[start:stop]
+            partial = make_hessian_setup_batch(
+                mol, mf.xc, coords_batch, weights_batch, dm0, verbose=False,
+            )
+            if result_sum is None:
+                result_sum = {k: v.copy() for k, v in partial.items()}
+            else:
+                for k in result_sum:
+                    result_sum[k] += partial[k]
+
+        for k in ("de_vxc_diag", "de_vxc_off", "de_fxc", "vmat_ip", "vmat_deriv1"):
+            self.assertTrue(
+                np.allclose(result_sum[k], ref_value[k]),
+                msg=f"batched {k} mismatch",
+            )
