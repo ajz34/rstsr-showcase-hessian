@@ -2,6 +2,9 @@ from pyscf import gto, dft
 import numpy as np
 import time
 
+from pyhessref.hess_trait_restricted import RHessElecInteractAPI
+from pyhessref.util import get_dm0_restricted
+
 
 # AO derivative component indices (deriv up to 3).
 O = 0
@@ -614,3 +617,183 @@ def make_hessian_setup_batch(
         "vmat_ip": vmat_ip,
         "vmat_deriv1": vmat_deriv1,
     }
+
+
+def get_ks_response_bra_naive(
+    mol: gto.Mole,
+    grids,
+    xc: str,
+    mo_coeff: np.ndarray,
+    mo_occ: np.ndarray,
+    dm0: np.ndarray,
+    bra: np.ndarray,
+    rho_cached=None,
+    vxc_cached=None,
+    fxc_cached=None,
+) -> np.ndarray:
+    """Apply the DFT XC fxc kernel to a perturbed bra (the U-coefficient
+    half-transformed back to AO), returning the response on the same shape.
+
+    Delegates the actual fxc contraction to ``numint.NumInt.nr_rks_fxc`` —
+    the same routine PySCF uses inside ``_gen_rhf_response``.  This wrapper
+    handles the bra-side reshape (``[..., nao, nocc]``) and the symmetric
+    dm1 build.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        Molecule.
+    grids : pyscf.dft.Grids
+        Built grids (with ``coords`` / ``weights``).
+    xc : str
+        XC functional name.
+    mo_coeff : np.ndarray
+        MO coefficients, shape ``[nao, nmo]``.
+    mo_occ : np.ndarray
+        MO occupations, shape ``[nmo]``.
+    dm0 : np.ndarray
+        Reference density matrix, shape ``[nao, nao]``.
+    bra : np.ndarray
+        Perturbed bra, shape ``[..., nao, nocc]``.
+    rho_cached, vxc_cached, fxc_cached : optional
+        Pre-computed kernel returned by ``ni.cache_xc_kernel``; passed
+        through to ``nr_rks_fxc`` to avoid re-evaluating the on-grid
+        density and functional derivatives on every call.
+
+    Returns
+    -------
+    resp_bra : np.ndarray
+        Response on the same shape as ``bra``.
+    """
+    nao = mol.nao
+    occidx = mo_occ > 1e-15
+    mocc = mo_coeff[:, occidx]
+    nocc = mocc.shape[-1]
+
+    bra_shape = bra.shape
+    assert bra_shape[-2] == nao
+    assert bra_shape[-1] == nocc
+    bra = bra.reshape(-1, nao, nocc)
+
+    # Symmetric perturbed density matrix.  The factor 2 here matches
+    # PySCF's `hessian.rhf.gen_vind` convention (`dm = mo_coeff @ x*2 @ mocc.T`)
+    # — it is the closed-shell spin sum, and is also the factor RIJK's
+    # `get_rijk_response_bra_naive` absorbs into its 4x J coefficient.
+    dm1 = 2 * (bra @ mocc.T)
+    dm1 = dm1 + dm1.swapaxes(-1, -2)
+
+    ni = dft.numint.NumInt()
+    v1 = ni.nr_rks_fxc(
+        mol, grids, xc, dm0, dm1, hermi=1,
+        rho0=rho_cached, vxc=vxc_cached, fxc=fxc_cached,
+    )
+    resp_bra = v1 @ mocc
+    return resp_bra.reshape(bra_shape)
+
+
+class RHessKSNaive(RHessElecInteractAPI):
+    """A naive implementation of the DFT XC contribution to the RKS Hessian.
+
+    This class is the DFT-XC sibling of `RHessRIJKNaive`: it implements the
+    `RHessElecInteractAPI` for the XC piece of an RKS Hessian.  The hybrid
+    J/K piece is still produced by `RHessRIJKNaive`; this class handles the
+    grid-integrated XC pieces (`de_vxc_*`, `vmat_deriv1`) and the fxc-kernel
+    response.
+
+    The heavy work is done by `make_hessian_setup_batch`, which is called
+    once per `(mo_coeff, mo_occ)` and cached in `self.result`.  The grid is
+    streamed in batches of `nbatch_grids` so that a large molecule does not
+    need the full `[ncomp_ao, ngrids, nao]` AO tensor in memory at once;
+    every output of `make_hessian_setup_batch` is linear in the grid weights,
+    so summing the per-batch outputs is exact.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        Molecule.
+    xc : str
+        XC functional, e.g. ``"B3LYP"``.
+    grids : pyscf.dft.Grids
+        Built grids object (with ``coords`` and ``weights`` available).
+    nbatch_grids : int, optional
+        Batch size for the grid loop.  Defaults to 16384.
+    """
+
+    def __init__(self, mol: gto.Mole, xc: str, grids, nbatch_grids: int = 16384):
+        self.mol = mol
+        self.xc = xc
+        self.grids = grids
+        self.nbatch_grids = nbatch_grids
+        self.result = dict()
+        # filled by make_response_preparation
+        self.mo_coeff = None
+        self.mo_occ = None
+        self.dm0 = None
+        self.rho_cached = None
+        self.vxc_cached = None
+        self.fxc_cached = None
+
+    def _run_setup_batched(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+        """Run `make_hessian_setup_batch` over the full grid in batches and
+        store the assembled skeleton / deriv1 quantities in `self.result`.
+
+        No-op if both `de_xc_skeleton` and `de_xc_deriv1_ao` are already cached.
+        """
+        if "de_xc_skeleton" in self.result and "de_xc_deriv1_ao" in self.result:
+            return
+
+        dm0 = get_dm0_restricted(mo_coeff, mo_occ)
+        coords = self.grids.coords
+        weights = self.grids.weights
+        ngrids = weights.size
+
+        result_sum = None
+        for start in range(0, ngrids, self.nbatch_grids):
+            stop = min(start + self.nbatch_grids, ngrids)
+            partial = make_hessian_setup_batch(
+                self.mol, self.xc,
+                coords[start:stop], weights[start:stop],
+                dm0, verbose=False,
+            )
+            if result_sum is None:
+                result_sum = {k: v.copy() for k, v in partial.items()}
+            else:
+                for k in result_sum:
+                    result_sum[k] += partial[k]
+
+        self.result["de_xc_skeleton"] = (
+            result_sum["de_vxc_diag"] + result_sum["de_vxc_off"] + result_sum["de_fxc"]
+        )
+        self.result["de_xc_deriv1_ao"] = result_sum["vmat_deriv1"]
+
+    def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        if "de_xc_skeleton" not in self.result:
+            self._run_setup_batched(mo_coeff, mo_occ)
+        return self.result["de_xc_skeleton"]
+
+    def get_deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        if "de_xc_deriv1_ao" not in self.result:
+            self._run_setup_batched(mo_coeff, mo_occ)
+        return self.result["de_xc_deriv1_ao"]
+
+    def make_response_preparation(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+        """Cache `(rho, vxc, fxc)` via PySCF's `cache_xc_kernel` so that every
+        subsequent `get_response_bra` call only does the fxc contraction.
+        """
+        self.mo_coeff = mo_coeff
+        self.mo_occ = mo_occ
+        self.dm0 = get_dm0_restricted(mo_coeff, mo_occ)
+
+        ni = dft.numint.NumInt()
+        self.rho_cached, self.vxc_cached, self.fxc_cached = ni.cache_xc_kernel(
+            self.mol, self.grids, self.xc, mo_coeff, mo_occ, spin=0,
+        )
+
+    def get_response_bra(self, bra: np.ndarray) -> np.ndarray:
+        return get_ks_response_bra_naive(
+            self.mol, self.grids, self.xc,
+            self.mo_coeff, self.mo_occ, self.dm0, bra,
+            rho_cached=self.rho_cached,
+            vxc_cached=self.vxc_cached,
+            fxc_cached=self.fxc_cached,
+        )

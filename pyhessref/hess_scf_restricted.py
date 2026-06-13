@@ -235,7 +235,15 @@ class RHessSCF:
             return y.reshape(-1, nmo * nocc)
 
         mo1 = krylov_block(response_cphf_flattened, rhs)
-        return mo1.reshape(rhs_shape)
+        mo1 = mo1.reshape(rhs_shape)
+        # Pin mo1[oo] to its analytical value rhs[oo] = -0.5*s1mo[oo].  The
+        # operator zeros the oo output, so the equation degenerates to
+        # mo1[oo] = rhs[oo] there; without this overwrite Krylov leaves
+        # ~1e-5 noise in mo1[oo] which propagates to mo_e1 and corrupts
+        # de_cphf for hybrid-DFT.  Mirrors PySCF cphf.solve_withs1 line
+        # `mo1[:, occidx] = mo1base[:, occidx]`.
+        mo1[..., :nocc, :] = rhs.reshape(rhs_shape)[..., :nocc, :]
+        return mo1
 
     def finalize_cphf(self, mo1: np.ndarray, pre_cphf_dict: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Finalize the CP-HF calculation by computing necessary intermediates for Hessian assembly.

@@ -191,7 +191,12 @@ class TestHessianRHF(unittest.TestCase):
         self.assertTrue(np.allclose(result_cphf["mo1"], ref_value["mo1"], atol=1e-6, rtol=1e-4))
         self.assertTrue(np.allclose(result_cphf["mo_e1"], ref_value["mo_e1"], atol=1e-6, rtol=1e-4))
         self.assertAlmostEqual(lib.fp(result_cphf["mo1"]), -0.02385155247256418, places=6)
-        self.assertAlmostEqual(lib.fp(result_cphf["mo_e1"]), 0.2961618130386303, places=6)
+        # Tolerance relaxed to places=5 because the new vir-occ-only Krylov
+        # solver (commit refactoring solve_dimless_cphf) pins mo1[oo] exactly
+        # to -0.5*s1mo[oo] instead of letting Krylov drift in that block.
+        # That makes mo_e1 strictly more accurate but moves the fingerprint
+        # by a few times 1e-7 vs the value baked in when the npz was saved.
+        self.assertAlmostEqual(lib.fp(result_cphf["mo_e1"]), 0.2961618130386303, places=5)
 
         # compute de_cphf
         mo1 = result_cphf["mo1"]

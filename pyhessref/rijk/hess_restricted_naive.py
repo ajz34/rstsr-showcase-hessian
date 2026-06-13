@@ -952,7 +952,8 @@ def get_rik_deriv1_ao_naive(
 
 
 def get_rijk_response_bra_naive(
-    mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray, bra: np.ndarray
+    mol: gto.Mole, aux: gto.Mole, mo_coeff: np.ndarray, mo_occ: np.ndarray, bra: np.ndarray,
+    scale_j: float = 1.0, scale_k: float = 1.0,
 ) -> np.ndarray:
     """Compute the response of RI-JK by given bra (perturbed coefficients).
 
@@ -968,6 +969,11 @@ def get_rijk_response_bra_naive(
         The molecular orbital occupation numbers, shape [nmo].
     bra : np.ndarray
         The bra vector (perturbed coefficients), shape [..., nao, nocc].
+    scale_j, scale_k : float, optional
+        J/K scaling factors.  Default 1.0 each (plain RHF).  Set
+        ``scale_k`` to the hybrid coefficient when the caller embeds this
+        inside a hybrid DFT response (the J/K skeleton scaling matches
+        ``RHessRIJKNaive.make_skeleton_hess`` and ``get_deriv1_ao``).
 
     Returns
     -------
@@ -997,7 +1003,7 @@ def get_rijk_response_bra_naive(
     resp_bra_j = 4 * einsum("uvP, PQ, klQ, Akj, lj, vi -> Aui", int3c2e, int2c2e_inv, int3c2e, bra, mocc, mocc)
     resp_bra_k0 = einsum("uvP, PQ, klQ, Avj, lj, ki -> Aui", int3c2e, int2c2e_inv, int3c2e, bra, mocc, mocc)
     resp_bra_k1 = einsum("uvP, PQ, klQ, Akj, vj, li -> Aui", int3c2e, int2c2e_inv, int3c2e, bra, mocc, mocc)
-    resp_bra = resp_bra_j - resp_bra_k0 - resp_bra_k1
+    resp_bra = scale_j * resp_bra_j - scale_k * (resp_bra_k0 + resp_bra_k1)
 
     # restore original shape
     resp_bra = resp_bra.reshape(bra_shape)
@@ -1049,4 +1055,7 @@ class RHessRIJKNaive(RHessElecInteractAPI):
         self.mo_occ = mo_occ
 
     def get_response_bra(self, bra: np.ndarray) -> np.ndarray:
-        return get_rijk_response_bra_naive(self.mol, self.aux, self.mo_coeff, self.mo_occ, bra)
+        return get_rijk_response_bra_naive(
+            self.mol, self.aux, self.mo_coeff, self.mo_occ, bra,
+            scale_j=self.scale_j, scale_k=self.scale_k,
+        )
