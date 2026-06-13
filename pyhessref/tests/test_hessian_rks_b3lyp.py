@@ -114,3 +114,4 @@ class TestHessianRKS(unittest.TestCase):
             np.allclose(de_hess, ref_value["de_ref"], atol=5e-5, rtol=1e-4),
             msg=f"max abs diff = {np.max(np.abs(de_hess - ref_value['de_ref']))}",
         )
+        self.assertAlmostEqual(lib.fp(de_hess), 1.463030213113, places=4)

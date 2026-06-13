@@ -2,7 +2,12 @@ import unittest
 
 import numpy as np
 from pyscf import gto, scf, lib, dft, df, hessian
-from pyhessref.nimatmul.rks import make_hessian_setup_batch
+from pyhessref.nimatmul.rks import make_hessian_setup_batch, RHessKSNaive
+from pyhessref.rijk.hess_restricted_naive import RHessRIJKNaive
+from pyhessref.hess_scf_restricted import RHessSCF
+from pyhessref.hcore import RHessHcore
+from pyhessref.nuc_repl import HessNucRepl
+from pyhessref.ovlp import RHessOvlp
 from pyhessref.util import get_dm0_restricted
 
 
@@ -50,3 +55,25 @@ class TestHessianRKS(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(result["de_vxc_off"]), -33.60278999768945, places=5)
         self.assertAlmostEqual(lib.fp(result["de_fxc"]), -20.132874762943892, places=5)
         self.assertAlmostEqual(lib.fp(result["vmat_deriv1"]), -4.579019717395777, places=5)
+
+    def test_make_hess(self):
+        """End-to-end RKS Hessian via RHessSCF (SVWN, LDA, hyb=0.0)."""
+        hyb = float(ref_value["hyb"])
+        hess_obj_rijk = RHessRIJKNaive(mol, aux, scale_j=1.0, scale_k=hyb)
+        hess_obj_ks = RHessKSNaive(mol, mf.xc, grids)
+
+        hess_impl = RHessSCF(
+            mol,
+            mf.mo_coeff,
+            mf.mo_occ,
+            mf.mo_energy,
+            ovlp_obj=RHessOvlp(mol),
+            core_list=[HessNucRepl(mol), RHessHcore(mol)],
+            el_list=[hess_obj_rijk, hess_obj_ks],
+        )
+        de_hess = hess_impl.make_hess()
+        self.assertTrue(
+            np.allclose(de_hess, ref_value["de_ref"], atol=5e-5, rtol=1e-4),
+            msg=f"max abs diff = {np.max(np.abs(de_hess - ref_value['de_ref']))}",
+        )
+        self.assertAlmostEqual(lib.fp(de_hess), 1.528278915756, places=4)
