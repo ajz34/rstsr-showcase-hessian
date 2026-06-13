@@ -1,7 +1,7 @@
 //! XC Potential generation (parallel enhanced)
 
 use super::prelude::*;
-use NIDenType::*;
+use XCDenType::*;
 
 /// Contract AO values with a weight vector to produce a symmetric matrix.
 ///
@@ -13,7 +13,7 @@ use NIDenType::*;
 /// - `out` : output buffer, shape `[nao, nao]`
 /// - `buf` : scratch buffer of length at least `ngrids * nao`
 fn contract_ao_wv_without_symmetrize(
-    den_type: NIDenType,
+    den_type: XCDenType,
     wv: TsrView,
     ao: TsrView,
     mut out: TsrMut,
@@ -97,7 +97,7 @@ fn contract_ao_wv_without_symmetrize(
 /// - `vxc` : output vxc, shape `[nao, nao]`
 /// - `nchunk` : number of grid points to process in one chunk
 pub fn rks_vxc_pot_with_eff_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     vxc_eff: TsrView,
     ao: TsrView,
     weights: TsrView,
@@ -190,7 +190,7 @@ pub fn rks_vxc_pot_with_eff_with_output(
 /// - `fxc` : output fxc, shape `[nao, nao, nset]`
 /// - `nchunk` : number of grid points to process in one chunk
 pub fn rks_fxc_pot_with_eff_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     fxc_eff: TsrView,
     rho1: TsrView,
     ao: TsrView,
@@ -294,7 +294,7 @@ pub fn rks_fxc_pot_with_eff_with_output(
 /// - `out` : output buffer, shape `[nao, nocc]`
 /// - `buf` : scratch buffer of length at least `ngrids * nocc`
 fn contract_ao_wv_bra(
-    den_type: NIDenType,
+    den_type: XCDenType,
     wv: TsrView,
     ao: TsrView,
     ao_bra: TsrView,
@@ -381,7 +381,7 @@ fn contract_ao_wv_bra(
 /// - `nchunk` : number of grid points to process in one chunk
 #[allow(clippy::too_many_arguments)]
 pub fn rks_fxc_pot_with_eff_bra_trans_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     fxc_eff: TsrView,
     rho1: TsrView,
     ao: TsrView,
@@ -494,7 +494,7 @@ pub fn rks_fxc_pot_with_eff_bra_trans_with_output(
 /// - `nchunk` : number of grid points to process in one chunk
 #[allow(clippy::too_many_arguments)]
 pub fn rks_kxc_pot_with_eff_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     kxc_eff: TsrView,
     rho1: TsrView,
     rho2: TsrView,
@@ -607,7 +607,7 @@ pub fn rks_kxc_pot_with_eff_with_output(
 /// - `vxc` : output vxc, shape `[nao, nao, 2]`
 /// - `nchunk` : number of grid points to process in one chunk
 pub fn uks_vxc_pot_with_eff_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     vxc_eff: TsrView,
     ao: TsrView,
     weights: TsrView,
@@ -706,7 +706,7 @@ pub fn uks_vxc_pot_with_eff_with_output(
 /// - `fxc` : output fxc, shape `[nao, nao, 2, nset]`
 /// - `nchunk` : number of grid points to process in one chunk
 pub fn uks_fxc_pot_with_eff_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     fxc_eff: TsrView,
     rho1: TsrView,
     ao: TsrView,
@@ -817,7 +817,7 @@ pub fn uks_fxc_pot_with_eff_with_output(
 /// - `nchunk` : number of grid points to process in one chunk
 #[allow(clippy::too_many_arguments)]
 pub fn uks_kxc_pot_with_eff_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     kxc_eff: TsrView,
     rho1: TsrView,
     rho2: TsrView,
@@ -943,7 +943,7 @@ pub fn uks_kxc_pot_with_eff_with_output(
 /// - `nchunk` : number of grid points to process in one chunk
 #[allow(clippy::too_many_arguments)]
 pub fn uks_fxc_pot_with_eff_bra_trans_with_output(
-    den_type: NIDenType,
+    den_type: XCDenType,
     fxc_eff: TsrView,
     rho1: TsrView,
     ao: TsrView,

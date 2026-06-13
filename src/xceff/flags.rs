@@ -1,6 +1,12 @@
+//! Flags for DFT evaluation.
+//!
+//! This file is currently in xceff module, which only LibXC implementation uses. But it should be
+//! independent to some specific XC evaluation implementation, and can be used by other
+//! implementations as well. So this file is free to be moved to a more general place in the future.
+
 pub const AO_DERIV_DIM: [usize; 5] = [1, 4, 10, 20, 35];
 
-/// Density type for numint.
+/// Density type for XC functionals.
 ///
 /// - RHO: only density
 /// - SIGMA: density + gradient
@@ -10,14 +16,14 @@ pub const AO_DERIV_DIM: [usize; 5] = [1, 4, 10, 20, 35];
 /// Note for this enum, each higher-level density type also contains all components of the
 /// lower-level types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NIDenType {
+pub enum XCDenType {
     RHO,
     SIGMA,
     TAU,
     LAPL,
 }
 
-impl NIDenType {
+impl XCDenType {
     /// Returns the number of components in the output density for this XC type.
     ///
     /// - RHO: 1 component (density)
@@ -26,10 +32,10 @@ impl NIDenType {
     /// - LAPL: 6 components (density + 3 gradient components + kinetic energy density + laplacian)
     pub fn num_nvar(&self) -> usize {
         match self {
-            NIDenType::RHO => 1,
-            NIDenType::SIGMA => 4,
-            NIDenType::TAU => 5,
-            NIDenType::LAPL => 6,
+            XCDenType::RHO => 1,
+            XCDenType::SIGMA => 4,
+            XCDenType::TAU => 5,
+            XCDenType::LAPL => 6,
         }
     }
 
@@ -41,10 +47,10 @@ impl NIDenType {
     /// - LAPL: 2nd order (Laplacian)
     pub fn num_ao_deriv(&self) -> usize {
         match self {
-            NIDenType::RHO => 0,
-            NIDenType::SIGMA => 1,
-            NIDenType::TAU => 1,
-            NIDenType::LAPL => 2,
+            XCDenType::RHO => 0,
+            XCDenType::SIGMA => 1,
+            XCDenType::TAU => 1,
+            XCDenType::LAPL => 2,
         }
     }
 
@@ -59,7 +65,7 @@ impl NIDenType {
     }
 }
 
-/// Parallelization strategy for numint.
+/// Parallelization strategy for XC evaluation.
 ///
 /// This enum allows three kinds of parallelization strategies by `From` trait implementations:
 ///
@@ -67,35 +73,35 @@ impl NIDenType {
 /// - None : Use default chunk size determined by the implementation function;
 /// - bool : parallel with auto-chunking if true, or serial if false.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NIPar {
+pub enum XCPar {
     Par { chunk_size: Option<usize> },
     Serial,
 }
 
-impl From<usize> for NIPar {
+impl From<usize> for XCPar {
     fn from(chunk_size: usize) -> Self {
-        NIPar::Par { chunk_size: Some(chunk_size) }
+        XCPar::Par { chunk_size: Some(chunk_size) }
     }
 }
 
-impl From<Option<usize>> for NIPar {
+impl From<Option<usize>> for XCPar {
     fn from(chunk_size: Option<usize>) -> Self {
-        NIPar::Par { chunk_size }
+        XCPar::Par { chunk_size }
     }
 }
 
-impl From<bool> for NIPar {
+impl From<bool> for XCPar {
     fn from(parallel: bool) -> Self {
         if parallel {
-            NIPar::Par { chunk_size: None }
+            XCPar::Par { chunk_size: None }
         } else {
-            NIPar::Serial
+            XCPar::Serial
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NISpin {
+pub enum XCSpin {
     Unpolarized,
     Polarized,
 }

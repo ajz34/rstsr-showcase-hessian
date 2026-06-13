@@ -2,7 +2,7 @@ use crate::prelude::*;
 use libxc::prelude::*;
 
 use LibXCSpin::*;
-use NIDenType::*;
+use XCDenType::*;
 
 // https://stackoverflow.com/a/65563202/7740992
 pub fn count_combinations(n: usize, r: usize) -> usize {
@@ -15,7 +15,7 @@ pub fn count_combinations(n: usize, r: usize) -> usize {
 
 /* #region libxc-to-xcfun index convention change */
 
-pub const fn libxc_to_xcfun_mapping_parts(den_type: NIDenType, deriv: usize) -> Option<&'static [usize]> {
+pub const fn libxc_to_xcfun_mapping_parts(den_type: XCDenType, deriv: usize) -> Option<&'static [usize]> {
     match (den_type, deriv) {
         (RHO, _) => None,
         (SIGMA, 0) => Some(&[0]),
@@ -62,7 +62,7 @@ pub const fn libxc_to_xcfun_mapping_parts(den_type: NIDenType, deriv: usize) -> 
 }
 
 #[doc = include_str!("libxc-xcfun-trans.md")]
-pub fn libxc_to_xcfun_mapping(den_type: NIDenType, spin: LibXCSpin, deriv: usize) -> Option<Vec<usize>> {
+pub fn libxc_to_xcfun_mapping(den_type: XCDenType, spin: LibXCSpin, deriv: usize) -> Option<Vec<usize>> {
     // some cases that do not require reordering
     if deriv <= 1 || spin == Unpolarized || den_type == RHO {
         return None;
@@ -73,7 +73,7 @@ pub fn libxc_to_xcfun_mapping(den_type: NIDenType, spin: LibXCSpin, deriv: usize
 
 pub fn libxc_transform_xcfun_indices(
     xc0: TsrView<'_>,
-    den_type: NIDenType,
+    den_type: XCDenType,
     spin: LibXCSpin,
     deriv: usize,
 ) -> TsrCow<'_> {
@@ -94,7 +94,7 @@ pub fn libxc_transform_xcfun_indices(
 /// Get the number of components (xlen) for a given density type and spin polarization.
 ///
 /// This value should match the first derivative length.
-pub const fn get_xc_xlen(den_type: NIDenType, spin: LibXCSpin) -> usize {
+pub const fn get_xc_xlen(den_type: XCDenType, spin: LibXCSpin) -> usize {
     match (den_type, spin) {
         (RHO, Unpolarized) => 1,
         (RHO, Polarized) => 2,
@@ -302,7 +302,7 @@ pub fn unfold_sigma(
 /* #endregion unfold sigma */
 
 #[allow(clippy::deref_addrof)]
-pub fn transform_xc_inner(rho: TsrView, xc_val: TsrView, den_type: NIDenType, spin: LibXCSpin, order: usize) -> Tsr {
+pub fn transform_xc_inner(rho: TsrView, xc_val: TsrView, den_type: XCDenType, spin: LibXCSpin, order: usize) -> Tsr {
     if order >= 4 {
         panic!("currently only support order < 4 (exc, vxc, kxc, fxc). You specified order {order}");
     }

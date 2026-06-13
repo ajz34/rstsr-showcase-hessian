@@ -1,7 +1,7 @@
 //! Density evaluation (parallel enhanced)
 
 use super::prelude::*;
-use NIDenType::*;
+use XCDenType::*;
 
 /// Evaluate density from density matrices (parallel enhanced).
 ///
@@ -15,7 +15,7 @@ use NIDenType::*;
 pub fn get_rho_from_dm_with_output(
     ao: TsrView,
     dm_list: &[TsrView],
-    den_type: NIDenType,
+    den_type: XCDenType,
     out: TsrMut,
     nchunk: usize,
 )  {
@@ -118,7 +118,7 @@ pub fn get_rho_from_dm_with_output(
 pub fn get_rho_from_homogeneous_braket_with_output(
     ao: TsrView,
     bra_list: &[TsrView],
-    den_type: NIDenType,
+    den_type: XCDenType,
     out: TsrMut,
     nchunk: usize,
 )  {
@@ -229,7 +229,7 @@ pub fn get_rho_from_one_bra_mult_ket_with_output(
     ao: TsrView,
     bra: TsrView,
     ket_list: &[TsrView],
-    den_type: NIDenType,
+    den_type: XCDenType,
     out: TsrMut,
     nchunk: usize,
 )  {
@@ -362,7 +362,7 @@ pub fn get_rho_from_mult_bra_mult_ket_with_output(
     ao: TsrView,
     bra_list: &[TsrView],
     ket_list: &[TsrView],
-    den_type: NIDenType,
+    den_type: XCDenType,
     out: TsrMut,
     nchunk: usize,
 )  {

@@ -4,10 +4,10 @@ use libxc::compute_cpu::LibXCCpuInput;
 use libxc::prelude::*;
 
 use LibXCSpin::*;
-use NIDenType::*;
+use XCDenType::*;
 
 /// Determine the density type required by the given XC functional.
-pub fn determine_den_type(xc_func: &LibXCFunctional) -> NIDenType {
+pub fn determine_den_type(xc_func: &LibXCFunctional) -> XCDenType {
     match xc_func.family() {
         LibXCFamily::LDA | LibXCFamily::HybLDA => RHO,
         LibXCFamily::GGA | LibXCFamily::HybGGA => SIGMA,
@@ -233,10 +233,10 @@ pub fn libxc_eval_eff_parallel(
 /// | 1     | `[ngrids, nvar]`               | `[ngrids, nvar, 2]`                   |
 /// | 2     | `[ngrids, nvar, nvar]`         | `[ngrids, nvar, 2, nvar, 2]`          |
 /// | 3     | `[ngrids, nvar, nvar, nvar]`   | `[ngrids, nvar, 2, nvar, 2, nvar, 2]` |
-pub fn libxc_eval_eff(xc_func: &LibXCFunctional, rho: TsrView, deriv: usize, par: impl Into<NIPar>) -> Vec<Tsr> {
+pub fn libxc_eval_eff(xc_func: &LibXCFunctional, rho: TsrView, deriv: usize, par: impl Into<XCPar>) -> Vec<Tsr> {
     let par = par.into();
     match par {
-        NIPar::Par { chunk_size } => libxc_eval_eff_parallel(xc_func, rho, deriv, chunk_size),
-        NIPar::Serial => libxc_eval_eff_serial(xc_func, rho, deriv),
+        XCPar::Par { chunk_size } => libxc_eval_eff_parallel(xc_func, rho, deriv, chunk_size),
+        XCPar::Serial => libxc_eval_eff_serial(xc_func, rho, deriv),
     }
 }

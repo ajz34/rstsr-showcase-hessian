@@ -21,11 +21,11 @@ pub mod prelude {
     pub(crate) use crate::prelude_dev::*;
     pub(crate) use crate::util::prelude::*;
 
-    pub use crate::numint_matmul::flags::*;
     pub use crate::numint_matmul::nimatmul::*;
+    pub use crate::xceff::flags::*;
     pub use crate::xceff::libxc_wrap::*;
 
-    pub(crate) use crate::numint_matmul::flags::NIDenType::*;
+    pub(crate) use crate::xceff::flags::XCDenType::*;
 }
 
 pub mod prelude_dev {
