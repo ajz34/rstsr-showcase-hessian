@@ -34,13 +34,43 @@ XC_NCOMP_AO_DM0 = {"LDA": 1, "GGA": 4, "MGGA": 4}
 
 
 def _eval_rho_vxc_fxc(xc, xc_type, ao, ao_dm0):
-    """Compute rho (component-stacked), vxc, fxc for the requested xc_type.
+    """Evaluate the on-grid density together with the first/second functional
+    derivatives ``vxc``/``fxc`` for the requested xc functional.
 
-    rho layout follows the eval_xc_eff convention:
-        LDA  : (1, ngrid)            [rho]
-        GGA  : (4, ngrid)            [rho, drho/dx, drho/dy, drho/dz]
-        MGGA : (5, ngrid)            [rho, drho/dx, drho/dy, drho/dz, tau]
-    Note: tau here is the LAPL-removed component (index 5 in eval_rho would be tau).
+    The rho layout follows PySCF's ``eval_xc_eff`` convention with channels
+    stacked along the leading axis:
+
+    - ``LDA``  : ``[rho]``                                  (1 channel)
+    - ``GGA``  : ``[rho, drho/dx, drho/dy, drho/dz]``       (4 channels)
+    - ``MGGA`` : ``[rho, drho/dx, drho/dy, drho/dz, tau]``  (5 channels)
+
+    ``tau`` here is the LAPL-removed kinetic energy density.
+
+    Parameters
+    ----------
+    xc : str
+        The xc functional name (e.g. ``"B3LYP"``, ``"TPSS0"``).
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"`` — the functional family.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]``.  Only the value channel ``ao[0]`` (and
+        the gradient channels ``ao[1:4]`` for GGA/MGGA) are read here, even
+        though additional higher-order channels may be present.
+    ao_dm0 : np.ndarray
+        Pre-contracted ``ao @ dm0`` on the channel axis, shape
+        ``[ncomp_dm0, ngrids, nao]`` — ``ncomp_dm0`` is 1 for LDA and 4
+        for GGA/MGGA (rho + 3 gradients).
+
+    Returns
+    -------
+    rho : np.ndarray
+        On-grid density components, shape ``[nvar, ngrids]``.
+    vxc : np.ndarray
+        First functional derivative ``f^chi``, shape ``[nvar, ngrids]``.
+    fxc : np.ndarray
+        Second functional derivative ``f^{chi chi'}``, shape
+        ``[nvar, nvar, ngrids]``.
     """
     nvar = XC_NVAR[xc_type]
     ngrids = ao.shape[1]
@@ -64,10 +94,40 @@ def _eval_rho_vxc_fxc(xc, xc_type, ao, ao_dm0):
 
 
 def _make_drho(xc_type, ao, ao_dm0, aoslices):
-    """Skeleton derivative of rho components w.r.t. nuclear coordinates.
+    """First-order skeleton derivative of the rho components with respect to
+    nuclear coordinates.
 
-    Output shape (natm, 3, nvar, ngrids).  The bra-side basis sits on atom A,
-    so the derivative acts only on bra basis indices in the slice [p0, p1).
+    The "skeleton" derivative is the contribution that comes from the basis
+    functions following the nucleus they are centred on, holding the density
+    matrix fixed.  For each atom A and Cartesian direction t, the derivative
+    acts only on bra basis indices in the on-atom slice ``[p0, p1)``, hence
+    the per-atom contraction below.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]``.  LDA reads up to 1st-order channels
+        (indices 0..3); GGA/MGGA reads up to 2nd-order channels
+        (indices 0..9).
+    ao_dm0 : np.ndarray
+        Pre-contracted ``ao @ dm0``, shape ``[ncomp_dm0, ngrids, nao]``
+        with ``ncomp_dm0`` = 1 for LDA and 4 for GGA/MGGA.
+    aoslices : np.ndarray
+        Per-atom AO slices as returned by ``mol.aoslice_by_atom()`` (or its
+        atom-list-restricted view), of shape ``[natm, 4]``.
+
+    Returns
+    -------
+    drho : np.ndarray
+        Skeleton derivative ``d xi^chi / d A_t``, shape
+        ``[natm, 3, nvar, ngrids]``.  Symmetric components (rho + grad)
+        carry a factor 2 from the bra↔ket symmetry; the tau channel does not.
+        The derivative carries the bra-side minus sign convention (so a
+        positive nuclear displacement of A drags AO bra functions and the
+        contribution to rho falls off in the -bra-deriv direction).
     """
     ngrids = ao.shape[1]
     nvar = XC_NVAR[xc_type]
@@ -124,15 +184,67 @@ def _make_drho(xc_type, ao, ao_dm0, aoslices):
 
 
 def _de_fxc(weights, drho, fxc):
-    """fxc contribution: $w_g (\\partial drho)_{A,t,x} f^{xy}_g (\\partial drho)_{B,s,y}$."""
+    """fxc contribution to the XC skeleton 2nd derivative.
+
+    This is the part of ``de_vxc`` that comes from contracting the
+    first-order rho derivatives on each side with the second functional
+    derivative kernel ``fxc``.
+
+    Parameters
+    ----------
+    weights : np.ndarray
+        Grid weights, shape ``[ngrids]``.
+    drho : np.ndarray
+        Skeleton derivative of rho components, shape
+        ``[natm, 3, nvar, ngrids]``.
+    fxc : np.ndarray
+        Second functional derivative kernel, shape
+        ``[nvar, nvar, ngrids]``.
+
+    Returns
+    -------
+    de_fxc : np.ndarray
+        fxc contribution to the Hessian, shape ``[natm, natm, 3, 3]``.
+    """
     return np.einsum("g, Atxg, xyg, Bsyg -> ABts", weights, drho, fxc, drho, optimize=True)
 
 
 def _de_vxc_diag(xc_type, ao, ao_dm0, wv, aoslices, natm, nao):
-    """Same-atom block of the XC skeleton 2nd derivative.
+    """Same-atom (A == B) block of the XC skeleton 2nd derivative.
 
-    Builds the AO-resolved object dao_vxc_diag[6, nao] and contracts with the
-    on-atom slice.  The 6 components are (xx, xy, xz, yy, yz, zz).
+    Builds the AO-resolved object ``dao_vxc_diag[6, nao]`` whose 6 components
+    are the symmetric Cartesian pairs ``(xx, xy, xz, yy, yz, zz)``, then
+    contracts with the on-atom slice and re-expands to a dense ``(3, 3)``
+    block per atom.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]``.  LDA reads up to 2nd-order channels
+        (indices 0..9); GGA/MGGA further reads 3rd-order channels
+        (indices 10..19) for the triple-derivative contributions.
+    ao_dm0 : np.ndarray
+        Pre-contracted ``ao @ dm0``, shape
+        ``[ncomp_dm0, ngrids, nao]`` (1 for LDA, 4 for GGA/MGGA).
+    wv : np.ndarray
+        Weight-times-vxc, shape ``[nvar, ngrids]``.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]`` — only the last two columns
+        ``[p0, p1)`` are used for the bra-side AO range of each atom.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+    nao : int
+        Total number of atomic orbitals.
+
+    Returns
+    -------
+    de_vxc_diag : np.ndarray
+        Same-atom block of the XC skeleton 2nd derivative, shape
+        ``[natm, natm, 3, 3]`` — only the diagonal ``A == B`` blocks are
+        non-zero (off-diagonal blocks are produced by ``_de_vxc_off``).
     """
     dao_vxc_diag = np.zeros((6, nao))
 
@@ -171,11 +283,41 @@ def _de_vxc_diag(xc_type, ao, ao_dm0, wv, aoslices, natm, nao):
 
 
 def _de_vxc_off(xc_type, ao, dm0, wv, aoslices, natm, nao):
-    """Two-atom (off-diagonal) block of the XC skeleton 2nd derivative.
+    """Two-atom (A != B) block of the XC skeleton 2nd derivative.
 
-    Builds the dense [3, 3, nao, nao] object and contracts it against dm0 over
-    the (B, A) AO slices.  We finally symmetrise by adding the [s, t] copy with
-    AO indices transposed.
+    Builds the dense AO-resolved object ``dao_vxc_off[3, 3, nao, nao]`` (so
+    both bra and ket retain their AO indices), symmetrises it under
+    ``[t, s, mu, nu] -> [s, t, nu, mu]``, and contracts each ``(A, B)``
+    block with the corresponding ``dm0[B, A]`` AO slice.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]``.  Indices 0..3 are always read; GGA/MGGA
+        also reads the 2nd-order channels (indices 4..9).
+    dm0 : np.ndarray
+        Density matrix in AO basis, shape ``[nao, nao]``.
+    wv : np.ndarray
+        Weight-times-vxc, shape ``[nvar, ngrids]``.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]``.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+    nao : int
+        Total number of atomic orbitals.
+
+    Returns
+    -------
+    de_vxc_off : np.ndarray
+        Two-atom block of the XC skeleton 2nd derivative, shape
+        ``[natm, natm, 3, 3]``.  Both ``A == B`` and ``A != B`` entries are
+        populated; the natural decomposition into "diagonal vs off-diagonal"
+        is by the integral kernel rather than by atom index, so this
+        function's diagonal block is *not* zero — it complements
+        ``de_vxc_diag``.
     """
     dao_vxc_off = np.zeros((3, 3, nao, nao))
 
@@ -232,10 +374,32 @@ def _de_vxc_off(xc_type, ao, dm0, wv, aoslices, natm, nao):
 
 
 def _vmat_ip(xc_type, ao, wv, nao):
-    """Gradient-level Vxc matrix (ipip term shared by every atom).
+    """Gradient-level Vxc matrix shared across all atoms (the ipip block).
 
-    Returns vmat_ip[3, nao, nao].  This is the AO part that the per-atom
-    vmat_deriv1 reuses on its on-atom slice.
+    This is the AO-space object that, when later multiplied on its bra-side
+    AO slice, yields the on-atom contribution that ``_vmat_deriv1`` adds to
+    the per-atom skeleton Fock derivative.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]``.  LDA uses indices 0..3; GGA/MGGA also
+        uses 2nd-order channels at indices 4..9.
+    wv : np.ndarray
+        Weight-times-vxc, shape ``[nvar, ngrids]``.
+    nao : int
+        Total number of atomic orbitals.
+
+    Returns
+    -------
+    vmat_ip : np.ndarray
+        Gradient-level Vxc matrix, shape ``[3, nao, nao]``, indexed by the
+        Cartesian direction ``t`` of the bra derivative.  The matrix is not
+        symmetrised in AO indices — symmetrisation happens in
+        ``_vmat_deriv1`` once the per-atom slicing is done.
     """
     vmat_ip = np.zeros((3, nao, nao))
 
@@ -273,10 +437,44 @@ def _vmat_ip(xc_type, ao, wv, nao):
 
 
 def _vmat_deriv1(xc_type, ao, drho, wf, vmat_ip, aoslices, natm, nao):
-    """Per-atom Fock skeleton derivative (vxc_deriv1).
+    """Per-atom skeleton derivative of the Vxc Fock matrix (``vmat_deriv1``).
 
-    For each atom A, builds the type-dependent fxc part from drho[A], then
-    folds in the (atom A only) ipip slice and antisymmetrises in AO indices.
+    For each atom ``A`` and Cartesian direction ``t``, this is the
+    nuclear-coordinate derivative of the Vxc Fock matrix that holds the
+    density matrix fixed (i.e. the CP-KS *skeleton* term, not the full
+    response).  It combines the fxc kernel folded against ``drho[A]`` with
+    the bra-side ipip slice from ``vmat_ip``, then antisymmetrises across
+    AO indices to enforce the bra↔ket convention.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]``.  Only indices 0..3 are read here;
+        higher channels in ``ao`` are unused but may be present.
+    drho : np.ndarray
+        Skeleton derivative of rho components (output of ``_make_drho``),
+        shape ``[natm, 3, nvar, ngrids]``.
+    wf : np.ndarray
+        Weight-times-fxc, shape ``[nvar, nvar, ngrids]``.
+    vmat_ip : np.ndarray
+        Gradient-level Vxc matrix from ``_vmat_ip``, shape
+        ``[3, nao, nao]``.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]``.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+    nao : int
+        Total number of atomic orbitals.
+
+    Returns
+    -------
+    vmat_deriv1 : np.ndarray
+        Skeleton derivative of the Vxc Fock matrix, shape
+        ``[natm, 3, nao, nao]``, antisymmetrised on the trailing AO axes
+        (``vmat_deriv1 += vmat_deriv1.swapaxes(-1, -2)``).
     """
     vmat_deriv1 = np.zeros((natm, 3, nao, nao))
 
@@ -323,6 +521,50 @@ def make_hessian_setup_batch(
     atm_list: list[int] = None,
     verbose: bool = True,
 ) -> dict[str, np.ndarray]:
+    """Compute all DFT skeleton ingredients of the RKS Hessian in one pass.
+
+    Performs the DFT numerical-integration setup once (``ao``, ``rho``,
+    ``vxc``, ``fxc``) and feeds it into the helper routines that build the
+    XC skeleton 2nd-derivative pieces (``de_vxc_diag``, ``de_vxc_off``,
+    ``de_fxc``) and the CP-KS-side ``vmat_ip``/``vmat_deriv1`` matrices.
+
+    The total XC contribution to the skeleton Hessian is
+    ``de_vxc_diag + de_vxc_off + de_fxc``.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        Molecule, used for AO slices and the AO basis dimension.
+    xc : str
+        XC functional name, e.g. ``"SVWN"`` (LDA), ``"B3LYP"`` (GGA), or
+        ``"TPSS0"`` (MGGA).
+    coords : np.ndarray
+        Grid point coordinates, shape ``[ngrids, 3]``.
+    weights : np.ndarray
+        Grid weights, shape ``[ngrids]``.
+    dm0 : np.ndarray
+        Reference density matrix in AO basis, shape ``[nao, nao]``.
+    atm_list : list[int], optional
+        Subset of atom indices to compute the per-atom outputs for.
+        Defaults to all atoms.
+    verbose : bool, optional
+        When True, print per-stage timings.  Defaults to True.
+
+    Returns
+    -------
+    result : dict[str, np.ndarray]
+        Dictionary with the following entries:
+
+        - ``de_vxc_diag`` : same-atom XC skeleton block, shape
+          ``[natm, natm, 3, 3]`` (only ``A == B`` blocks are non-zero).
+        - ``de_vxc_off``  : two-atom XC skeleton block, shape
+          ``[natm, natm, 3, 3]``.
+        - ``de_fxc``      : fxc-kernel contribution, shape
+          ``[natm, natm, 3, 3]``.
+        - ``vmat_ip``     : gradient-level Vxc, shape ``[3, nao, nao]``.
+        - ``vmat_deriv1`` : per-atom skeleton derivative of the Vxc Fock
+          matrix, shape ``[natm, 3, nao, nao]``, antisymmetrised in AO.
+    """
     nao = mol.nao
     atm_list = atm_list if atm_list is not None else list(range(mol.natm))
     aoslices = mol.aoslice_by_atom()[atm_list]
