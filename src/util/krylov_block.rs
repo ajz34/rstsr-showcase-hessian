@@ -121,17 +121,35 @@ pub fn krylov_block(
             let coeffs = (xs_slc.t() % &axt) / ip_vec.i((.., None));
             let x1_new = axt - &xs_slc % &coeffs;
 
-            let (next_x1, next_ip) = orth_block(x1_new.view(), lindep);
+            // MGS new directions: keep at the numerical-zero floor; defer
+            // the user's lindep filter so borderline vectors still feed
+            // the projected solve via xs / ax.
+            let (mut next_x1, mut next_ip) = orth_block(x1_new.view(), lindep);
 
+            // Convergence test uses the unfiltered max innerprod.
             let max_innerprod = next_ip.iter().copied().fold(0.0_f64, f64::max);
             let r = max_innerprod.sqrt();
+
+            // Filter the next-iteration directions to those above conv_thresh.
+            let keep_mask: Vec<bool> = next_ip.iter().map(|&ip| ip > conv_thresh).collect();
+            if keep_mask.iter().any(|&b| !b) {
+                next_x1 = next_x1.bool_select(1, &keep_mask);
+                next_ip = keep_mask
+                    .iter()
+                    .zip(next_ip.iter())
+                    .filter_map(|(&m, &ip)| if m { Some(ip) } else { None })
+                    .collect();
+            }
+
+            // Per-element diagnostics on the new trial block.
+            let l2_per_elem = (max_innerprod / (n as f64)).sqrt();
+            let max_abs: f64 = x1_new
+                .iter()
+                .fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+
             println!(
-                "restart {} inner {} (total cycle {}): max(||v||^2) = {:.3e}, max(||v||) = {:.3e}",
-                restart_idx,
-                inner + 1,
-                total_cycles,
-                max_innerprod,
-                r
+                "restart {} inner {} (total cycle {}): max(||v||^2) = {:.3e}, max(||v||) = {:.3e}, per-elem L2 = {:.3e}, max-abs = {:.3e}",
+                restart_idx, inner + 1, total_cycles, max_innerprod, r, l2_per_elem, max_abs,
             );
 
             x1 = next_x1;
