@@ -28,7 +28,7 @@ Usage:
 import numpy as np
 
 
-def krylov_block(aop, b, x0=None, tol=1e-10, max_cycle=30, max_space=14, lindep=1e-13):
+def krylov_block(aop, b, x0=None, tol=1e-10, max_cycle=30, max_space=14, lindep=1e-14):
     """Block Krylov subspace method to solve (1+a)*x = b with hard restarts.
 
     At each cycle, the current trial block is multiplied by aop and
@@ -89,7 +89,15 @@ def krylov_block(aop, b, x0=None, tol=1e-10, max_cycle=30, max_space=14, lindep=
     if x_accum.ndim == 1:
         x_accum = x_accum.reshape(1, -1)
 
-    # MGS that keeps non-normalized vectors and tracks ||v||^2
+    # Two-tier separation: `lindep` is the MGS-level floor (drop a
+    # subspace vector only when its squared-norm falls below this — i.e.
+    # numerical zero), while `conv_thresh = max(lindep, tol²)` controls
+    # which vectors are eligible to extend the next Krylov direction.
+    # Borderline vectors with squared-norm in (lindep, conv_thresh] still
+    # contribute to the projected solve via xs / ax; they just don't get
+    # axt-applied again.  To exploit the two tiers separately, set lindep
+    # tight (numerical zero) and tol so that tol² is a looser filter
+    # threshold — e.g. lindep=1e-14, tol≈3e-7 → conv_thresh=1e-13.
     def _orth_block(vec_list):
         result = []
         norms_sq = []
@@ -157,14 +165,35 @@ def krylov_block(aop, b, x0=None, tol=1e-10, max_cycle=30, max_space=14, lindep=
                 w = x1_new @ xsi / all_innerprod[i]    # (nblock,) coefficients
                 x1_new -= np.outer(w, xsi)
 
-            # Orthogonalize among themselves via MGS
+            # MGS new directions: keep at numerical-zero floor; defer
+            # the user's lindep filter so borderline vectors still feed
+            # the projected solve via xs / ax.
             x1_list, innerprod = _orth_block(x1_new)
 
+            # Convergence test uses the unfiltered max innerprod.
             max_innerprod = max(innerprod) if innerprod else 0
             r = np.sqrt(max_innerprod)
 
+            # Filter the next-iteration directions to those above conv_thresh.
+            kept = [(v, ip) for v, ip in zip(x1_list, innerprod)
+                    if ip > conv_thresh]
+            x1_list = [v for v, _ in kept]
+            innerprod = [ip for _, ip in kept]
+
+            # Per-element diagnostics on the new trial block.  These are
+            # what `tol` directly bounds: at exit ||new_trial||₂ < tol per
+            # vector, so the per-element RMS is roughly tol / √ndim.  The
+            # actual linear-system residue ||b - (I+A)x||₂ is a separate
+            # quantity (Galerkin solve doesn't minimise it) and can be
+            # substantially larger.
+            new_trial = np.asarray(x1_new)
+            l2_per_elem = np.sqrt(max_innerprod / ndim_l)
+            max_abs = float(np.max(np.abs(new_trial))) if new_trial.size else 0.0
+
             print(f"  restart {restart_idx} inner {inner+1} (total cycle {total_cycles}): "
-                  f"max(||new_trial_vec_i||^2) = {max_innerprod:.3e}, max(||new_trial_vec_i||) = {r:.3e}")
+                  f"max(||new_trial_vec_i||^2) = {max_innerprod:.3e}, "
+                  f"max(||new_trial_vec_i||) = {r:.3e}, "
+                  f"per-elem L2 = {l2_per_elem:.3e}, max-abs = {max_abs:.3e}")
 
             if max_innerprod < conv_thresh:
                 inner_converged = True
