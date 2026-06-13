@@ -17,10 +17,10 @@ def setUpModule():
     H  0.1 0.1 1.2
     """
     PATH_PROTOTYPE = "prototype/"  # assuming run at project root
-    PATH_REF = PATH_PROTOTYPE + "nh3_r_tpss0_decomp.npz"
+    PATH_REF = PATH_PROTOTYPE + "nh3_r_svwn_decomp.npz"
 
     mol = gto.Mole(atom=xyz, basis="def2-TZVP", max_memory=8000).build()
-    mf = scf.RKS(mol, xc="TPSS0").density_fit()
+    mf = scf.RKS(mol, xc="SVWN").density_fit()
     ref_value = np.load(PATH_REF)
     mf.mo_coeff = ref_value["mo_coeff"]
     mf.mo_occ = ref_value["mo_occ"]
@@ -46,8 +46,7 @@ class TestHessianRKS(unittest.TestCase):
         self.assertTrue(np.allclose(result["de_fxc"], ref_value["de_fxc"]))
         self.assertTrue(np.allclose(result["vmat_ip"], ref_value["vmat_ip"]))
         self.assertTrue(np.allclose(result["vmat_deriv1"], ref_value["vmat_deriv1"]))
-        self.assertAlmostEqual(lib.fp(result["de_vxc_diag"]), 44.68386358957363, places=5)
-        self.assertAlmostEqual(lib.fp(result["de_vxc_off"]), -16.124876249597378, places=5)
-        self.assertAlmostEqual(lib.fp(result["de_fxc"]), -29.390069496788165, places=5)
-        self.assertAlmostEqual(lib.fp(result["vmat_deriv1"]), -3.4184689531771597, places=5)
-        
+        self.assertAlmostEqual(lib.fp(result["de_vxc_diag"]), 52.68061529362255, places=5)
+        self.assertAlmostEqual(lib.fp(result["de_vxc_off"]), -33.60278999768945, places=5)
+        self.assertAlmostEqual(lib.fp(result["de_fxc"]), -20.132874762943892, places=5)
+        self.assertAlmostEqual(lib.fp(result["vmat_deriv1"]), -4.579019717395777, places=5)
