@@ -140,6 +140,13 @@ pub fn make_hessian_setup_batch(
     let de_vxc_off = get_de_vxc_off(xc_type, ao.view(), dm0.view(), wv.view(), &aoslices);
     tic("de_vxc_off", t0);
 
+    // --- vmat_ip --- //
+
+    // vmat_ip [nao, nao, 3]
+    let t0 = std::time::Instant::now();
+    let vmat_ip = get_vmat_ip(xc_type, ao.view(), wv.view());
+    tic("vmat_ip", t0);
+
     HashMap::from([
         ("rho", rho),
         ("vxc", vxc),
@@ -147,6 +154,7 @@ pub fn make_hessian_setup_batch(
         ("de_fxc", de_fxc),
         ("de_vxc_diag", de_vxc_diag),
         ("de_vxc_off", de_vxc_off),
+        ("vmat_ip", vmat_ip),
     ])
 }
 
@@ -377,4 +385,54 @@ pub fn get_de_vxc_off(xc_type: XCDenType, ao: TsrView, dm0: TsrView, wv: TsrView
     }
 
     de_vxc_off
+}
+
+pub fn get_vmat_ip(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
+    // direct transformation of `pyhessref/nimatmul/rks.py`, function `_vmat_ip`
+
+    let nao = ao.shape()[1];
+    let device = ao.device().clone();
+
+    let mut vmat_ip = rt::zeros(([nao, nao, 3], &device));
+
+    if matches!(xc_type, RHO) {
+        // bra-on-A and ket-on-A halves are identical for LDA
+        // (both equal 0.5 * wv[0] * ao[t+1]^T @ ao[O]); folded into a single contraction.
+        let aow: Tsr = index!(wv, 0) * index!(ao, O);
+        for t in 0..3 {
+            index_mut!(vmat_ip, t).matmul_from(&index!(ao, t + 1).t(), &aow, 1.0, 1.0);
+        }
+        return vmat_ip;
+    }
+
+    // GGA + MGGA share the same SIGMA structure
+    if matches!(xc_type, SIGMA | TAU) {
+        let mut aow: Tsr = 0.5 * index!(wv, 0) * index!(ao, O);
+        for r in 0..3 {
+            aow += index!(wv, r + 1) * index!(ao, r + 1);
+        }
+        for t in 0..3 {
+            index_mut!(vmat_ip, t).matmul_from(&index!(ao, t + 1).t(), &aow, 1.0, 1.0);
+        }
+
+        for t in 0..3 {
+            let mut aow_d: Tsr = 0.5 * index!(wv, 0) * index!(ao, t + 1);
+            for r in 0..3 {
+                aow_d += index!(wv, r + 1) * index!(ao, IDX_AO_DERIV2[t][r]);
+            }
+            index_mut!(vmat_ip, t).matmul_from(&aow_d.t(), &index!(ao, O), 1.0, 1.0);
+        }
+    }
+
+    // MGGA tau channel
+    if matches!(xc_type, TAU) {
+        for r in 0..3 {
+            let aow: Tsr = 0.5 * index!(wv, 4) * index!(ao, r + 1);
+            for t in 0..3 {
+                index_mut!(vmat_ip, t).matmul_from(&index!(ao, IDX_AO_DERIV2[t][r]).t(), &aow, 1.0, 1.0);
+            }
+        }
+    }
+
+    vmat_ip
 }

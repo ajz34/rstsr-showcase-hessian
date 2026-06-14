@@ -22,6 +22,7 @@ fn test_whole(hess_case_b3lyp: &CaseAmoniaRKS) {
     assert!(rt::allclose(result["de_fxc"].view(), ref_dict["de_fxc"].t(), (1e-4, 1e-6)));
     assert!(rt::allclose(result["de_vxc_diag"].view(), ref_dict["de_vxc_diag"].t(), (1e-4, 1e-6)));
     assert!(rt::allclose(result["de_vxc_off"].view(), ref_dict["de_vxc_off"].t(), (1e-4, 1e-6)));
+    assert!(rt::allclose(result["vmat_ip"].view(), ref_dict["vmat_ip"].transpose([1, 2, 0]), (1e-4, 1e-6)));
 
     assert_abs_diff_eq!(fp(result["de_fxc"].view()), -21.249874465163057, epsilon = 1e-5);
     assert_abs_diff_eq!(fp(result["de_vxc_diag"].view()), 49.688766385730304, epsilon = 1e-5);
