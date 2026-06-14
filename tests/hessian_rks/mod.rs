@@ -14,6 +14,8 @@ pub struct CaseAmoniaRKS {
     pub mo_coeff: Tsr,
     pub mo_occ: Tsr,
     pub mo_energy: Tsr,
+    pub grid_coords: Vec<[f64; 3]>,
+    pub grid_weights: Vec<f64>,
     pub xc: String,
     pub ref_dict: HashMap<String, Tsr>,
 }
@@ -36,7 +38,10 @@ pub fn hess_case(xc: &str) -> CaseAmoniaRKS {
     let mo_energy = read_npz(&format!("nh3_r_{}.npz", xc), "mo_energy").into_contig(ColMajor);
     let ref_dict = read_npz_dict(&format!("nh3_r_{}_decomp.npz", xc));
 
-    CaseAmoniaRKS { mol, aux, mo_coeff, mo_occ, mo_energy, xc: xc.to_string(), ref_dict }
+    let grid_coords = read_npz(&format!("nh3_r_{}.npz", xc), "grid_coords").into_pack_array::<3>(-1).into_vec();
+    let grid_weights = read_npz(&format!("nh3_r_{}.npz", xc), "grid_weights").into_vec();
+
+    CaseAmoniaRKS { mol, aux, mo_coeff, mo_occ, mo_energy, grid_coords, grid_weights, xc: xc.to_string(), ref_dict }
 }
 
 #[fixture]
