@@ -58,6 +58,12 @@ macro_rules! index {
     };
 }
 
+macro_rules! index_mut {
+    ($tsr: ident, $idx:expr) => {
+        (*&mut $tsr.i_mut((Ellipsis, $idx)))
+    };
+}
+
 /* #endregion */
 
 pub fn make_hessian_setup_batch(
@@ -98,7 +104,7 @@ pub fn make_hessian_setup_batch(
 
     let ao = ni.get_cached_ao(get_hess_ao_deriv(xc_type));
     let ncomp_ao_dm0 = get_hess_ncomp_ao_dm0(xc_type);
-    let ao_dm0 = ao.i((.., .., ..ncomp_ao_dm0)) % dm0;
+    let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % dm0;
 
     let (rho, vxc, fxc) = get_rho_vxc_fxc(xc_func, ao.view(), ao_dm0.view());
     let wv = &weights * &vxc;
@@ -132,17 +138,17 @@ pub fn get_rho_vxc_fxc(xc_func: &LibXCFunctional, ao: TsrView, ao_dm0: TsrView) 
     let device = ao.device().clone();
 
     let mut rho = rt::zeros(([ngrids, nvar], &device));
-    *&mut rho.i_mut((.., 0)) += rt::vecdot(ao.i((.., .., 0)), ao_dm0.i((.., .., 0)), 1);
+    index_mut!(rho, 0) += rt::vecdot(index!(ao, 0), index!(ao_dm0, O), 1);
     if matches!(xc_type, SIGMA | TAU) {
-        *&mut rho.i_mut((.., X)) += 2 * rt::vecdot(ao.i((.., .., X)), ao_dm0.i((.., .., 0)), 1);
-        *&mut rho.i_mut((.., Y)) += 2 * rt::vecdot(ao.i((.., .., Y)), ao_dm0.i((.., .., 0)), 1);
-        *&mut rho.i_mut((.., Z)) += 2 * rt::vecdot(ao.i((.., .., Z)), ao_dm0.i((.., .., 0)), 1);
+        index_mut!(rho, X) += 2 * rt::vecdot(index!(ao, X), index!(ao_dm0, O), 1);
+        index_mut!(rho, Y) += 2 * rt::vecdot(index!(ao, Y), index!(ao_dm0, O), 1);
+        index_mut!(rho, Z) += 2 * rt::vecdot(index!(ao, Z), index!(ao_dm0, O), 1);
     }
     if matches!(xc_type, TAU) {
-        *&mut rho.i_mut((.., 4)) += 0.5
-            * (rt::vecdot(ao.i((.., .., X)), ao_dm0.i((.., .., X)), 1)
-                + rt::vecdot(ao.i((.., .., Y)), ao_dm0.i((.., .., Y)), 1)
-                + rt::vecdot(ao.i((.., .., Z)), ao_dm0.i((.., .., Z)), 1))
+        index_mut!(rho, 4) += 0.5
+            * (rt::vecdot(index!(ao, X), index!(ao_dm0, X), 1)
+                + rt::vecdot(index!(ao, Y), index!(ao_dm0, Y), 1)
+                + rt::vecdot(index!(ao, Z), index!(ao_dm0, Z), 1))
     }
 
     let xc_eff = libxc_eval_eff(xc_func, rho.view(), 2, false);
