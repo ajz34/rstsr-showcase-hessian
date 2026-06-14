@@ -74,9 +74,7 @@ pub fn make_hessian_setup_batch(
     atm_list: Option<&[usize]>,
     verbose: bool,
 ) -> HashMap<&'static str, Tsr> {
-    let nao = mol.nao();
     let atm_list = atm_list.map_or_else(|| (0..mol.natm()).collect_vec(), |lst| lst.to_vec());
-    let natm = atm_list.len();
     // ao slices indexed by `atm_list`
     let aoslices_full = mol.aoslice_by_atom();
     let aoslices = atm_list.iter().map(|&iatm| aoslices_full[iatm]).collect_vec();
@@ -147,6 +145,13 @@ pub fn make_hessian_setup_batch(
     let vmat_ip = get_vmat_ip(xc_type, ao.view(), wv.view());
     tic("vmat_ip", t0);
 
+    // --- vmat_deriv1 --- //
+
+    // vmat_deriv1 [nao, nao, 3, natm]
+    let t0 = std::time::Instant::now();
+    let vmat_deriv1 = get_vmat_deriv1(xc_type, ao.view(), drho.view(), wf.view(), vmat_ip.view(), &aoslices);
+    tic("vmat_deriv1", t0);
+
     HashMap::from([
         ("rho", rho),
         ("vxc", vxc),
@@ -155,6 +160,7 @@ pub fn make_hessian_setup_batch(
         ("de_vxc_diag", de_vxc_diag),
         ("de_vxc_off", de_vxc_off),
         ("vmat_ip", vmat_ip),
+        ("vmat_deriv1", vmat_deriv1),
     ])
 }
 
@@ -435,4 +441,58 @@ pub fn get_vmat_ip(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
     }
 
     vmat_ip
+}
+
+pub fn get_vmat_deriv1(
+    xc_type: XCDenType,
+    ao: TsrView,
+    drho: TsrView,
+    wf: TsrView,
+    vmat_ip: TsrView,
+    aoslices: &[[usize; 4]],
+) -> Tsr {
+    let natm = aoslices.len();
+    let nao = ao.shape()[1];
+
+    let mut vmat_deriv1: Tsr = rt::zeros(([nao, nao, 3, natm], ao.device()));
+
+    for (A, &[_, _, p0, p1]) in aoslices.iter().enumerate() {
+        let slc = rt::slice!(p0, p1);
+
+        if matches!(xc_type, RHO) {
+            // wf_rho: [ngrids, 3]
+            let wf_rho: Tsr = 0.5 * index!(wf, O, O) * drho.i((.., O, .., A));
+            for t in 0..3 {
+                let aow = index!(wf_rho, t) * index!(ao, O);
+                index_mut!(vmat_deriv1, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
+            }
+        }
+
+        if matches!(xc_type, SIGMA | TAU) {
+            // wf_rho = np.einsum("gxy, gxt -> gyt", wf, drho[A])
+            // wf_rho[:, 0] *= 0.5, wf_rho[:, 4] *= 0.25
+            let mut wf_rho = rt::vecdot(&wf, drho.i((.., .., None, .., A)), 1);
+            *&mut wf_rho.i_mut((.., 0)) *= 0.5;
+            if matches!(xc_type, TAU) {
+                *&mut wf_rho.i_mut((.., 4)) *= 0.25;
+            }
+            for t in 0..3 {
+                let aow = rt::vecdot(wf_rho.i((.., None, ..4, t)), ao.i((.., .., ..4)), 2);
+                index_mut!(vmat_deriv1, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
+            }
+
+            if matches!(xc_type, TAU) {
+                for r in [X, Y, Z] {
+                    for t in 0..3 {
+                        let aow = wf_rho.i((.., 4, t)) * index!(ao, r);
+                        index_mut!(vmat_deriv1, t, A).matmul_from(aow.t(), index!(ao, r), 1.0, 1.0);
+                    }
+                }
+            }
+        }
+
+        *&mut vmat_deriv1.i_mut((slc, .., .., A)) -= vmat_ip.i((slc, .., ..));
+    }
+
+    &vmat_deriv1 + vmat_deriv1.swapaxes(0, 1)
 }
