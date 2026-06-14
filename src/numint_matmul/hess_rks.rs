@@ -126,7 +126,14 @@ pub fn make_hessian_setup_batch(
     let de_fxc = get_de_fxc(wf.view(), drho.view());
     tic("de_fxc", t0);
 
-    HashMap::from([("rho", rho), ("vxc", vxc), ("fxc", fxc), ("de_fxc", de_fxc)])
+    // --- de_vxc_diag --- //
+
+    // de_vxc_diag [3, 3, natm, natm]
+    let t0 = std::time::Instant::now();
+    let de_vxc_diag = get_de_vxc_diag(xc_type, ao.view(), ao_dm0.view(), wv.view(), &aoslices);
+    tic("de_vxc_diag", t0);
+
+    HashMap::from([("rho", rho), ("vxc", vxc), ("fxc", fxc), ("de_fxc", de_fxc), ("de_vxc_diag", de_vxc_diag)])
 }
 
 pub fn get_rho_vxc_fxc(xc_func: &LibXCFunctional, ao: TsrView, ao_dm0: TsrView) -> (Tsr, Tsr, Tsr) {
@@ -241,7 +248,7 @@ pub fn get_de_fxc(wf: TsrView, drho: TsrView) -> Tsr {
 
 pub fn get_de_vxc_diag(xc_type: XCDenType, ao: TsrView, ao_dm0: TsrView, wv: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
     const TRIPLE_SIGMA_DIAG: [[usize; 3]; 6] =
-        [[XXX, XXY, XXZ], [XXY, XYY, XYZ], [XXZ, XYZ, XZZ], [XYY, XYZ, YYY], [XYZ, YYY, YYZ], [XZZ, YZZ, ZZZ]];
+        [[XXX, XXY, XXZ], [XXY, XYY, XYZ], [XXZ, XYZ, XZZ], [XYY, YYY, YYZ], [XYZ, YYZ, YZZ], [XZZ, YZZ, ZZZ]];
     const TRIPLE_TAU_DIAG: [[usize; 6]; 3] =
         [[XXX, XXY, XXZ, XYY, XYZ, XZZ], [XXY, XYY, XYZ, YYY, YYZ, YZZ], [XXZ, XYZ, XZZ, YYZ, YZZ, ZZZ]];
 
@@ -249,8 +256,44 @@ pub fn get_de_vxc_diag(xc_type: XCDenType, ao: TsrView, ao_dm0: TsrView, wv: Tsr
     let nao = ao.shape()[1];
     let device = ao.device().clone();
 
-    let dao_vxc_diag = rt::zeros(([nao, 6], &device));
+    let mut dao_vxc_diag: Tsr = rt::zeros(([nao, 6], &device));
 
-    // contribution 1: ao deriv2
-    dao_vxc_diag
+    // contribution 1: lda/gga ao deriv 2
+    let mut aow = index!(ao_dm0, O) * index!(wv, 0);
+    if matches!(xc_type, SIGMA | TAU) {
+        aow += index!(ao_dm0, X) * index!(wv, X);
+        aow += index!(ao_dm0, Y) * index!(wv, Y);
+        aow += index!(ao_dm0, Z) * index!(wv, Z);
+    }
+    for (idx_ts, its) in [XX, XY, XZ, YY, YZ, ZZ].into_iter().enumerate() {
+        index_mut!(dao_vxc_diag, idx_ts) += 2 * rt::vecdot(index!(ao, its), &aow, 0);
+    }
+
+    // contribution 2: gga ao deriv 3
+    if matches!(xc_type, SIGMA | TAU) {
+        for (idx_ts, &[i3x, i3y, i3z]) in TRIPLE_SIGMA_DIAG.iter().enumerate() {
+            let aow =
+                index!(ao, i3x) * index!(wv, X) + index!(ao, i3y) * index!(wv, Y) + index!(ao, i3z) * index!(wv, Z);
+            index_mut!(dao_vxc_diag, idx_ts) += 2 * rt::vecdot(&aow, index!(ao_dm0, O), 0);
+        }
+    }
+
+    // contribution 3: tau ao deriv 3
+    if matches!(xc_type, TAU) {
+        for (r, &idx_tri) in TRIPLE_TAU_DIAG.iter().enumerate() {
+            let aow = index!(ao_dm0, r + 1) * index!(wv, 4);
+            for (idx_ts, &i3) in idx_tri.iter().enumerate() {
+                index_mut!(dao_vxc_diag, idx_ts) += rt::vecdot(index!(ao, i3), &aow, 0);
+            }
+        }
+    }
+
+    // reduce ao-wise contributions to atom-wise contributions
+    let mut de_vxc_diag = rt::zeros(([6, natm, natm], &device));
+    for (A, &[_, _, p0, p1]) in aoslices.iter().enumerate() {
+        let slc = rt::slice!(p0, p1);
+        de_vxc_diag.i_mut((.., A, A)).assign(dao_vxc_diag.i(slc).sum_axes(0));
+    }
+    // symmetrize and expand de_vxc_diag from [6, natm, natm] to [3, 3, natm, natm]
+    de_vxc_diag.index_select(0, [0, 1, 2, 1, 3, 4, 2, 4, 5]).into_shape([3, 3, natm, natm])
 }
