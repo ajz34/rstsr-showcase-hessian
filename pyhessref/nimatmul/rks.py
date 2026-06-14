@@ -407,13 +407,13 @@ def _vmat_ip(xc_type, ao, wv, nao):
     vmat_ip = np.zeros((3, nao, nao))
 
     if xc_type == "LDA":
-        aow = 0.5 * np.einsum("g, gu -> gu", wv[0], ao[O])
+        # bra-on-A and ket-on-A halves are identical for LDA
+        # (both equal 0.5 * wv[0] * ao[t+1]^T @ ao[0]), so we fold the
+        # two 0.5 factors into a single contraction.  This symmetry does
+        # NOT extend to GGA/MGGA — see the branch below.
+        aow = np.einsum("g, gu -> gu", wv[0], ao[O])
         for t in range(3):
             vmat_ip[t] += ao[t + 1].T @ aow
-        # Add the bra-derivative-on-A copy:  (0.5 * wv[0] * ao[t+1])^T @ ao[0]
-        for t in range(3):
-            aow = 0.5 * wv[0, :, None] * ao[t + 1]
-            vmat_ip[t] += aow.T @ ao[O]
         return vmat_ip
 
     # GGA + MGGA share the same SIGMA structure
