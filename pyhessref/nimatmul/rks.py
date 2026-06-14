@@ -341,18 +341,18 @@ def _de_vxc_off(xc_type, ao, dm0, wv, aoslices, natm, nao):
                 dao_vxc_off[t, s] += 2 * ao[s + 1].T @ aowv
 
     if xc_type == "MGGA":
-        # TAU contribution: built lower-triangular then symmetrised.
-        aowv = [np.einsum("gu, g -> gu", ao[4 + i], wv[4]) for i in range(6)]
-        TAU_CALLS = [
-            ([0, 1, 2], [XX, XY, XZ]),
-            ([1, 3, 4], [YX, YY, YZ]),
-            ([2, 4, 5], [ZX, ZY, ZZ]),
-        ]
+        # TAU contribution: tau_munu = sum_k 0.5 * (d_k phi_mu)^T (d_k phi_nu).
+        # Each AO-derivative block dao_vxc_tau[t, s] picks up
+        #   0.5 * sum_k (ao[IDX_AO_DERIV2[k][s]] * wv[4])^T @ ao[IDX_AO_DERIV2[k][t]]
+        # for s <= t; the s > t triangle is filled by transposition.  We loop
+        # outer-s, inner-t so a single ``aowv`` buffer is alive at a time
+        # (matching the LDA/GGA blocks above), instead of caching all 6.
         dao_vxc_tau = np.zeros((3, 3, nao, nao))
-        for r_bra, r_ket in TAU_CALLS:
-            for t in range(3):
-                for s in range(t + 1):
-                    dao_vxc_tau[t, s] += 0.5 * aowv[r_bra[s]].T @ ao[r_ket[t]]
+        for k in range(3):
+            for s in range(3):
+                aowv = np.einsum("gu, g -> gu", ao[IDX_AO_DERIV2[k][s]], wv[4])
+                for t in range(s, 3):
+                    dao_vxc_tau[t, s] += 0.5 * aowv.T @ ao[IDX_AO_DERIV2[k][t]]
         for t in range(3):
             for s in range(t):
                 dao_vxc_tau[s, t] = dao_vxc_tau[t, s].T

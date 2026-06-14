@@ -53,14 +53,14 @@ const fn get_hess_ncomp_ao_dm0(xc_type: XCDenType) -> usize {
 /* #region macro for indexing last dimension */
 
 macro_rules! index {
-    ($tsr: ident, $idx:expr) => {
-        $tsr.i((Ellipsis, $idx))
+    ($tsr: ident, $($idx:expr),*) => {
+        $tsr.i((Ellipsis, $($idx),*))
     };
 }
 
 macro_rules! index_mut {
-    ($tsr: ident, $idx:expr) => {
-        (*&mut $tsr.i_mut((Ellipsis, $idx)))
+    ($tsr: ident, $($idx:expr),*) => {
+        (*&mut $tsr.i_mut((Ellipsis, $($idx),*)))
     };
 }
 
@@ -104,7 +104,7 @@ pub fn make_hessian_setup_batch(
 
     let ao = ni.get_cached_ao(get_hess_ao_deriv(xc_type));
     let ncomp_ao_dm0 = get_hess_ncomp_ao_dm0(xc_type);
-    let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % dm0;
+    let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % &dm0;
 
     let (rho, vxc, fxc) = get_rho_vxc_fxc(xc_func, ao.view(), ao_dm0.view());
     let wv = &weights * &vxc;
@@ -133,7 +133,21 @@ pub fn make_hessian_setup_batch(
     let de_vxc_diag = get_de_vxc_diag(xc_type, ao.view(), ao_dm0.view(), wv.view(), &aoslices);
     tic("de_vxc_diag", t0);
 
-    HashMap::from([("rho", rho), ("vxc", vxc), ("fxc", fxc), ("de_fxc", de_fxc), ("de_vxc_diag", de_vxc_diag)])
+    // --- de_vxc_off --- //
+
+    // de_vxc_off [3, 3, natm, natm]
+    let t0 = std::time::Instant::now();
+    let de_vxc_off = get_de_vxc_off(xc_type, ao.view(), dm0.view(), wv.view(), &aoslices);
+    tic("de_vxc_off", t0);
+
+    HashMap::from([
+        ("rho", rho),
+        ("vxc", vxc),
+        ("fxc", fxc),
+        ("de_fxc", de_fxc),
+        ("de_vxc_diag", de_vxc_diag),
+        ("de_vxc_off", de_vxc_off),
+    ])
 }
 
 pub fn get_rho_vxc_fxc(xc_func: &LibXCFunctional, ao: TsrView, ao_dm0: TsrView) -> (Tsr, Tsr, Tsr) {
@@ -296,4 +310,71 @@ pub fn get_de_vxc_diag(xc_type: XCDenType, ao: TsrView, ao_dm0: TsrView, wv: Tsr
     }
     // symmetrize and expand de_vxc_diag from [6, natm, natm] to [3, 3, natm, natm]
     de_vxc_diag.index_select(0, [0, 1, 2, 1, 3, 4, 2, 4, 5]).into_shape([3, 3, natm, natm])
+}
+
+pub fn get_de_vxc_off(xc_type: XCDenType, ao: TsrView, dm0: TsrView, wv: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
+    let natm = aoslices.len();
+    let nao = ao.shape()[1];
+    let device = ao.device().clone();
+
+    let mut dao_vxc_off: Tsr = rt::zeros(([nao, nao, 3, 3], &device));
+
+    if matches!(xc_type, RHO) {
+        for t in 0..3 {
+            let aowv = index!(wv, 0) * index!(ao, t + 1);
+            for s in 0..3 {
+                index_mut!(dao_vxc_off, t, s).matmul_from(aowv.t(), index!(ao, s + 1), 1.0, 1.0);
+            }
+        }
+    }
+
+    if matches!(xc_type, SIGMA | TAU) {
+        for t in 0..3 {
+            let mut aowv: Tsr = 0.5 * index!(wv, 0) * index!(ao, t + 1);
+            for r in 0..3 {
+                aowv += index!(wv, r + 1) * index!(ao, IDX_AO_DERIV2[t][r]);
+            }
+            for s in 0..3 {
+                index_mut!(dao_vxc_off, t, s).matmul_from(aowv.t(), index!(ao, s + 1), 2.0, 1.0);
+            }
+        }
+    }
+
+    if matches!(xc_type, TAU) {
+        let mut dao_vxc_tau: Tsr = rt::zeros(([nao, nao, 3, 3], &device));
+        for r in 0..3 {
+            for t in 0..3 {
+                let aowv: Tsr = 0.5 * index!(wv, 4) * index!(ao, IDX_AO_DERIV2[t][r]);
+                for s in 0..t + 1 {
+                    index_mut!(dao_vxc_tau, t, s).matmul_from(aowv.t(), index!(ao, IDX_AO_DERIV2[s][r]), 1.0, 1.0);
+                }
+            }
+        }
+
+        for t in 0..3 {
+            for s in 0..t + 1 {
+                index_mut!(dao_vxc_off, t, s) += &index!(dao_vxc_tau, t, s);
+            }
+            for s in 0..t {
+                index_mut!(dao_vxc_off, s, t) += &index!(dao_vxc_tau, t, s).t();
+            }
+        }
+    }
+
+    // add transposition
+    let dao_vxc_off = &dao_vxc_off + dao_vxc_off.transpose([1, 0, 3, 2]);
+
+    // reduce ao-wise contributions to atom-wise contributions
+    let mut de_vxc_off = rt::zeros(([3, 3, natm, natm], &device));
+    for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+        let slcA = rt::slice!(p0A, p1A);
+        for (B, &[_, _, p0B, p1B]) in aoslices.iter().enumerate() {
+            let slcB = rt::slice!(p0B, p1B);
+            let contrib = rt::vecdot(dao_vxc_off.i((slcA, slcB)), dm0.i((slcA, slcB)), ([0, 1], [0, 1]));
+            de_vxc_off.i_mut((.., .., A, B)).assign(&contrib);
+            de_vxc_off.i_mut((.., .., B, A)).assign(contrib.t());
+        }
+    }
+
+    de_vxc_off
 }
