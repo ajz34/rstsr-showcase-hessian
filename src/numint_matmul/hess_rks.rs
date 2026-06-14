@@ -66,6 +66,8 @@ macro_rules! index_mut {
 
 /* #endregion */
 
+/* #region basic pure functions of skeleton hessian evaluation */
+
 pub fn make_hessian_setup_batch(
     mol: &CInt,
     xc_func_list: &[(f64, LibXCFunctional)],
@@ -80,12 +82,7 @@ pub fn make_hessian_setup_batch(
     let aoslices_full = mol.aoslice_by_atom();
     let aoslices = atm_list.iter().map(|&iatm| aoslices_full[iatm]).collect_vec();
     // overall xc_type is the strictest (max nvar) one across the functionals;
-    // partial contributions of looser families are added into the leading slice.
-    let xc_type = xc_func_list
-        .iter()
-        .map(|(_, f)| determine_den_type(f))
-        .max_by_key(|t| t.num_nvar())
-        .expect("xc_func_list must not be empty");
+    let xc_type = determine_den_type_from_list(&xc_func_list.iter().map(|(_, f)| f).collect_vec());
 
     let device = dm0.device().clone();
     let weights = rt::asarray((ni.weights.clone(), &device));
@@ -521,3 +518,89 @@ pub fn get_vmat_deriv1(
 
     &vmat_deriv1 + vmat_deriv1.swapaxes(0, 1)
 }
+
+/* #endregion */
+
+/* #region parallel wrapper */
+
+pub fn make_hessian_setup_with_parallel(
+    mol: &CInt,
+    xc_func_list: &[(f64, LibXCFunctional)],
+    ni: &mut NIMatmul,
+    dm0: TsrView,
+    atm_list: Option<&[usize]>,
+    verbose: bool,
+) -> HashMap<&'static str, Tsr> {
+    // batch for grids
+    // - except for rho, vxc, fxc; other tensors can be added (reduced)
+    // - rho, vxc, fxc requires concation
+
+    // outer iter: batch by nbatch (limit memory usage)
+    // inner iter: batch by nchunk (for parallel)
+
+    let ngrids = ni.weights.len();
+    let nbatch = ni.nbatch;
+    let nchunk = ni.nchunk;
+    let device = dm0.device().clone();
+    let nvar = determine_den_type_from_list(&xc_func_list.iter().map(|(_, f)| f).collect_vec()).num_nvar();
+    let natm = atm_list.map_or_else(|| mol.natm(), |lst| lst.len());
+    let nao = mol.nao();
+
+    let rho: Tsr = rt::zeros(([ngrids, nvar], &device));
+    let vxc: Tsr = rt::zeros(([ngrids, nvar], &device));
+    let fxc: Tsr = rt::zeros(([ngrids, nvar, nvar], &device));
+    let de_fxc: Tsr = rt::zeros(([3, 3, natm, natm], &device));
+    let de_vxc_diag: Tsr = rt::zeros(([3, 3, natm, natm], &device));
+    let de_vxc_off: Tsr = rt::zeros(([3, 3, natm, natm], &device));
+    let vmat_ip: Tsr = rt::zeros(([nao, nao, 3], &device));
+    let vmat_deriv1: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
+
+    // atomic guard to avoid racing write
+    let guard = Mutex::new(());
+
+    for start_batch in (0..ngrids).step_by(nbatch) {
+        let end_batch = (start_batch + nbatch).min(ngrids);
+
+        (start_batch..end_batch).into_par_iter().step_by(nchunk).for_each(|start| {
+            let end = (start + nchunk).min(end_batch);
+            let mut ni_inner = ni.split_batch(start, end);
+            let result = make_hessian_setup_batch(mol, xc_func_list, &mut ni_inner, dm0.view(), atm_list, verbose);
+            // fill rho, vxc, fxc
+            // this is assumed to be not racing, so no guard at here
+            unsafe {
+                let rho_slc = rho.i(start..end);
+                let vxc_slc = vxc.i(start..end);
+                let fxc_slc = fxc.i(start..end);
+                let mut rho_slc = rho_slc.force_mut();
+                let mut vxc_slc = vxc_slc.force_mut();
+                let mut fxc_slc = fxc_slc.force_mut();
+                rho_slc.assign(&result["rho"]);
+                vxc_slc.assign(&result["vxc"]);
+                fxc_slc.assign(&result["fxc"]);
+            }
+            // add up other tensors
+            unsafe {
+                let lock = guard.lock().unwrap();
+                *&mut de_fxc.force_mut() += &result["de_fxc"];
+                *&mut de_vxc_diag.force_mut() += &result["de_vxc_diag"];
+                *&mut de_vxc_off.force_mut() += &result["de_vxc_off"];
+                *&mut vmat_ip.force_mut() += &result["vmat_ip"];
+                *&mut vmat_deriv1.force_mut() += &result["vmat_deriv1"];
+                drop(lock);
+            }
+        });
+    }
+
+    HashMap::from([
+        ("rho", rho),
+        ("vxc", vxc),
+        ("fxc", fxc),
+        ("de_fxc", de_fxc),
+        ("de_vxc_diag", de_vxc_diag),
+        ("de_vxc_off", de_vxc_off),
+        ("vmat_ip", vmat_ip),
+        ("vmat_deriv1", vmat_deriv1),
+    ])
+}
+
+/* #endregion */

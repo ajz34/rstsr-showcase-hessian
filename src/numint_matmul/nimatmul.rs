@@ -64,6 +64,30 @@ impl<'a> NIMatmul<'a> {
         }
     }
 
+    /// Creates a new instance for a subset of the grid points, slicing from `start` to `end`
+    /// (exclusive).
+    ///
+    /// Cached AO tensors for the full grid are sliced accordingly and cached for the batch.
+    ///
+    /// This is useful for processing the grid in batches to reduce memory usage.
+    pub fn split_batch(&self, start: usize, end: usize) -> NIMatmul<'_> {
+        assert!(start < end && end <= self.coords.len(), "Invalid batch range");
+        let mut new = self.duplicate();
+        new.coords = self.coords[start..end].to_vec();
+        new.weights = self.weights[start..end].to_vec();
+        // if AO cached for the full grid exists, slice and cache the AO for the batch
+        let mut cached_tensors = HashMap::new();
+        for keys in self.cache_tensor.keys() {
+            if keys.strip_prefix("ao_deriv").and_then(|s| s.parse::<usize>().ok()).is_some() {
+                let ao_full = self.cache_tensor.get(keys).unwrap();
+                let ao_batch = ao_full.i(start..end);
+                cached_tensors.insert(keys.clone(), ao_batch.into_cow());
+            }
+        }
+        new.cache_tensor = cached_tensors;
+        new
+    }
+
     /// Evaluates AO integrals for the given derivative order and returns as a tensor.
     ///
     /// The returned tensor has shape `[ngrids, nao, ncomp]` where `ncomp = AO_DERIV_DIM[deriv]`.

@@ -22,6 +22,10 @@ pub fn determine_den_type(xc_func: &LibXCFunctional) -> XCDenType {
     }
 }
 
+pub fn determine_den_type_from_list(xc_func_list: &[&LibXCFunctional]) -> XCDenType {
+    xc_func_list.iter().map(|f| determine_den_type(f)).max_by_key(|&den_type| den_type.num_nvar()).unwrap()
+}
+
 /// Evaluate the XC energy/potential, to LibXC raw output.
 pub fn libxc_eval_inner(xc_func: &LibXCFunctional, rho: TsrView, deriv: usize) -> (Vec<f64>, LibXCOutputLayout) {
     // sanity check
