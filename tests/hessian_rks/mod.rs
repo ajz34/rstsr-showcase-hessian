@@ -1,6 +1,7 @@
 #![allow(clippy::deref_addrof)]
 
 pub mod test_b3lyp;
+pub mod test_svwn;
 pub mod test_tpss0;
 
 use crate::test_util::{read_npz, read_npz_dict};

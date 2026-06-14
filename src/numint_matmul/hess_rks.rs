@@ -68,17 +68,24 @@ macro_rules! index_mut {
 
 pub fn make_hessian_setup_batch(
     mol: &CInt,
-    xc_func: &LibXCFunctional,
+    xc_func_list: &[(f64, LibXCFunctional)],
     ni: &mut NIMatmul,
     dm0: TsrView,
     atm_list: Option<&[usize]>,
     verbose: bool,
 ) -> HashMap<&'static str, Tsr> {
+    assert!(!xc_func_list.is_empty(), "xc_func_list must not be empty");
     let atm_list = atm_list.map_or_else(|| (0..mol.natm()).collect_vec(), |lst| lst.to_vec());
     // ao slices indexed by `atm_list`
     let aoslices_full = mol.aoslice_by_atom();
     let aoslices = atm_list.iter().map(|&iatm| aoslices_full[iatm]).collect_vec();
-    let xc_type = determine_den_type(xc_func);
+    // overall xc_type is the strictest (max nvar) one across the functionals;
+    // partial contributions of looser families are added into the leading slice.
+    let xc_type = xc_func_list
+        .iter()
+        .map(|(_, f)| determine_den_type(f))
+        .max_by_key(|t| t.num_nvar())
+        .expect("xc_func_list must not be empty");
 
     let device = dm0.device().clone();
     let weights = rt::asarray((ni.weights.clone(), &device));
@@ -104,7 +111,7 @@ pub fn make_hessian_setup_batch(
     let ncomp_ao_dm0 = get_hess_ncomp_ao_dm0(xc_type);
     let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % &dm0;
 
-    let (rho, vxc, fxc) = get_rho_vxc_fxc(xc_func, ao.view(), ao_dm0.view());
+    let (rho, vxc, fxc) = get_rho_vxc_fxc(xc_func_list, ao.view(), ao_dm0.view());
     let wv = &weights * &vxc;
     let wf = &weights * &fxc;
 
@@ -164,10 +171,17 @@ pub fn make_hessian_setup_batch(
     ])
 }
 
-pub fn get_rho_vxc_fxc(xc_func: &LibXCFunctional, ao: TsrView, ao_dm0: TsrView) -> (Tsr, Tsr, Tsr) {
+pub fn get_rho_vxc_fxc(xc_func_list: &[(f64, LibXCFunctional)], ao: TsrView, ao_dm0: TsrView) -> (Tsr, Tsr, Tsr) {
     // see also pyhessref/nimatmul/rks.py
 
-    let xc_type = determine_den_type(xc_func);
+    assert!(!xc_func_list.is_empty(), "xc_func_list must not be empty");
+    // overall xc_type is the strictest one across the functionals; partial
+    // contributions from looser families are added into the leading slice.
+    let xc_type = xc_func_list
+        .iter()
+        .map(|(_, f)| determine_den_type(f))
+        .max_by_key(|t| t.num_nvar())
+        .expect("xc_func_list must not be empty");
     let nvar = xc_type.num_nvar();
     let ngrids = ao.shape()[0];
     let device = ao.device().clone();
@@ -186,8 +200,19 @@ pub fn get_rho_vxc_fxc(xc_func: &LibXCFunctional, ao: TsrView, ao_dm0: TsrView) 
                 + rt::vecdot(index!(ao, Z), index!(ao_dm0, Z), 1))
     }
 
-    let xc_eff = libxc_eval_eff(xc_func, rho.view(), 2, false);
-    let [_, vxc, fxc] = xc_eff.into_iter().collect_array().unwrap();
+    let mut vxc = rt::zeros(([ngrids, nvar], &device));
+    let mut fxc = rt::zeros(([ngrids, nvar, nvar], &device));
+    for (scale, xc_func) in xc_func_list {
+        let xc_type_i = determine_den_type(xc_func);
+        let nvar_i = xc_type_i.num_nvar();
+        // each sub-functional consumes only the leading `nvar_i` rho components.
+        let rho_i = rho.i((.., ..nvar_i));
+        let xc_eff = libxc_eval_eff(xc_func, rho_i, 2, false);
+        let [_, vxc_i, fxc_i] = xc_eff.into_iter().collect_array().unwrap();
+        // accumulate into the leading slice of the (possibly larger) global tensors.
+        *&mut vxc.i_mut((.., ..nvar_i)) += *scale * vxc_i;
+        *&mut fxc.i_mut((.., ..nvar_i, ..nvar_i)) += *scale * fxc_i;
+    }
 
     (rho, vxc, fxc)
 }
