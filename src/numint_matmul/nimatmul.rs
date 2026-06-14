@@ -140,11 +140,7 @@ impl<'a> NIMatmul<'a> {
     /// # Returns
     ///
     /// Density tensor of shape `[ngrids, nvar, nset]`.
-    pub fn make_rho_from_homogeneous_braket(
-        &mut self,
-        bra_list: &[TsrView],
-        den_type: XCDenType,
-    ) -> Tsr {
+    pub fn make_rho_from_homogeneous_braket(&mut self, bra_list: &[TsrView], den_type: XCDenType) -> Tsr {
         let nchunk = self.nchunk;
         let ao = self.get_cached_ao(den_type.num_ao_deriv());
 
@@ -173,12 +169,7 @@ impl<'a> NIMatmul<'a> {
     /// # Returns
     ///
     /// Density tensor of shape `[ngrids, nvar, nset]`.
-    pub fn make_rho_from_one_bra_mult_ket(
-        &mut self,
-        bra: TsrView,
-        ket_list: &[TsrView],
-        den_type: XCDenType,
-    ) -> Tsr {
+    pub fn make_rho_from_one_bra_mult_ket(&mut self, bra: TsrView, ket_list: &[TsrView], den_type: XCDenType) -> Tsr {
         let nchunk = self.nchunk;
         let ao = self.get_cached_ao(den_type.num_ao_deriv());
 
@@ -251,12 +242,7 @@ impl<'a> NIMatmul<'a> {
     /// # Returns
     ///
     /// XC potential, shape `[nao, nao]` for RKS, `[nao, nao, 2]` for UKS.
-    pub fn make_vxc_pot_with_eff(
-        &mut self,
-        vxc_eff: TsrView,
-        den_type: XCDenType,
-        spin: XCSpin,
-    ) -> Tsr {
+    pub fn make_vxc_pot_with_eff(&mut self, vxc_eff: TsrView, den_type: XCDenType, spin: XCSpin) -> Tsr {
         let nchunk = self.nchunk;
         let weights_data = self.weights.clone();
         let ao = self.get_cached_ao(den_type.num_ao_deriv());
@@ -292,13 +278,7 @@ impl<'a> NIMatmul<'a> {
     /// # Returns
     ///
     /// Second-order XC potential, shape `[nao, nao, nset]` for RKS, `[nao, nao, 2, nset]` for UKS.
-    pub fn make_fxc_pot_with_eff(
-        &mut self,
-        fxc_eff: TsrView,
-        rho1: TsrView,
-        den_type: XCDenType,
-        spin: XCSpin,
-    ) -> Tsr {
+    pub fn make_fxc_pot_with_eff(&mut self, fxc_eff: TsrView, rho1: TsrView, den_type: XCDenType, spin: XCSpin) -> Tsr {
         let nchunk = self.nchunk;
         let weights_data = self.weights.clone();
         let ao = self.get_cached_ao(den_type.num_ao_deriv());

@@ -12,13 +12,7 @@ use XCDenType::*;
 /// - `ao` : AO values and derivatives, shape `[ngrids, nao, ncomp]`
 /// - `out` : output buffer, shape `[nao, nao]`
 /// - `buf` : scratch buffer of length at least `ngrids * nao`
-fn contract_ao_wv_without_symmetrize(
-    den_type: XCDenType,
-    wv: TsrView,
-    ao: TsrView,
-    mut out: TsrMut,
-    buf: &mut [f64],
-)  {
+fn contract_ao_wv_without_symmetrize(den_type: XCDenType, wv: TsrView, ao: TsrView, mut out: TsrMut, buf: &mut [f64]) {
     check_shape!(wv.ndim(), 2, "Weight vector must be 2-dim");
     let nvar = wv.shape()[1];
     let ngrids = wv.shape()[0];
@@ -83,7 +77,6 @@ fn contract_ao_wv_without_symmetrize(
         rt::mul_with_output(ao_![3], wv_![4], scr.view_mut());
         out.matmul_from(ao_![3].t(), scr.view(), 0.25, 1.0);
     }
-    
 }
 
 /// Evaluate XC potential (1st order) with vxc_eff.
@@ -103,7 +96,7 @@ pub fn rks_vxc_pot_with_eff_with_output(
     weights: TsrView,
     mut vxc: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(vxc_eff.ndim(), 2, "Effective potential must be 2-dim");
     let nvar = vxc_eff.shape()[1];
     let ngrids = vxc_eff.shape()[0];
@@ -169,13 +162,11 @@ pub fn rks_vxc_pot_with_eff_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         vxc_pool.put(vxc_buf);
-        
     });
 
     // finally symmetrize the output
     let vxc_buf = vxc.swapaxes(0, 1).to_owned();
     *&mut vxc += vxc_buf;
-    
 }
 
 /// Evaluate XC potential (2nd order, RKS) with fxc_eff (parallel enhanced).
@@ -197,7 +188,7 @@ pub fn rks_fxc_pot_with_eff_with_output(
     weights: TsrView,
     mut fxc: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(rho1.ndim(), 3, "rho1 tensor must be 3-dim");
     let nset = rho1.shape()[2];
     let nvar = rho1.shape()[1];
@@ -269,7 +260,6 @@ pub fn rks_fxc_pot_with_eff_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         fxc_pool.put(fxc_buf);
-        
     });
 
     // finally symmetrize the output
@@ -278,7 +268,6 @@ pub fn rks_fxc_pot_with_eff_with_output(
         fxc_buf.assign(&fxc.i((.., .., i)).t());
         *&mut fxc.i_mut((.., .., i)) += &fxc_buf;
     }
-    
 }
 
 /// Contract AO with wv for RHO/SIGMA/TAU, bra-transformed variant (parallel enhanced).
@@ -300,7 +289,7 @@ fn contract_ao_wv_bra(
     ao_bra: TsrView,
     mut out: TsrMut,
     buf: &mut [f64],
-)  {
+) {
     check_shape!(wv.ndim(), 2, "Weight vector must be 2-dim");
     let nvar = wv.shape()[1];
     let ngrids = wv.shape()[0];
@@ -360,8 +349,6 @@ fn contract_ao_wv_bra(
             out.matmul_from(ao_![t].t(), scr.view(), 0.5, 1.0);
         }
     }
-
-    
 }
 
 /// Evaluate XC potential (2nd order, RKS) with fxc_eff, bra transformed (parallel enhanced).
@@ -389,7 +376,7 @@ pub fn rks_fxc_pot_with_eff_bra_trans_with_output(
     bra: TsrView,
     fxc: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(rho1.ndim(), 3, "rho1 tensor must be 3-dim");
     let nset = rho1.shape()[2];
     let nvar = rho1.shape()[1];
@@ -474,10 +461,7 @@ pub fn rks_fxc_pot_with_eff_bra_trans_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         fxc_pool.put(fxc_buf);
-        
     });
-
-    
 }
 
 /// Evaluate XC potential (3rd order, RKS) with kxc_eff (parallel enhanced).
@@ -502,7 +486,7 @@ pub fn rks_kxc_pot_with_eff_with_output(
     weights: TsrView,
     mut kxc: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(rho1.ndim(), 3, "rho1 tensor must be 3-dim");
     check_shape!(rho2.ndim(), 3, "rho2 tensor must be 3-dim");
     let nset1 = rho1.shape()[2];
@@ -582,7 +566,6 @@ pub fn rks_kxc_pot_with_eff_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         kxc_pool.put(kxc_buf);
-        
     });
 
     // finally symmetrize the output
@@ -593,7 +576,6 @@ pub fn rks_kxc_pot_with_eff_with_output(
             *&mut kxc.i_mut((.., .., i1, i2)) += &kxc_buf;
         }
     }
-    
 }
 
 /// Evaluate XC potential (1st order, UKS) with vxc_eff (parallel enhanced).
@@ -613,7 +595,7 @@ pub fn uks_vxc_pot_with_eff_with_output(
     weights: TsrView,
     mut vxc: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(vxc_eff.ndim(), 3, "Effective potential must be 3-dim");
     let nvar = vxc_eff.shape()[1];
     let ngrids = vxc_eff.shape()[0];
@@ -682,7 +664,6 @@ pub fn uks_vxc_pot_with_eff_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         vxc_pool.put(vxc_buf);
-        
     });
 
     // finally symmetrize the output
@@ -691,7 +672,6 @@ pub fn uks_vxc_pot_with_eff_with_output(
         vxc_buf.assign(&vxc.i((.., .., s)).t());
         *&mut vxc.i_mut((.., .., s)) += &vxc_buf;
     }
-    
 }
 
 /// Evaluate XC potential (2nd order, UKS) with fxc_eff (parallel enhanced).
@@ -713,7 +693,7 @@ pub fn uks_fxc_pot_with_eff_with_output(
     weights: TsrView,
     mut fxc: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(rho1.ndim(), 4, "rho1 tensor must be 4-dim");
     let nset = rho1.shape()[3];
     let nvar = rho1.shape()[1];
@@ -789,7 +769,6 @@ pub fn uks_fxc_pot_with_eff_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         fxc_pool.put(fxc_buf);
-        
     });
 
     // finally symmetrize the output
@@ -800,7 +779,6 @@ pub fn uks_fxc_pot_with_eff_with_output(
             *&mut fxc.i_mut((.., .., s, i)) += &fxc_buf;
         }
     }
-    
 }
 
 /// Evaluate XC potential (3rd order, UKS) with kxc_eff (parallel enhanced).
@@ -825,7 +803,7 @@ pub fn uks_kxc_pot_with_eff_with_output(
     weights: TsrView,
     mut kxc: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(rho1.ndim(), 4, "rho1 tensor must be 4-dim");
     check_shape!(rho2.ndim(), 4, "rho2 tensor must be 4-dim");
     let nset1 = rho1.shape()[3];
@@ -908,7 +886,6 @@ pub fn uks_kxc_pot_with_eff_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         kxc_pool.put(kxc_buf);
-        
     });
 
     // finally symmetrize the output
@@ -921,7 +898,6 @@ pub fn uks_kxc_pot_with_eff_with_output(
             }
         }
     }
-    
 }
 
 /// Evaluate XC potential (2nd order, UKS) with fxc_eff, bra transformed (parallel enhanced).
@@ -951,7 +927,7 @@ pub fn uks_fxc_pot_with_eff_bra_trans_with_output(
     bra: &[TsrView; 2],
     fxc: &mut [TsrMut; 2],
     nchunk: usize,
-)  {
+) {
     check_shape!(rho1.ndim(), 4, "rho1 tensor must be 4-dim");
     let nset = rho1.shape()[3];
     let nvar = rho1.shape()[1];
@@ -1048,8 +1024,5 @@ pub fn uks_fxc_pot_with_eff_bra_trans_with_output(
         // return buffer to pool
         buffer_pool.put(buf);
         fxc_pool.put(fxc_buf);
-        
     });
-
-    
 }

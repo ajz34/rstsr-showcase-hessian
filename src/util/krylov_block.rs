@@ -143,9 +143,7 @@ pub fn krylov_block(
 
             // Per-element diagnostics on the new trial block.
             let l2_per_elem = (max_innerprod / (n as f64)).sqrt();
-            let max_abs: f64 = x1_new
-                .iter()
-                .fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+            let max_abs: f64 = x1_new.iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
 
             println!(
                 "restart {} inner {} (total cycle {}): max(||v||^2) = {:.3e}, max(||v||) = {:.3e}, per-elem L2 = {:.3e}, max-abs = {:.3e}",

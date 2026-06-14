@@ -12,13 +12,7 @@ use XCDenType::*;
 /// - `den_type` : which density components to compute
 /// - `out` : output buffer, shape `[ngrids, num_rho_comp, nset]`
 /// - `ngrids_chunk` : number of grid points to process in one chunk
-pub fn get_rho_from_dm_with_output(
-    ao: TsrView,
-    dm_list: &[TsrView],
-    den_type: XCDenType,
-    out: TsrMut,
-    nchunk: usize,
-)  {
+pub fn get_rho_from_dm_with_output(ao: TsrView, dm_list: &[TsrView], den_type: XCDenType, out: TsrMut, nchunk: usize) {
     check_shape!(ao.ndim(), 3, "AO values must be 3-dim");
     let nao = ao.shape()[1];
 
@@ -100,10 +94,7 @@ pub fn get_rho_from_dm_with_output(
         // return buffers to pool
         scr_pool.put(scr_buf);
         out_pool.put(out_buf);
-        
     });
-
-    
 }
 
 /// Evaluate density from homogeneous bra-ket (parallel enhanced).
@@ -121,7 +112,7 @@ pub fn get_rho_from_homogeneous_braket_with_output(
     den_type: XCDenType,
     out: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(ao.ndim(), 3, "AO values must be 3-dim");
     let nao = ao.shape()[1];
 
@@ -209,10 +200,7 @@ pub fn get_rho_from_homogeneous_braket_with_output(
         scr1_pool.put(scr1_buf);
         scr2_pool.put(scr2_buf);
         out_pool.put(out_buf);
-        
     });
-
-    
 }
 
 /// Evaluate density from one bra with multiple kets (parallel enhanced).
@@ -232,7 +220,7 @@ pub fn get_rho_from_one_bra_mult_ket_with_output(
     den_type: XCDenType,
     out: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(ao.ndim(), 3, "AO values must be 3-dim");
     let nao = ao.shape()[1];
 
@@ -342,10 +330,7 @@ pub fn get_rho_from_one_bra_mult_ket_with_output(
         scr2_pool.put(scr2_buf);
         scr3_pool.put(scr3_buf);
         out_pool.put(out_buf);
-        
     });
-
-    
 }
 
 /// Evaluate density from multiple bra-ket pairs (parallel enhanced).
@@ -365,7 +350,7 @@ pub fn get_rho_from_mult_bra_mult_ket_with_output(
     den_type: XCDenType,
     out: TsrMut,
     nchunk: usize,
-)  {
+) {
     check_shape!(ao.ndim(), 3, "AO values must be 3-dim");
     let nao = ao.shape()[1];
 
@@ -476,8 +461,5 @@ pub fn get_rho_from_mult_bra_mult_ket_with_output(
         scr2_pool.put(scr2_buf);
         scr3_pool.put(scr3_buf);
         out_pool.put(out_buf);
-        
     });
-
-    
 }
