@@ -29,10 +29,6 @@ const YZZ: usize = 18;
 const ZZZ: usize = 19;
 
 const IDX_AO_DERIV2: [[usize; 3]; 3] = [[XX, XY, XZ], [XY, YY, YZ], [XZ, YZ, ZZ]];
-const TRIPLE_SIGMA_DIAG: [[usize; 3]; 6] =
-    [[XXX, XXY, XXZ], [XXY, XYY, XYZ], [XXZ, XYZ, XZZ], [XYY, XYZ, YYY], [XYZ, YYY, YYZ], [XZZ, YZZ, ZZZ]];
-const TRIPLE_TAU_DIAG: [[usize; 6]; 3] =
-    [[XXX, XXY, XXZ, XYY, XYZ, XZZ], [XXY, XYY, XYZ, YYY, YYZ, YZZ], [XXZ, XYZ, XZZ, YYZ, YZZ, ZZZ]];
 
 const fn get_hess_ao_deriv(xc_type: XCDenType) -> usize {
     match xc_type {
@@ -50,6 +46,16 @@ const fn get_hess_ncomp_ao_dm0(xc_type: XCDenType) -> usize {
         TAU => 4,
         LAPL => unimplemented!(),
     }
+}
+
+/* #endregion */
+
+/* #region macro for indexing last dimension */
+
+macro_rules! index {
+    ($tsr: ident, $idx:expr) => {
+        $tsr.i((Ellipsis, $idx))
+    };
 }
 
 /* #endregion */
@@ -225,4 +231,20 @@ pub fn get_de_fxc(wf: TsrView, drho: TsrView) -> Tsr {
     // transpose tmp2 to get de_fxc
     // tAsB -> tsAB
     tmp2.reshape([3, natm, 3, natm]).transpose([0, 2, 1, 3]).into_contig(ColMajor)
+}
+
+pub fn get_de_vxc_diag(xc_type: XCDenType, ao: TsrView, ao_dm0: TsrView, wv: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
+    const TRIPLE_SIGMA_DIAG: [[usize; 3]; 6] =
+        [[XXX, XXY, XXZ], [XXY, XYY, XYZ], [XXZ, XYZ, XZZ], [XYY, XYZ, YYY], [XYZ, YYY, YYZ], [XZZ, YZZ, ZZZ]];
+    const TRIPLE_TAU_DIAG: [[usize; 6]; 3] =
+        [[XXX, XXY, XXZ, XYY, XYZ, XZZ], [XXY, XYY, XYZ, YYY, YYZ, YZZ], [XXZ, XYZ, XZZ, YYZ, YZZ, ZZZ]];
+
+    let natm = aoslices.len();
+    let nao = ao.shape()[1];
+    let device = ao.device().clone();
+
+    let dao_vxc_diag = rt::zeros(([nao, 6], &device));
+
+    // contribution 1: ao deriv2
+    dao_vxc_diag
 }
