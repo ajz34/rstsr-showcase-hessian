@@ -545,7 +545,9 @@ pub fn make_hessian_setup_with_parallel(
     let nbatch = ni.nbatch;
     let nchunk = ni.nchunk;
     let device = dm0.device().clone();
-    let nvar = determine_den_type_from_list(&xc_func_list.iter().map(|(_, f)| f).collect_vec()).num_nvar();
+    let xc_type = determine_den_type_from_list(&xc_func_list.iter().map(|(_, f)| f).collect_vec());
+    let nvar = xc_type.num_nvar();
+    let deriv_level = get_hess_ao_deriv(xc_type);
     let natm = atm_list.map_or_else(|| mol.natm(), |lst| lst.len());
     let nao = mol.nao();
 
@@ -578,11 +580,21 @@ pub fn make_hessian_setup_with_parallel(
     for start_batch in (0..ngrids).step_by(nbatch) {
         let end_batch = (start_batch + nbatch).min(ngrids);
 
+        // handle AO integral at batch level
+        let t0 = std::time::Instant::now();
+        let mut ni_batch = ni.split_batch(start_batch, end_batch);
+        ni_batch.get_cached_ao(deriv_level);
+        {
+            let mut timing = timing.lock().unwrap();
+            timing["ao"] += t0.elapsed().as_secs_f64();
+        }
+
+        // other parts can be parallelized by chunk, with atomic guard for reduction
         (start_batch..end_batch).into_par_iter().step_by(nchunk).for_each(|start| {
             let end = (start + nchunk).min(end_batch);
-            let mut ni_inner = ni.split_batch(start, end);
+            let mut ni_chunk = ni_batch.split_batch(start - start_batch, end - start_batch);
             let (result_chunk, timing_chunk) =
-                make_hessian_setup_batch(mol, xc_func_list, &mut ni_inner, dm0.view(), atm_list);
+                make_hessian_setup_batch(mol, xc_func_list, &mut ni_chunk, dm0.view(), atm_list);
             // fill rho, vxc, fxc
             // this is assumed to be not racing, so no guard at here
             unsafe {
@@ -631,7 +643,7 @@ pub fn make_hessian_setup_with_parallel(
 
     let timing = timing.lock().unwrap();
     if verbose {
-        println!("  Timing breakdown (CPU time):");
+        println!("  Timing breakdown (CPU time for others, Wall time for `ao`):");
         for (key, value) in timing.iter() {
             if *key != "total" {
                 println!("  {key:>20}: {value:.4} sec");
