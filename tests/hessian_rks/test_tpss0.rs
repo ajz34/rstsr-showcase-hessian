@@ -14,7 +14,7 @@ fn test_whole(hess_case_tpss0: &CaseAmoniaRKS) {
     let mut ni = NIMatmul::new(&mol, &grid_coords, &grid_weights);
     let xc_func_list = [(1.0, LibXCFunctional::from_identifier("HYB_MGGA_XC_TPSS0", LibXCSpin::Unpolarized))];
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
-    let result = make_hessian_setup_batch(&mol, &xc_func_list, &mut ni, dm0.view(), None, true);
+    let (result, timing) = make_hessian_setup_batch(&mol, &xc_func_list, &mut ni, dm0.view(), None);
 
     assert!(rt::allclose(result["de_fxc"].view(), ref_dict["de_fxc"].t(), (1e-4, 1e-6)));
     assert!(rt::allclose(result["de_vxc_diag"].view(), ref_dict["de_vxc_diag"].t(), (1e-4, 1e-6)));
@@ -26,6 +26,13 @@ fn test_whole(hess_case_tpss0: &CaseAmoniaRKS) {
     assert_abs_diff_eq!(fp(result["de_vxc_diag"].view()), 44.68386358957363, epsilon = 1e-5);
     assert_abs_diff_eq!(fp(result["de_vxc_off"].view()), -16.124876249597378, epsilon = 1e-5);
     assert_abs_diff_eq!(fp(result["vmat_deriv1"].view()), -3.4184689531771597, epsilon = 1e-6);
+
+    let mut total_time = 0.0;
+    for (key, value) in timing.iter() {
+        println!("Timing for {key:>20}: {value:.4} sec");
+        total_time += value;
+    }
+    println!("Total time: {total_time:.4} sec");
 }
 
 #[rstest]
@@ -34,7 +41,7 @@ fn test_batched(hess_case_tpss0: &CaseAmoniaRKS) {
     let mut ni = NIMatmul::new(&mol, &grid_coords, &grid_weights);
     let xc_func_list = [(1.0, LibXCFunctional::from_identifier("HYB_MGGA_XC_TPSS0", LibXCSpin::Unpolarized))];
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
-    let result = make_hessian_setup_with_parallel(&mol, &xc_func_list, &mut ni, dm0.view(), None, true);
+    let (result, _) = make_hessian_setup_with_parallel(&mol, &xc_func_list, &mut ni, dm0.view(), None, true);
 
     assert!(rt::allclose(result["de_fxc"].view(), ref_dict["de_fxc"].t(), (1e-4, 1e-6)));
     assert!(rt::allclose(result["de_vxc_diag"].view(), ref_dict["de_vxc_diag"].t(), (1e-4, 1e-6)));

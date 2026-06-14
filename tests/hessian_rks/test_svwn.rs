@@ -17,7 +17,7 @@ fn test_whole(hess_case_svwn: &CaseAmoniaRKS) {
         (1.0, LibXCFunctional::from_identifier("LDA_C_VWN", LibXCSpin::Unpolarized)),
     ];
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
-    let result = make_hessian_setup_batch(&mol, &xc_func_list, &mut ni, dm0.view(), None, true);
+    let (result, _) = make_hessian_setup_batch(&mol, &xc_func_list, &mut ni, dm0.view(), None);
 
     println!("fp de_fxc: {}", fp(result["de_fxc"].view()));
     println!("fp de_vxc_diag: {}", fp(result["de_vxc_diag"].view()));

@@ -74,8 +74,7 @@ pub fn make_hessian_setup_batch(
     ni: &mut NIMatmul,
     dm0: TsrView,
     atm_list: Option<&[usize]>,
-    verbose: bool,
-) -> HashMap<&'static str, Tsr> {
+) -> (HashMap<&'static str, Tsr>, IndexMap<&'static str, f64>) {
     assert!(!xc_func_list.is_empty(), "xc_func_list must not be empty");
     let atm_list = atm_list.map_or_else(|| (0..mol.natm()).collect_vec(), |lst| lst.to_vec());
     // ao slices indexed by `atm_list`
@@ -87,11 +86,11 @@ pub fn make_hessian_setup_batch(
     let device = dm0.device().clone();
     let weights = rt::asarray((ni.weights.clone(), &device));
 
-    let tic = |label: &str, t0: std::time::Instant| {
-        if verbose {
-            let elapsed = t0.elapsed();
-            println!("{:>20} took {:.3} seconds", label, elapsed.as_secs_f64());
-        }
+    let mut timing = IndexMap::new();
+
+    let mut tic = |label: &'static str, t0: std::time::Instant| {
+        let elapsed = t0.elapsed().as_secs_f64();
+        timing.insert(label, elapsed);
     };
 
     // --- ao, rho, vxc, fxc --- //
@@ -103,16 +102,19 @@ pub fn make_hessian_setup_batch(
     // fxc     [ngrids, nvar, nvar]
 
     let t0 = std::time::Instant::now();
-
     let ao = ni.get_cached_ao(get_hess_ao_deriv(xc_type));
+    tic("ao", t0);
+
+    let t0 = std::time::Instant::now();
     let ncomp_ao_dm0 = get_hess_ncomp_ao_dm0(xc_type);
     let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % &dm0;
+    tic("ao_dm0", t0);
 
+    let t0 = std::time::Instant::now();
     let (rho, vxc, fxc) = get_rho_vxc_fxc(xc_func_list, ao.view(), ao_dm0.view());
     let wv = &weights * &vxc;
     let wf = &weights * &fxc;
-
-    tic("ao, rho, vxc, fxc", t0);
+    tic("rho, vxc, fxc", t0);
 
     // --- drho --- //
 
@@ -156,7 +158,7 @@ pub fn make_hessian_setup_batch(
     let vmat_deriv1 = get_vmat_deriv1(xc_type, ao.view(), drho.view(), wf.view(), vmat_ip.view(), &aoslices);
     tic("vmat_deriv1", t0);
 
-    HashMap::from([
+    let result = HashMap::from([
         ("rho", rho),
         ("vxc", vxc),
         ("fxc", fxc),
@@ -165,7 +167,8 @@ pub fn make_hessian_setup_batch(
         ("de_vxc_off", de_vxc_off),
         ("vmat_ip", vmat_ip),
         ("vmat_deriv1", vmat_deriv1),
-    ])
+    ]);
+    (result, timing)
 }
 
 pub fn get_rho_vxc_fxc(xc_func_list: &[(f64, LibXCFunctional)], ao: TsrView, ao_dm0: TsrView) -> (Tsr, Tsr, Tsr) {
@@ -530,7 +533,7 @@ pub fn make_hessian_setup_with_parallel(
     dm0: TsrView,
     atm_list: Option<&[usize]>,
     verbose: bool,
-) -> HashMap<&'static str, Tsr> {
+) -> (HashMap<&'static str, Tsr>, IndexMap<&'static str, f64>) {
     // batch for grids
     // - except for rho, vxc, fxc; other tensors can be added (reduced)
     // - rho, vxc, fxc requires concation
@@ -555,6 +558,20 @@ pub fn make_hessian_setup_with_parallel(
     let vmat_ip: Tsr = rt::zeros(([nao, nao, 3], &device));
     let vmat_deriv1: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
 
+    let timing = Arc::new(Mutex::new(IndexMap::from([
+        ("ao", 0.0),
+        ("ao_dm0", 0.0),
+        ("rho, vxc, fxc", 0.0),
+        ("drho", 0.0),
+        ("de_fxc", 0.0),
+        ("de_vxc_diag", 0.0),
+        ("de_vxc_off", 0.0),
+        ("vmat_ip", 0.0),
+        ("vmat_deriv1", 0.0),
+        ("total", 0.0),
+    ])));
+    let time_total = std::time::Instant::now();
+
     // atomic guard to avoid racing write
     let guard = Mutex::new(());
 
@@ -564,7 +581,8 @@ pub fn make_hessian_setup_with_parallel(
         (start_batch..end_batch).into_par_iter().step_by(nchunk).for_each(|start| {
             let end = (start + nchunk).min(end_batch);
             let mut ni_inner = ni.split_batch(start, end);
-            let result = make_hessian_setup_batch(mol, xc_func_list, &mut ni_inner, dm0.view(), atm_list, verbose);
+            let (result_chunk, timing_chunk) =
+                make_hessian_setup_batch(mol, xc_func_list, &mut ni_inner, dm0.view(), atm_list);
             // fill rho, vxc, fxc
             // this is assumed to be not racing, so no guard at here
             unsafe {
@@ -574,24 +592,54 @@ pub fn make_hessian_setup_with_parallel(
                 let mut rho_slc = rho_slc.force_mut();
                 let mut vxc_slc = vxc_slc.force_mut();
                 let mut fxc_slc = fxc_slc.force_mut();
-                rho_slc.assign(&result["rho"]);
-                vxc_slc.assign(&result["vxc"]);
-                fxc_slc.assign(&result["fxc"]);
+                rho_slc.assign(&result_chunk["rho"]);
+                vxc_slc.assign(&result_chunk["vxc"]);
+                fxc_slc.assign(&result_chunk["fxc"]);
             }
             // add up other tensors
             unsafe {
                 let lock = guard.lock().unwrap();
-                *&mut de_fxc.force_mut() += &result["de_fxc"];
-                *&mut de_vxc_diag.force_mut() += &result["de_vxc_diag"];
-                *&mut de_vxc_off.force_mut() += &result["de_vxc_off"];
-                *&mut vmat_ip.force_mut() += &result["vmat_ip"];
-                *&mut vmat_deriv1.force_mut() += &result["vmat_deriv1"];
+                *&mut de_fxc.force_mut() += &result_chunk["de_fxc"];
+                *&mut de_vxc_diag.force_mut() += &result_chunk["de_vxc_diag"];
+                *&mut de_vxc_off.force_mut() += &result_chunk["de_vxc_off"];
+                *&mut vmat_ip.force_mut() += &result_chunk["vmat_ip"];
+                *&mut vmat_deriv1.force_mut() += &result_chunk["vmat_deriv1"];
                 drop(lock);
             }
+            // add up timing
+            {
+                let mut timing = timing.lock().unwrap();
+                for (key, value) in timing_chunk {
+                    *timing.get_mut(key).unwrap() += value;
+                }
+            }
         });
+
+        // fill total time outside parallel loop
+        {
+            let mut timing = timing.lock().unwrap();
+            timing.insert("total", time_total.elapsed().as_secs_f64());
+        }
+
+        // verbose print of timing and batch info
+        if verbose {
+            let timing = timing.lock().unwrap();
+            println!("In make_hessian_setup_with_parallel, Batch {start_batch}..{end_batch}");
+            println!("  Elapsed time from start (Wall time): {:.4} sec", timing["total"]);
+        }
     }
 
-    HashMap::from([
+    let timing = timing.lock().unwrap();
+    if verbose {
+        println!("  Timing breakdown (CPU time):");
+        for (key, value) in timing.iter() {
+            if *key != "total" {
+                println!("  {key:>20}: {value:.4} sec");
+            }
+        }
+    }
+
+    let result = HashMap::from([
         ("rho", rho),
         ("vxc", vxc),
         ("fxc", fxc),
@@ -600,7 +648,9 @@ pub fn make_hessian_setup_with_parallel(
         ("de_vxc_off", de_vxc_off),
         ("vmat_ip", vmat_ip),
         ("vmat_deriv1", vmat_deriv1),
-    ])
+    ]);
+
+    (result, timing.clone())
 }
 
 /* #endregion */
