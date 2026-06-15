@@ -186,5 +186,5 @@ pub trait RHessElecInteractAPI {
     /// We have not prepared to propose a good API for fractional occupation.
     ///
     /// [`make_response_preparation`]: Self::make_response_preparation
-    fn get_response_bra(&self, bra: TsrView) -> Tsr;
+    fn get_response_bra(&mut self, bra: TsrView) -> Tsr;
 }

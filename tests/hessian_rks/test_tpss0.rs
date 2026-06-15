@@ -3,8 +3,8 @@ use crate::test_util::*;
 use approx::assert_abs_diff_eq;
 use libxc::prelude::*;
 use rstest::rstest;
-use rstsr_showcase_hessian::numint_matmul::hess_rks::make_hessian_setup_batch;
-use rstsr_showcase_hessian::numint_matmul::hess_rks::make_hessian_setup_with_parallel;
+use rstsr_showcase_hessian::numint_matmul::hess_rks::make_hessian_setup;
+use rstsr_showcase_hessian::numint_matmul::hess_rks::make_hessian_setup_batched;
 use rstsr_showcase_hessian::prelude::*;
 use rstsr_showcase_hessian::util::density_matrices::get_dm0_restricted;
 
@@ -14,7 +14,7 @@ fn test_whole(hess_case_tpss0: &CaseAmoniaRKS) {
     let mut ni = NIMatmul::new(&mol, &grid_coords, &grid_weights);
     let xc_func_list = [(1.0, LibXCFunctional::from_identifier("HYB_MGGA_XC_TPSS0", LibXCSpin::Unpolarized))];
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
-    let (result, timing) = make_hessian_setup_batch(&mol, &xc_func_list, &mut ni, dm0.view(), None);
+    let (result, timing) = make_hessian_setup(&mol, &xc_func_list, &mut ni, dm0.view(), None);
 
     assert!(rt::allclose(result["de_fxc"].view(), ref_dict["de_fxc"].t(), (1e-4, 1e-6)));
     assert!(rt::allclose(result["de_vxc_diag"].view(), ref_dict["de_vxc_diag"].t(), (1e-4, 1e-6)));
@@ -41,7 +41,7 @@ fn test_batched(hess_case_tpss0: &CaseAmoniaRKS) {
     let mut ni = NIMatmul::new(&mol, &grid_coords, &grid_weights);
     let xc_func_list = [(1.0, LibXCFunctional::from_identifier("HYB_MGGA_XC_TPSS0", LibXCSpin::Unpolarized))];
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
-    let (result, _) = make_hessian_setup_with_parallel(&mol, &xc_func_list, &mut ni, dm0.view(), None, true);
+    let (result, _) = make_hessian_setup_batched(&mol, &xc_func_list, &mut ni, dm0.view(), None, true);
 
     assert!(rt::allclose(result["de_fxc"].view(), ref_dict["de_fxc"].t(), (1e-4, 1e-6)));
     assert!(rt::allclose(result["de_vxc_diag"].view(), ref_dict["de_vxc_diag"].t(), (1e-4, 1e-6)));

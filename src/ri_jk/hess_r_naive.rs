@@ -858,7 +858,15 @@ pub fn get_rik_deriv1_ao_naive(
     HashMap::from([("k1ao_aux0", k1ao_aux0), ("k1ao_aux1", k1ao_aux1)])
 }
 
-pub fn get_rijk_response_bra_naive(mol: &CInt, aux: &CInt, mo_coeff: TsrView, mo_occ: TsrView, bra: TsrView) -> Tsr {
+pub fn get_rijk_response_bra_naive(
+    mol: &CInt,
+    aux: &CInt,
+    mo_coeff: TsrView,
+    mo_occ: TsrView,
+    bra: TsrView,
+    scale_j: f64,
+    scale_k: f64,
+) -> Tsr {
     // preparation
     let nao = mol.nao();
     let occidx = mo_occ.view().greater(0).into_vec();
@@ -890,7 +898,7 @@ pub fn get_rijk_response_bra_naive(mol: &CInt, aux: &CInt, mo_coeff: TsrView, mo
     let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
     let resp_bra_k1 = rt::tblis::einsum(subscripts, operands, true, None);
 
-    let resp: Tsr = 4 * resp_bra_j - resp_bra_k0 - resp_bra_k1;
+    let resp: Tsr = 4.0 * scale_j * resp_bra_j - scale_k * (resp_bra_k0 + resp_bra_k1);
     resp.into_shape(bra_shape)
 }
 
@@ -939,9 +947,9 @@ impl RHessElecInteractAPI for RHessRIJKNaive {
         self.intmd.insert("mo_occ", mo_occ.to_owned());
     }
 
-    fn get_response_bra(&self, bra: TsrView) -> Tsr {
+    fn get_response_bra(&mut self, bra: TsrView) -> Tsr {
         let mo_coeff = self.intmd["mo_coeff"].view();
         let mo_occ = self.intmd["mo_occ"].view();
-        get_rijk_response_bra_naive(&self.mol, &self.aux, mo_coeff, mo_occ, bra)
+        get_rijk_response_bra_naive(&self.mol, &self.aux, mo_coeff, mo_occ, bra, self.scale_j, self.scale_k)
     }
 }

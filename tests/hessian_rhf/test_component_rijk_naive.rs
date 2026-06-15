@@ -50,7 +50,7 @@ fn test_hess_ri_jk_response_bra(hess_case: &CaseAmoniaRHF) {
     let mo1 = ref_dict["mo1"].transpose((2, 3, 1, 0)).into_contig(ColMajor);
 
     let mo1_bra = mo_coeff % mo1;
-    let resp_bra = get_rijk_response_bra_naive(mol, aux, mo_coeff.view(), mo_occ.view(), mo1_bra.view());
+    let resp_bra = get_rijk_response_bra_naive(mol, aux, mo_coeff.view(), mo_occ.view(), mo1_bra.view(), 1.0, 1.0);
     let resp = mo_coeff.t() % resp_bra;
     assert_abs_diff_eq!(fp(resp.swapaxes(0, 1)), -0.2656880294075937, epsilon = 1e-6);
 }

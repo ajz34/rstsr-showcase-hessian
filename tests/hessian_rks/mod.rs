@@ -10,6 +10,7 @@ use rstest::fixture;
 use rstsr_showcase_hessian::prelude_dev::*;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CaseAmoniaRKS {
     pub mol: CInt,
     pub aux: CInt,

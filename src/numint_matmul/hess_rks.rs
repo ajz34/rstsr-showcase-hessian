@@ -68,7 +68,7 @@ macro_rules! index_mut {
 
 /* #region basic pure functions of skeleton hessian evaluation */
 
-pub fn make_hessian_setup_batch(
+pub fn make_hessian_setup(
     mol: &CInt,
     xc_func_list: &[(f64, LibXCFunctional)],
     ni: &mut NIMatmul,
@@ -565,9 +565,9 @@ pub fn get_rks_response_bra(
 
 /* #endregion */
 
-/* #region parallel wrapper */
+/* #region parallel/batch wrapper */
 
-pub fn make_hessian_setup_with_parallel(
+pub fn make_hessian_setup_batched(
     mol: &CInt,
     xc_func_list: &[(f64, LibXCFunctional)],
     ni: &mut NIMatmul,
@@ -635,7 +635,7 @@ pub fn make_hessian_setup_with_parallel(
             let end = (start + nchunk).min(end_batch);
             let mut ni_chunk = ni_batch.split_batch(start - start_batch, end - start_batch);
             let (result_chunk, timing_chunk) =
-                make_hessian_setup_batch(mol, xc_func_list, &mut ni_chunk, dm0.view(), atm_list);
+                make_hessian_setup(mol, xc_func_list, &mut ni_chunk, dm0.view(), atm_list);
             // fill rho, vxc, fxc
             // this is assumed to be not racing, so no guard at here
             unsafe {
@@ -677,13 +677,15 @@ pub fn make_hessian_setup_with_parallel(
         // verbose print of timing and batch info
         if verbose {
             let timing = timing.lock().unwrap();
-            println!("In make_hessian_setup_with_parallel, Batch {start_batch}..{end_batch}");
+            println!("In make_hessian_setup_batched, Batch {start_batch}..{end_batch}");
             println!("  Elapsed time from start (Wall time): {:.4} sec", timing["total"]);
         }
     }
 
     let timing = timing.lock().unwrap();
     if verbose {
+        println!("Finished make_hessian_setup_batched");
+        println!("  Total elapsed time (Wall time): {:.4} sec", timing["total"]);
         println!("  Timing breakdown (CPU time for others, Wall time for `ao`):");
         for (key, value) in timing.iter() {
             if *key != "total" {
@@ -704,6 +706,163 @@ pub fn make_hessian_setup_with_parallel(
     ]);
 
     (result, timing.clone())
+}
+
+pub fn get_rks_response_bra_batched(
+    ni: &mut NIMatmul,
+    den_type: XCDenType,
+    fxc_eff: TsrView,
+    mo1_bra: TsrView,
+    mocc: TsrView,
+    verbose: bool,
+) -> (Tsr, IndexMap<&'static str, f64>) {
+    let ngrids = ni.weights.len();
+    let nbatch = ni.nbatch;
+    let mo1_bra_shape = mo1_bra.shape().to_vec();
+    let device = mo1_bra.device().clone();
+    let mut resp = rt::zeros((mo1_bra_shape, &device));
+    let mut timing = IndexMap::from([("ao", 0.0), ("rho1", 0.0), ("resp", 0.0), ("total", 0.0)]);
+
+    let t0 = std::time::Instant::now();
+    for start in (0..ngrids).step_by(nbatch) {
+        let end = (start + nbatch).min(ngrids);
+        let mut ni_batch = ni.split_batch(start, end);
+        let (resp_batch, timing_batch) =
+            get_rks_response_bra(&mut ni_batch, den_type, fxc_eff.i(start..end), mo1_bra.view(), mocc.view());
+        resp += resp_batch;
+        for (key, value) in timing_batch {
+            *timing.get_mut(key).unwrap() += value;
+        }
+        let duration = t0.elapsed().as_secs_f64();
+        timing.insert("total", duration);
+        if verbose {
+            println!("In get_rks_response_bra_batched, Batch {start}..{end}");
+            println!("  Elapsed time from start (Wall time): {:.4} sec", duration);
+        }
+    }
+
+    if verbose {
+        println!("Finished get_rks_response_bra_batched");
+        println!("  Total elapsed time (Wall time): {:.4} sec", timing["total"]);
+        println!("  Timing breakdown (Wall time):");
+        for (key, value) in timing.iter() {
+            if *key != "total" {
+                println!("  {key:>20}: {value:.4} sec");
+            }
+        }
+    }
+
+    (resp, timing)
+}
+
+/* #endregion */
+
+/* #region final implementation of RKS Hessian */
+
+pub struct RHessKSNIMatmul<'a> {
+    pub mol: CInt,
+    pub xc_func_list: &'a [(f64, LibXCFunctional)],
+    pub ni: NIMatmul<'a>,
+    pub ni_cpks: Option<NIMatmul<'a>>,
+    pub verbose: bool,
+    pub intmd: HashMap<String, Tsr>,
+    pub result: HashMap<String, Tsr>,
+}
+
+impl<'a> RHessKSNIMatmul<'a> {
+    pub fn new(mol: &CInt, xc_func_list: &'a [(f64, LibXCFunctional)], ni: NIMatmul<'a>, verbose: bool) -> Self {
+        Self {
+            mol: mol.clone(),
+            xc_func_list,
+            ni,
+            ni_cpks: None,
+            verbose,
+            intmd: HashMap::new(),
+            result: HashMap::new(),
+        }
+    }
+
+    /// Perform the Hessian setup for RKS calculations.
+    ///
+    /// Some intermediates:
+    /// - `vxc`, `fxc`: These will be renamed to `cpks_vxc` and `cpks_fxc` if CP-KS specific grid
+    ///   (`ni_cpks`) is not specified by user. If CP-KS specific grid is specified, then `cpks_vxc`
+    ///   and `cpks_fxc` will be computed after in trait implementation
+    ///   [`RHessElecInteractAPI::make_response_preparation`].
+    /// - `rho`: discarded.
+    /// - `de_fxc`, `de_vxc_diag`, `de_vxc_off`, `vmat_ip`, `vmat_deriv1`: These are the main
+    ///   results of the Hessian setup and will be stored in `self.intmd` for later use in the
+    ///   Hessian calculation.
+    pub fn make_hessian_setup(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) {
+        // run RKS hessian setup
+        let dm0 = get_dm0_restricted(mo_coeff, mo_occ);
+        let (result, _timing) =
+            make_hessian_setup_batched(&self.mol, self.xc_func_list, &mut self.ni, dm0.view(), atm_list, self.verbose);
+
+        // handling intermediates and results
+        for (key, val) in result.into_iter() {
+            if key == "vxc" || key == "fxc" {
+                // vxc, fxc storation is actually for cp-ks.
+                // If `ni_cpks` is not specified, then we can use the vxc/fxc from the hessian setup for
+                // cp-ks as well.
+                if self.ni_cpks.is_none() {
+                    let key_to_store = format!("cpks_{key}");
+                    self.intmd.insert(key_to_store, val);
+                }
+            } else if ["rho"].contains(&key) {
+                // some keys to be discarded
+                continue;
+            } else {
+                self.intmd.insert(key.to_string(), val);
+            }
+        }
+    }
+
+    /// Check if the Hessian setup is done by verifying the presence of the "de_fxc" key in the
+    /// intermediate results.
+    pub fn is_hessian_setup_done(&self) -> bool {
+        self.intmd.contains_key("de_fxc")
+    }
+}
+
+impl<'a> RHessElecInteractAPI for RHessKSNIMatmul<'a> {
+    fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
+        if !self.is_hessian_setup_done() {
+            self.make_hessian_setup(mo_coeff, mo_occ, atm_list);
+        }
+        &self.intmd["de_fxc"] + &self.intmd["de_vxc_diag"] + &self.intmd["de_vxc_off"]
+    }
+
+    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
+        if !self.is_hessian_setup_done() {
+            self.make_hessian_setup(mo_coeff, mo_occ, atm_list);
+        }
+        self.intmd["vmat_deriv1"].to_owned()
+    }
+
+    fn make_response_preparation(&mut self, mo_coeff: TsrView, mo_occ: TsrView) {
+        self.intmd.insert("mo_coeff".to_string(), mo_coeff.into_contig(ColMajor));
+        self.intmd.insert("mo_occ".to_string(), mo_occ.into_contig(ColMajor));
+    }
+
+    fn get_response_bra(&mut self, bra: TsrView) -> Tsr {
+        let ni_cpks = self.ni_cpks.as_mut().unwrap_or(&mut self.ni);
+        let mo_coeff = self.intmd.get("mo_coeff").unwrap();
+        let mo_occ = self.intmd.get("mo_occ").unwrap();
+        let fxc_eff = self.intmd.get("cpks_fxc").unwrap();
+        let occidx = mo_occ.view().greater(0).into_vec();
+        let mocc = mo_coeff.bool_select(-1, &occidx);
+
+        let (resp, _timing) = get_rks_response_bra_batched(
+            ni_cpks,
+            determine_den_type_from_list(&self.xc_func_list.iter().map(|(_, f)| f).collect_vec()),
+            fxc_eff.view(),
+            bra,
+            mocc.view(),
+            self.verbose,
+        );
+        resp
+    }
 }
 
 /* #endregion */

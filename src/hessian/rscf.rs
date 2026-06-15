@@ -179,11 +179,11 @@ impl<'a> RHessSCF<'a> {
     /// # Returns
     ///
     /// - `resp` : shape `[nmo, nocc, ...]`. The response in MO space.
-    pub fn response_mo(&self, mo1: TsrView) -> Tsr {
+    pub fn response_mo(&mut self, mo1: TsrView) -> Tsr {
         let mo_coeff = self.mo_coeff.view();
         let ubra = &mo_coeff % &mo1;
         let mut resp = rt::zeros_like(&mo1);
-        for el_obj in self.el_list.iter() {
+        for el_obj in self.el_list.iter_mut() {
             resp += mo_coeff.t() % el_obj.get_response_bra(ubra.view());
         }
         resp
@@ -204,7 +204,7 @@ impl<'a> RHessSCF<'a> {
     /// # Returns
     ///
     /// - `resp` : shape `[nmo, nocc, ...]`. The dimensionless response in MO space.
-    pub fn response_dimless_cphf(&self, mo1: TsrView) -> Tsr {
+    pub fn response_dimless_cphf(&mut self, mo1: TsrView) -> Tsr {
         let mo_occ = self.mo_occ.view();
         let mo_energy = self.mo_energy.view();
         let level_shift = self.config.level_shift;
@@ -243,22 +243,22 @@ impl<'a> RHessSCF<'a> {
     ///
     /// - `mo1` : shape `[nmo, nocc, ...]`. Perturbation in MO space that solves the dimensionless
     ///   CP-HF equation.
-    pub fn solve_dimless_cphf(&self, rhs: TsrView) -> Tsr {
+    pub fn solve_dimless_cphf(&mut self, rhs: TsrView) -> Tsr {
         let rhs_shape = rhs.shape().to_vec();
         let nmo = rhs.shape()[0];
         let nocc = rhs.shape()[1];
         let rhs = rhs.reshape((nmo * nocc, -1));
+
+        let tol = self.config.cphf_tol;
+        let max_cycle = self.config.cphf_max_cycle;
+        let max_space = self.config.cphf_max_space;
+        let lindep = self.config.cphf_lindep;
 
         let response_cphf_flattened = |x: TsrView| -> Tsr {
             let x = x.reshape((nmo, nocc, -1));
             let y = self.response_dimless_cphf(x.view());
             y.into_shape((nmo * nocc, -1))
         };
-
-        let tol = self.config.cphf_tol;
-        let max_cycle = self.config.cphf_max_cycle;
-        let max_space = self.config.cphf_max_space;
-        let lindep = self.config.cphf_lindep;
         let mo1 = krylov_block(response_cphf_flattened, rhs.view(), None, tol, max_cycle, max_space, lindep);
         mo1.into_shape(rhs_shape)
     }
@@ -289,7 +289,7 @@ impl<'a> RHessSCF<'a> {
     /// - `mo1` : shape `[nmo, nocc, 3, natm]`. The finalized perturbation in MO space.
     /// - `mo_e1` : shape `[nocc, nocc, 3, natm]`. The derivative of occupied orbital energies (Fock
     ///   matrix) with respect to perturbation.
-    pub fn finalize_cphf(&self, f1mo: TsrView, s1mo: TsrView, mo1: TsrView) -> HashMap<&'static str, Tsr> {
+    pub fn finalize_cphf(&mut self, f1mo: TsrView, s1mo: TsrView, mo1: TsrView) -> HashMap<&'static str, Tsr> {
         let mo_occ = self.mo_occ.view();
         let mo_energy = self.mo_energy.view();
         let occidx = mo_occ.view().greater(0).into_vec();
