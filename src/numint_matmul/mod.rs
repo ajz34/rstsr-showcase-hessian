@@ -2,6 +2,7 @@
 #![doc = include_str!("docs/mod.md")]
 
 pub mod hess_rks;
+pub mod hess_uks;
 pub mod nimatmul;
 pub mod pure_eval_rho;
 pub mod pure_xcpot;

@@ -29,7 +29,7 @@ def setUpModule():
     PATH_REF = PATH_PROTOTYPE + "nh3_u_svwn_decomp.npz"
 
     mol = gto.Mole(atom=xyz, basis="def2-TZVP", spin=2, max_memory=8000).build()
-    mf = dft.UKS(mol, xc="SVWN").density_fit()
+    mf = dft.UKS(mol, xc="0.1*HF + SVWN").density_fit()
     ref_value = np.load(PATH_REF)
     mf.mo_coeff = ref_value["mo_coeff"]
     mf.mo_occ = ref_value["mo_occ"]
@@ -83,7 +83,7 @@ class TestHessianUKS(unittest.TestCase):
         )
         de_hess = hess_scf.make_hess()
         self.assertTrue(np.allclose(de_hess, ref_value["de_ref"], atol=5e-4, rtol=1e-4))
-        self.assertAlmostEqual(lib.fp(de_hess), 1.187409337180, places=4)
+        self.assertAlmostEqual(lib.fp(de_hess), 0.644121276090, places=4)
 
     def test_response(self):
         dm0_per_spin = get_dm0_unrestricted(mf.mo_coeff, mf.mo_occ)
@@ -112,7 +112,7 @@ class TestHessianUKS(unittest.TestCase):
             fxc_cached=ks_obj.fxc_cached,
         )
         total = np.concatenate([resp[0].ravel(), resp[1].ravel()])
-        self.assertAlmostEqual(lib.fp(total), -0.274645018535, places=6)
+        self.assertAlmostEqual(lib.fp(total), -0.039278426095, places=6)
 
 
 if __name__ == "__main__":
