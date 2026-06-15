@@ -73,7 +73,7 @@ fn test_make_hess(hess_case_b3lyp: &CaseAmoniaUKS) {
     let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
 
     assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-3, 5e-4)));
-    assert_abs_diff_eq!(fp(de_hess.view()), 0.661032172085, epsilon = 5e-3);
+    assert_abs_diff_eq!(fp(de_hess.view()), 0.661022070857, epsilon = 1e-4);
 
     println!("Result keys of hessian object: {:?}", hess_scf.result.keys());
     println!("Timing of hessian");

@@ -83,7 +83,7 @@ class TestHessianUKS(unittest.TestCase):
         )
         de_hess = hess_scf.make_hess()
         self.assertTrue(np.allclose(de_hess, ref_value["de_ref"], atol=5e-4, rtol=1e-4))
-        self.assertAlmostEqual(lib.fp(de_hess), 0.644121276090, places=4)
+        self.assertAlmostEqual(lib.fp(de_hess), 0.644121276087, places=4)
 
     def test_response(self):
         dm0_per_spin = get_dm0_unrestricted(mf.mo_coeff, mf.mo_occ)
