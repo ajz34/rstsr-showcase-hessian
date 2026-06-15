@@ -1,7 +1,7 @@
 // see also pyhessref/nimatmul/uks.py
 
-use super::prelude::*;
 use super::hess_rks::{get_de_vxc_diag, get_de_vxc_off, get_drho, get_vmat_ip};
+use super::prelude::*;
 
 /* #region const dimensions/indices definition */
 
@@ -120,7 +120,13 @@ pub fn get_rho_vxc_fxc_uks(
     (rhoa, rhob, vxc, fxc)
 }
 
-pub fn get_drho_uks(xc_type: XCDenType, ao: TsrView, ao_dm0a: TsrView, ao_dm0b: TsrView, aoslices: &[[usize; 4]]) -> (Tsr, Tsr) {
+pub fn get_drho_uks(
+    xc_type: XCDenType,
+    ao: TsrView,
+    ao_dm0a: TsrView,
+    ao_dm0b: TsrView,
+    aoslices: &[[usize; 4]],
+) -> (Tsr, Tsr) {
     let drhoa = get_drho(xc_type, ao.view(), ao_dm0a.view(), aoslices);
     let drhob = get_drho(xc_type, ao.view(), ao_dm0b.view(), aoslices);
     (drhoa, drhob)
@@ -182,13 +188,15 @@ pub fn get_vmat_deriv1_uks(
             let wf_aa_00 = wf.i((.., 0, 0, 0, 0)); // [G], s1=0, s2=0
             let wf_ba_00 = wf.i((.., 0, 1, 0, 0)); // [G], s1=1, s2=0
 
-            let wva_f: Tsr = 0.5 * (wf_aa_00.i((.., None)) * drhoa.i((.., 0, .., A)) + wf_ba_00.i((.., None)) * drhob.i((.., 0, .., A)));
+            let wva_f: Tsr = 0.5
+                * (wf_aa_00.i((.., None)) * drhoa.i((.., 0, .., A)) + wf_ba_00.i((.., None)) * drhob.i((.., 0, .., A)));
 
             // Beta output (s2=1): fxc_ab @ drho_a + fxc_bb @ drho_b
             let wf_ab_00 = wf.i((.., 0, 0, 0, 1)); // [G], s1=0, s2=1
             let wf_bb_00 = wf.i((.., 0, 1, 0, 1)); // [G], s1=1, s2=1
 
-            let wvb_f: Tsr = 0.5 * (wf_ab_00.i((.., None)) * drhoa.i((.., 0, .., A)) + wf_bb_00.i((.., None)) * drhob.i((.., 0, .., A)));
+            let wvb_f: Tsr = 0.5
+                * (wf_ab_00.i((.., None)) * drhoa.i((.., 0, .., A)) + wf_bb_00.i((.., None)) * drhob.i((.., 0, .., A)));
 
             for t in 0..3 {
                 let aowa = wva_f.i((.., t)) * index!(ao, O);
@@ -334,8 +342,16 @@ pub fn make_hessian_setup_uks(
 
     // --- vmat_deriv1 (UKS spin-coupled) --- //
     let t0 = std::time::Instant::now();
-    let (vmat_deriv1_a, vmat_deriv1_b) =
-        get_vmat_deriv1_uks(xc_type, ao.view(), drhoa.view(), drhob.view(), wf.view(), vmat_ip_a.view(), vmat_ip_b.view(), &aoslices);
+    let (vmat_deriv1_a, vmat_deriv1_b) = get_vmat_deriv1_uks(
+        xc_type,
+        ao.view(),
+        drhoa.view(),
+        drhob.view(),
+        wf.view(),
+        vmat_ip_a.view(),
+        vmat_ip_b.view(),
+        &aoslices,
+    );
     tic("vmat_deriv1", t0);
 
     let result = HashMap::from([
@@ -639,8 +655,15 @@ impl<'a> UHessKSNIMatmul<'a> {
         let dm0a = &mocc_a % mocc_a.t();
         let dm0b = &mocc_b % mocc_b.t();
 
-        let (result, _timing) =
-            make_hessian_setup_batched_uks(&self.mol, self.xc_func_list, &mut self.ni, dm0a.view(), dm0b.view(), atm_list, self.verbose);
+        let (result, _timing) = make_hessian_setup_batched_uks(
+            &self.mol,
+            self.xc_func_list,
+            &mut self.ni,
+            dm0a.view(),
+            dm0b.view(),
+            atm_list,
+            self.verbose,
+        );
 
         for (key, val) in result.into_iter() {
             if key == "vxc" || key == "fxc" {
@@ -664,7 +687,12 @@ impl<'a> UHessKSNIMatmul<'a> {
 impl<'a> HessUtilAPI for UHessKSNIMatmul<'a> {}
 
 impl<'a> UHessElecInteractAPI for UHessKSNIMatmul<'a> {
-    fn make_skeleton_hess(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>) -> Tsr {
+    fn make_skeleton_hess(
+        &mut self,
+        mo_coeff: &[TsrView; 2],
+        mo_occ: &[TsrView; 2],
+        atm_list: Option<&[usize]>,
+    ) -> Tsr {
         if !self.is_hessian_setup_done() {
             self.make_hessian_setup(mo_coeff, mo_occ, atm_list);
         }
@@ -675,7 +703,12 @@ impl<'a> UHessElecInteractAPI for UHessKSNIMatmul<'a> {
             + &self.intmd["de_vxc_off_b"]
     }
 
-    fn get_deriv1_ao(&mut self, mo_coeff: &[TsrView; 2], mo_occ: &[TsrView; 2], atm_list: Option<&[usize]>) -> [Tsr; 2] {
+    fn get_deriv1_ao(
+        &mut self,
+        mo_coeff: &[TsrView; 2],
+        mo_occ: &[TsrView; 2],
+        atm_list: Option<&[usize]>,
+    ) -> [Tsr; 2] {
         if !self.is_hessian_setup_done() {
             self.make_hessian_setup(mo_coeff, mo_occ, atm_list);
         }

@@ -124,13 +124,11 @@ fn test_response(hess_case_svwn: &CaseAmoniaUKS) {
     let vmat_deriv1_mo_b = ref_dict["vmat_deriv1_mo_b"].transpose([2, 3, 1, 0]).into_contig(ColMajor);
     let den_type = XCDenType::RHO;
     let fxc_eff = result["fxc"].view();
-    let ([resp_a, resp_b], timing) = get_uks_response_bra(
-        &mut ni,
-        den_type,
-        fxc_eff,
-        &[vmat_deriv1_mo_a.view(), vmat_deriv1_mo_b.view()],
-        &[mocc_a.view(), mocc_b.view()],
-    );
+    let ([resp_a, resp_b], timing) =
+        get_uks_response_bra(&mut ni, den_type, fxc_eff, &[vmat_deriv1_mo_a.view(), vmat_deriv1_mo_b.view()], &[
+            mocc_a.view(),
+            mocc_b.view(),
+        ]);
     println!("timing: {:?}", timing);
 
     // Compare L2 norm (permutation-invariant) with Python reference

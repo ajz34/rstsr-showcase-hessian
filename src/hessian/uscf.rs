@@ -30,7 +30,19 @@ impl<'a> UHessSCF<'a> {
         config: HessSCFConfig,
         atm_list: Option<Vec<usize>>,
     ) -> Self {
-        Self { mo_coeff, mo_occ, mo_energy, ovlp_obj, nuc_list, core_list, el_list, config, atm_list, result: HashMap::new(), timing: Vec::new() }
+        Self {
+            mo_coeff,
+            mo_occ,
+            mo_energy,
+            ovlp_obj,
+            nuc_list,
+            core_list,
+            el_list,
+            config,
+            atm_list,
+            result: HashMap::new(),
+            timing: Vec::new(),
+        }
     }
 
     /// Number of atoms over which the Hessian is computed. This is `atm_list.len()` if
