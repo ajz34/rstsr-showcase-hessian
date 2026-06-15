@@ -1,6 +1,6 @@
 // trait definitions
-pub mod hess_trait_restricted;
-pub mod hess_trait_unrestricted;
+pub mod trait_rhess;
+pub mod trait_uhess;
 
 // core hess implementations
 pub mod hcore;
@@ -18,10 +18,10 @@ pub mod prelude {
     use super::*;
 
     pub use hcore::{RHessHcore, UHessHcore};
-    pub use hess_trait_restricted::{HessNucAPI, RHessCoreAPI, RHessElecInteractAPI};
-    pub use hess_trait_unrestricted::{UHessCoreAPI, UHessElecInteractAPI};
     pub use nuc_repl::HessNucRepl;
     pub use ovlp::{RHessOvlp, UHessOvlp};
     pub use rscf::{HessSCFConfig, RHessSCF};
+    pub use trait_rhess::{HessNucAPI, RHessCoreAPI, RHessElecInteractAPI};
+    pub use trait_uhess::{UHessCoreAPI, UHessElecInteractAPI};
     pub use uscf::UHessSCF;
 }
