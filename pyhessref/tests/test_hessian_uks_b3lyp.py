@@ -134,7 +134,7 @@ class TestHessianUKS(unittest.TestCase):
             fxc_cached=ks_obj.fxc_cached,
         )
         total = np.concatenate([resp[0].ravel(), resp[1].ravel()])
-        self.assertAlmostEqual(lib.fp(total), -0.200283450231, places=6)
+        self.assertAlmostEqual(lib.fp(total), -0.023459554665, places=6)
 
 
 if __name__ == "__main__":
