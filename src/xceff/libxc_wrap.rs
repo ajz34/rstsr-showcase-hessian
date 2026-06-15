@@ -100,6 +100,7 @@ fn transpose_with_buffer(slc: &mut [f64], m: usize, n: usize, buf: &mut [f64]) {
 /// Evaluate effective XC potential from LibXC functional and density, in serial.
 pub fn libxc_eval_eff_serial(xc_func: &LibXCFunctional, rho: TsrView, deriv: usize) -> Vec<Tsr> {
     let den_type = determine_den_type(xc_func);
+    let device = rho.device().clone();
     let (mut xc_val, xc_layout) = libxc_eval_inner(xc_func, rho.view(), deriv);
     // transpose the spin-related components
     // first find the largest intermediate size
@@ -116,7 +117,7 @@ pub fn libxc_eval_eff_serial(xc_func: &LibXCFunctional, rho: TsrView, deriv: usi
     }
     let ngrids = rho.shape()[0];
     let xlen = xc_val.len() / ngrids;
-    let xc_val = rt::asarray((xc_val, [ngrids, xlen].f()));
+    let xc_val = rt::asarray((xc_val, [ngrids, xlen].f(), &device));
     let xc_val = libxc_transform_xcfun_indices(xc_val.view(), den_type, xc_func.spin(), deriv);
     (0..=deriv).map(|order| transform_xc_inner(rho.view(), xc_val.view(), den_type, xc_func.spin(), order)).collect()
 }

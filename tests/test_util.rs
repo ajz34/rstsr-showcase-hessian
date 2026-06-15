@@ -9,8 +9,10 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-pub type Tsr<T = f64> = Tensor<T, DeviceFaer, IxD>;
-pub type TsrView<'a, T = f64> = TensorView<'a, T, DeviceFaer, IxD>;
+use rstsr_showcase_hessian::prelude_dev::DeviceTsr;
+
+pub type Tsr<T = f64> = Tensor<T, DeviceTsr, IxD>;
+pub type TsrView<'a, T = f64> = TensorView<'a, T, DeviceTsr, IxD>;
 
 /// Read a tensor from npz file in prototype directory.
 ///
@@ -26,7 +28,8 @@ pub fn read_npz(file: &str, name: &str) -> Tsr {
     let npy_reader = NpyFile::new(npy_file).unwrap();
     let shape = npy_reader.shape().iter().map(|&dim| dim as usize).collect::<Vec<_>>();
     let data = npy_reader.into_vec::<f64>().unwrap();
-    rt::asarray((data, shape.c()))
+    let device = DeviceTsr::default();
+    rt::asarray((data, shape.c(), &device))
 }
 
 /// Read all tensors from npz file in prototype directory, and return as a dictionary.
@@ -43,7 +46,8 @@ pub fn read_npz_dict(file: &str) -> HashMap<String, Tsr> {
             let npy_reader = NpyFile::new(file).unwrap();
             let shape = npy_reader.shape().iter().map(|&dim| dim as usize).collect::<Vec<_>>();
             let data = npy_reader.into_vec::<f64>().unwrap();
-            dict.insert(name, rt::asarray((data, shape.c())));
+            let device = DeviceTsr::default();
+            dict.insert(name, rt::asarray((data, shape.c(), &device)));
         }
     }
     dict

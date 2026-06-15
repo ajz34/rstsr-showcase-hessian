@@ -36,7 +36,11 @@ pub mod prelude_dev {
     pub use rstsr::prelude::*;
     pub use std::collections::HashMap;
 
+    #[cfg(feature = "openblas")]
+    pub type DeviceTsr = DeviceOpenBLAS;
+    #[cfg(not(feature = "openblas"))]
     pub type DeviceTsr = DeviceFaer;
+
     pub type Tsr<T = f64> = Tensor<T, DeviceTsr, IxD>;
     pub type TsrView<'a, T = f64> = TensorView<'a, T, DeviceTsr, IxD>;
     pub type TsrMut<'a, T = f64> = TensorMut<'a, T, DeviceTsr, IxD>;

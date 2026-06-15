@@ -11,8 +11,9 @@ rayon = "1.12"
 itertools = "0.14"
 indexmap = "2.14"
 libxc = "0.1"
-rstsr = { version = "0.7.5", default-features = false, features = ["col_major", "faer", "linalg", "tblis", "faer_as_default"] }
-rstsr-tblis = { version = "0.7.5", features = ["dynamic_loading"] }
+rstsr = { version = "0.7", default-features = false, features = ["col_major", "openblas", "faer", "linalg", "tblis", "faer_as_default"] }
+rstsr-openblas = { version = "0.7", features = ["openmp"] }
+rstsr-tblis = { version = "0.7", features = ["dynamic_loading"] }
 
 [dev-dependencies]
 rstest = "0.26"
@@ -20,3 +21,6 @@ approx = "0.5"
 
 [profile.dev]
 opt-level = 2
+
+[features]
+openblas = []
