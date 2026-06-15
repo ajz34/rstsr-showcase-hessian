@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 from pyscf import gto, scf, lib, dft, df, hessian
-from pyhessref.nimatmul.rks import make_hessian_setup_batch, RHessKSNaive
+from pyhessref.nimatmul.rks import get_ks_response_bra_naive, make_hessian_setup_batch, RHessKSNaive
 from pyhessref.rijk.hess_restricted_naive import RHessRIJKNaive
 from pyhessref.hess_scf_restricted import RHessSCF
 from pyhessref.hcore import RHessHcore
@@ -115,3 +115,14 @@ class TestHessianRKS(unittest.TestCase):
             msg=f"max abs diff = {np.max(np.abs(de_hess - ref_value['de_ref']))}",
         )
         self.assertAlmostEqual(lib.fp(de_hess), 1.463030213113, places=4)
+    
+    def test_response(self):
+        # The test is dummy. `vmat_deriv1_mo` just only have the same shape of bra that response function to take.
+        vmat_deriv1_mo = ref_value["vmat_deriv1_mo"]
+        from time import time
+        t0 = time()
+        resp = get_ks_response_bra_naive(mol, grids, "B3LYP", mf.mo_coeff, mf.mo_occ, mf.make_rdm1(), vmat_deriv1_mo)
+        print(f"Time taken for response: {time() - t0:.4f} seconds")
+        print(resp.shape)
+        print(lib.fp(resp))
+        self.assertAlmostEqual(lib.fp(resp), -0.07623136682913342, places=6)

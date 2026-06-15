@@ -114,7 +114,7 @@ impl<'a> NIMatmul<'a> {
         // if the requested deriv is already cached, return it
         if let Some(max_deriv) = max_cached_deriv {
             if max_deriv >= deriv {
-                let cache_key = format!("ao_deriv{}", deriv);
+                let cache_key = format!("ao_deriv{}", max_deriv);
                 return self.cache_tensor.get(&cache_key).unwrap().i((.., .., ..AO_DERIV_DIM[deriv]));
             }
         }

@@ -524,6 +524,47 @@ pub fn get_vmat_deriv1(
 
 /* #endregion */
 
+/* #region response */
+
+pub fn get_rks_response_bra(
+    ni: &mut NIMatmul,
+    den_type: XCDenType,
+    fxc_eff: TsrView,
+    mo1_bra: TsrView,
+    mocc: TsrView,
+) -> (Tsr, IndexMap<&'static str, f64>) {
+    let nao = mo1_bra.shape()[0];
+    let nocc = mo1_bra.shape()[1];
+    let mo1_bra_shape = mo1_bra.shape().to_vec();
+    let mo1_bra = mo1_bra.reshape((nao, nocc, -1));
+    let mo1_bra_list = mo1_bra.axes_iter(-1).collect_vec();
+
+    let mut timing = IndexMap::new();
+
+    let mut tic = |label: &'static str, t0: std::time::Instant| {
+        let elapsed = t0.elapsed().as_secs_f64();
+        timing.insert(label, elapsed);
+    };
+
+    let t0 = std::time::Instant::now();
+    ni.get_cached_ao(den_type.num_ao_deriv());
+    tic("ao", t0);
+
+    let t0 = std::time::Instant::now();
+    let rho1 = ni.make_rho_from_one_bra_mult_ket(mocc.view(), &mo1_bra_list, den_type);
+    tic("rho1", t0);
+
+    let t0 = std::time::Instant::now();
+    let resp = ni.make_rks_fxc_pot_with_eff_bra_trans(fxc_eff, rho1.view(), mocc.view(), den_type);
+    tic("resp", t0);
+
+    // The 4.0 times is a trick of closed-shell coefficient
+    let resp = 4.0 * resp.into_shape(mo1_bra_shape);
+    (resp, timing)
+}
+
+/* #endregion */
+
 /* #region parallel wrapper */
 
 pub fn make_hessian_setup_with_parallel(
