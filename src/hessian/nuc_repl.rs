@@ -71,6 +71,8 @@ impl HessNucRepl {
     }
 }
 
+impl HessUtilAPI for HessNucRepl {}
+
 impl HessNucAPI for HessNucRepl {
     fn make_skeleton_hess(&mut self, atm_list: Option<&[usize]>) -> Tsr {
         get_nuc_repl_hess(&self.mol, &self.device, atm_list)

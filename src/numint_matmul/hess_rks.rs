@@ -825,6 +825,8 @@ impl<'a> RHessKSNIMatmul<'a> {
     }
 }
 
+impl<'a> HessUtilAPI for RHessKSNIMatmul<'a> {}
+
 impl<'a> RHessElecInteractAPI for RHessKSNIMatmul<'a> {
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         if !self.is_hessian_setup_done() {

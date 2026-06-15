@@ -917,6 +917,8 @@ impl RHessRIJKNaive {
     }
 }
 
+impl HessUtilAPI for RHessRIJKNaive {}
+
 impl RHessElecInteractAPI for RHessRIJKNaive {
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         let de_J_skeleton_dict =

@@ -1,6 +1,7 @@
 // trait definitions
 pub mod trait_rhess;
 pub mod trait_uhess;
+pub mod trait_util;
 
 // core hess implementations
 pub mod hcore;
@@ -23,5 +24,6 @@ pub mod prelude {
     pub use rscf::{HessSCFConfig, RHessSCF};
     pub use trait_rhess::{HessNucAPI, RHessCoreAPI, RHessElecInteractAPI};
     pub use trait_uhess::{UHessCoreAPI, UHessElecInteractAPI};
+    pub use trait_util::HessUtilAPI;
     pub use uscf::UHessSCF;
 }

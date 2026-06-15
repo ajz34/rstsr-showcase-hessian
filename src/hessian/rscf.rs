@@ -28,6 +28,7 @@ pub struct RHessSCF<'a> {
     pub el_list: Vec<&'a mut dyn RHessElecInteractAPI>,
     pub config: HessSCFConfig,
     pub atm_list: Option<Vec<usize>>,
+    pub result: HashMap<String, Tsr>,
 }
 
 impl<'a> RHessSCF<'a> {
@@ -53,6 +54,7 @@ impl<'a> RHessSCF<'a> {
             el_list,
             config,
             atm_list: atm_list.map(|x| x.to_vec()),
+            result: HashMap::new(),
         }
     }
 
@@ -409,13 +411,22 @@ impl<'a> RHessSCF<'a> {
         let device = self.mo_coeff.device().clone();
         let mut de_skeleton = rt::zeros(([3, 3, natm, natm], &device));
         for nuc_obj in self.nuc_list.iter_mut() {
-            de_skeleton += nuc_obj.make_skeleton_hess(atm_list);
+            let de_nuc = nuc_obj.make_skeleton_hess(atm_list);
+            let nuc_obj_name = nuc_obj.get_type_name();
+            self.result.insert(format!("de_skeleton_{}", nuc_obj_name), de_nuc.to_owned());
+            de_skeleton += de_nuc;
         }
         for core_obj in self.core_list.iter_mut() {
-            de_skeleton += core_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), atm_list);
+            let de_core = core_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), atm_list);
+            let core_obj_name = core_obj.get_type_name();
+            self.result.insert(format!("de_skeleton_{}", core_obj_name), de_core.to_owned());
+            de_skeleton += de_core;
         }
         for el_obj in self.el_list.iter_mut() {
-            de_skeleton += el_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), atm_list);
+            let de_el = el_obj.make_skeleton_hess(mo_coeff.view(), mo_occ.view(), atm_list);
+            let el_obj_name = el_obj.get_type_name();
+            self.result.insert(format!("de_skeleton_{}", el_obj_name), de_el.to_owned());
+            de_skeleton += de_el;
         }
         de_skeleton
     }
@@ -435,6 +446,11 @@ impl<'a> RHessSCF<'a> {
         let de_skeleton = self.make_skeleton_hess();
         let de_ovlp = self.ovlp_obj.make_hess(dme0.view(), atm_list.as_deref());
         let de_cphf = self.make_cphf_hess();
-        de_skeleton + de_ovlp + de_cphf
+        self.result.insert("de_ovlp".to_string(), de_ovlp.to_owned());
+        self.result.insert("de_cphf".to_string(), de_cphf.to_owned());
+
+        let de_tot = de_skeleton + de_ovlp + de_cphf;
+        self.result.insert("de_tot".to_string(), de_tot.to_owned());
+        de_tot
     }
 }

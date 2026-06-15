@@ -185,6 +185,8 @@ impl RHessHcore {
     }
 }
 
+impl HessUtilAPI for RHessHcore {}
+
 impl RHessCoreAPI for RHessHcore {
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         let dm0 = get_dm0_restricted(mo_coeff, mo_occ);
