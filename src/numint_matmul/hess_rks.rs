@@ -30,7 +30,7 @@ const ZZZ: usize = 19;
 
 const IDX_AO_DERIV2: [[usize; 3]; 3] = [[XX, XY, XZ], [XY, YY, YZ], [XZ, YZ, ZZ]];
 
-const fn get_hess_ao_deriv(xc_type: XCDenType) -> usize {
+pub const fn get_hess_ao_deriv(xc_type: XCDenType) -> usize {
     match xc_type {
         RHO => 2,
         SIGMA => 3,
@@ -39,7 +39,7 @@ const fn get_hess_ao_deriv(xc_type: XCDenType) -> usize {
     }
 }
 
-const fn get_hess_ncomp_ao_dm0(xc_type: XCDenType) -> usize {
+pub const fn get_hess_ncomp_ao_dm0(xc_type: XCDenType) -> usize {
     match xc_type {
         RHO => 1,
         SIGMA => 4,
