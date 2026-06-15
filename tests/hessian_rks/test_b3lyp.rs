@@ -105,8 +105,12 @@ fn test_make_hess(hess_case_b3lyp: &CaseAmoniaRKS) {
     let de_hess = hess_scf.make_hess();
     let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
 
-    println!("Result keys of hessian object: {:?}", hess_scf.result.keys());
-
     assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 5e-5)));
     assert_abs_diff_eq!(fp(de_hess.view()), 1.463030213113, epsilon = 1e-4);
+
+    println!("Result keys of hessian object: {:?}", hess_scf.result.keys());
+    println!("Timing of hessian");
+    for (key, value) in hess_scf.timing.iter() {
+        println!("    {:60}: {:10.6} seconds", key, value);
+    }
 }
