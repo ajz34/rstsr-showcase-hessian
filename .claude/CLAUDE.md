@@ -16,3 +16,5 @@ You should already able to use `pyscf`, `numpy` and `scipy` in the Python part. 
 ## Rust part
 
 We introduced `libcint` (via dynamic linking) and `libtblis` (via dynamic loading) as dependencies for the Rust part. You need to place these two libraries to be visible by `LD_LIBRARY_PATH`.
+
+For cargo test, you need to add `-- --test-threads=1` to avoid multi-threading issues.

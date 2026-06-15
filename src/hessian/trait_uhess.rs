@@ -168,5 +168,5 @@ pub trait UHessElecInteractAPI {
     ///
     /// [`RHessElecInteractAPI::get_response_bra`]. Signature difference: input and output type
     /// different.
-    fn get_response_bra(&self, bra: &[TsrView; 2]) -> [Tsr; 2];
+    fn get_response_bra(&mut self, bra: &[TsrView; 2]) -> [Tsr; 2];
 }

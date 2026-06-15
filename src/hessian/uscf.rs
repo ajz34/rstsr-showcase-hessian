@@ -161,14 +161,14 @@ impl<'a> UHessSCF<'a> {
     /// # Returns
     ///
     /// - `resp` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. The response in MO space.
-    pub fn response_mo(&self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
+    pub fn response_mo(&mut self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
         let [α, β] = [0, 1];
         let ubra_α = &self.mo_coeff[α] % &mo1[α];
         let ubra_β = &self.mo_coeff[β] % &mo1[β];
         let mut resp_α = rt::zeros_like(&ubra_α);
         let mut resp_β = rt::zeros_like(&ubra_β);
 
-        for el_obj in self.el_list.iter() {
+        for el_obj in self.el_list.iter_mut() {
             let el_resp = el_obj.get_response_bra(&[ubra_α.view(), ubra_β.view()]);
             resp_α += self.mo_coeff[α].t() % &el_resp[α];
             resp_β += self.mo_coeff[β].t() % &el_resp[β];
@@ -186,7 +186,7 @@ impl<'a> UHessSCF<'a> {
     ///
     /// - `resp` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. The dimensionless response
     ///   in MO space.
-    pub fn response_dimless_cphf(&self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
+    pub fn response_dimless_cphf(&mut self, mo1: &[TsrView; 2]) -> [Tsr; 2] {
         let [α, β] = [0, 1];
         let mo_occ = [self.mo_occ[α].view(), self.mo_occ[β].view()];
         let occidx = [mo_occ[α].view().greater(0).into_vec(), mo_occ[β].view().greater(0).into_vec()];
@@ -232,13 +232,18 @@ impl<'a> UHessSCF<'a> {
     ///
     /// - `mo1` : shape `[nmo, nocc_α, ...]` and `[nmo, nocc_β, ...]`. Perturbation in MO space that
     ///   solves the dimensionless CP-HF equation.
-    pub fn solve_dimless_cphf(&self, rhs: &[TsrView; 2]) -> [Tsr; 2] {
+    pub fn solve_dimless_cphf(&mut self, rhs: &[TsrView; 2]) -> [Tsr; 2] {
         let [α, β] = [0, 1];
         let rhs_shape = [rhs[α].shape().to_vec(), rhs[β].shape().to_vec()];
         let nmo = [rhs[α].shape()[0], rhs[β].shape()[0]];
         let nocc = [rhs[α].shape()[1], rhs[β].shape()[1]];
         let rhs = [rhs[α].reshape((nmo[α], nocc[α], -1)), rhs[β].reshape((nmo[β], nocc[β], -1))];
         let device = rhs[α].device().clone();
+
+        let tol = self.config.cphf_tol;
+        let max_cycle = self.config.cphf_max_cycle;
+        let max_space = self.config.cphf_max_space;
+        let lindep = self.config.cphf_lindep;
 
         let pack_flattened = |x: &[TsrView; 2]| -> Tsr {
             // original: [nmo_α, nocc_α, nprop] and [nmo_β, nocc_β, nprop]
@@ -279,10 +284,6 @@ impl<'a> UHessSCF<'a> {
             pack_flattened(&resp_view)
         };
 
-        let tol = self.config.cphf_tol;
-        let max_cycle = self.config.cphf_max_cycle;
-        let max_space = self.config.cphf_max_space;
-        let lindep = self.config.cphf_lindep;
         let rhs_view = rhs.iter().map(|r| r.view()).collect_array().unwrap();
         let rhs_packed = pack_flattened(&rhs_view);
         let mo1_flattened =
@@ -314,7 +315,7 @@ impl<'a> UHessSCF<'a> {
     /// - `mo_e1_0`, `mo_e1_1` : shape `[nocc_α, nocc_α, 3, natm]` and `[nocc_β, nocc_β, 3, natm]`.
     ///   The derivative of occupied orbital energies (Fock matrix) with respect to perturbation.
     pub fn finalize_cphf(
-        &self,
+        &mut self,
         f1mo: &[TsrView; 2],
         s1mo: &[TsrView; 2],
         mo1: &[TsrView; 2],

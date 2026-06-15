@@ -118,6 +118,8 @@ pub fn get_uijk_response_bra_naive(
     mo_coeff: &[TsrView; 2],
     mo_occ: &[TsrView; 2],
     bra: &[TsrView; 2],
+    scale_j: f64,
+    scale_k: f64,
 ) -> [Tsr; 2] {
     let nao = mol.nao();
     let device = bra[0].device().clone();
@@ -144,19 +146,19 @@ pub fn get_uijk_response_bra_naive(
             let subscripts = "uvP, PQ, klQ, kjA, lj, vi -> uiA";
             let operands =
                 [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra[tau].view(), mocc[tau].view(), mocc[s].view()];
-            r += 2.0 * rt::tblis::einsum(subscripts, operands, true, None);
+            r += 2.0 * scale_j * rt::tblis::einsum(subscripts, operands, true, None);
         }
 
         // K contribution (same-spin only), two terms
         let subscripts = "uvP, PQ, klQ, vjA, lj, ki -> uiA";
         let operands =
             [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra_s.view(), mocc[s].view(), mocc[s].view()];
-        r -= rt::tblis::einsum(subscripts, operands, true, None);
+        r -= scale_k * rt::tblis::einsum(subscripts, operands, true, None);
 
         let subscripts = "uvP, PQ, klQ, kjA, vj, li -> uiA";
         let operands =
             [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra_s.view(), mocc[s].view(), mocc[s].view()];
-        r -= rt::tblis::einsum(subscripts, operands, true, None);
+        r -= scale_k * rt::tblis::einsum(subscripts, operands, true, None);
 
         resp[s] = Some(r);
     }
@@ -229,9 +231,9 @@ impl UHessElecInteractAPI for UHessRIJKNaive {
         self.intmd.insert("mo_occ_1", mo_occ[1].to_owned());
     }
 
-    fn get_response_bra(&self, bra: &[TsrView; 2]) -> [Tsr; 2] {
+    fn get_response_bra(&mut self, bra: &[TsrView; 2]) -> [Tsr; 2] {
         let mo_coeff = [self.intmd["mo_coeff_0"].view(), self.intmd["mo_coeff_1"].view()];
         let mo_occ = [self.intmd["mo_occ_0"].view(), self.intmd["mo_occ_1"].view()];
-        get_uijk_response_bra_naive(&self.mol, &self.aux, &mo_coeff, &mo_occ, bra)
+        get_uijk_response_bra_naive(&self.mol, &self.aux, &mo_coeff, &mo_occ, bra, self.scale_j, self.scale_k)
     }
 }
