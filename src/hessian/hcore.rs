@@ -210,6 +210,8 @@ impl UHessHcore {
     }
 }
 
+impl HessUtilAPI for UHessHcore {}
+
 impl UHessCoreAPI for UHessHcore {
     fn make_skeleton_hess(
         &mut self,

@@ -4,7 +4,7 @@ use crate::prelude::*;
 ///
 /// Difference to [`RHessCoreAPI`] is that we may need different signature. Basic ideas are exactly
 /// the same.
-pub trait UHessCoreAPI {
+pub trait UHessCoreAPI: HessUtilAPI {
     /// Generate the **skeleton** contribution of Hessian for current SCF component.
     ///
     /// # Parameters
@@ -54,7 +54,7 @@ pub trait UHessCoreAPI {
 ///
 /// Difference to [`RHessElecInteractAPI`] is that we may need different signature. Basic ideas are
 /// exactly the same.
-pub trait UHessElecInteractAPI {
+pub trait UHessElecInteractAPI: HessUtilAPI {
     /// Generate the **skeleton** contribution of Hessian for current SCF component.
     ///
     /// # Parameters

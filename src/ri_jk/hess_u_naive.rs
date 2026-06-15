@@ -181,6 +181,8 @@ impl UHessRIJKNaive {
     }
 }
 
+impl HessUtilAPI for UHessRIJKNaive {}
+
 impl UHessElecInteractAPI for UHessRIJKNaive {
     fn make_skeleton_hess(
         &mut self,
