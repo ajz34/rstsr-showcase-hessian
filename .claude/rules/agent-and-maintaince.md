@@ -18,5 +18,5 @@
     - kimi* (eg. kimi-k2.5): growth@moonshot.cn
   - Model name should include the version or details, such as `qwen3.5-plus`, `glm-5.1`, which can be inferred by Claude Code's `/model` property.
 
-- **You should not git commit by yourself, unless user explicitly required**. Please return the code changes to the user, and let the user decide whether to commit or not.
+- Unless you are in git worktree specified for AI coding agent, **You should not git commit by yourself, unless user explicitly required**. Please return the code changes to the user, and let the user decide whether to commit or not.
 - **User may require git commit, but without AI co-author**. By default you can add AI co-author. However, there are some cases that most code is written by human, and AI commit serves only as summary.
