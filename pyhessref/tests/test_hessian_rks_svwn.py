@@ -77,3 +77,15 @@ class TestHessianRKS(unittest.TestCase):
             msg=f"max abs diff = {np.max(np.abs(de_hess - ref_value['de_ref']))}",
         )
         self.assertAlmostEqual(lib.fp(de_hess), 1.528278915756, places=4)
+
+    def test_response(self):
+        """Test the KS XC response for SVWN (LDA)."""
+        from pyhessref.nimatmul.rks import get_ks_response_bra_naive
+        vmat_deriv1_mo = ref_value["vmat_deriv1_mo"]
+        from time import time
+        t0 = time()
+        resp = get_ks_response_bra_naive(mol, grids, mf.xc, mf.mo_coeff, mf.mo_occ, mf.make_rdm1(), vmat_deriv1_mo)
+        print(f"Time taken for response: {time() - t0:.4f} seconds")
+        print(resp.shape)
+        print(lib.fp(resp))
+        self.assertAlmostEqual(lib.fp(resp), -0.012902102874, places=6)
