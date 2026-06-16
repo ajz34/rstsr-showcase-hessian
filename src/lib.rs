@@ -32,6 +32,7 @@ pub mod prelude_dev {
     pub use core::assert_matches;
     pub use itertools::Itertools;
     pub use libcint::prelude::*;
+    pub(crate) use num::{FromPrimitive, One, Zero};
     pub use rayon::prelude::*;
     pub use rstsr::prelude::*;
     pub use std::collections::HashMap;

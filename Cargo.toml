@@ -10,6 +10,9 @@ zip = "8.6"
 rayon = "1.12"
 itertools = "0.14"
 indexmap = "2.14"
+serde-inline-default = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+num = "0.4"
 libxc = "0.1"
 rstsr = { version = "0.7", default-features = false, features = ["col_major", "openblas", "faer", "linalg", "tblis", "faer_as_default"] }
 rstsr-openblas = { version = "0.7", features = ["openmp"] }
