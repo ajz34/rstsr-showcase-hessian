@@ -15,7 +15,7 @@
 
 use crate::prelude::*;
 use crate::ri_jk::decompose::*;
-use crate::ri_jk::pure_decompose::{get_j2c_decomp, get_solved_j3c};
+use crate::ri_jk::pure_decompose::{get_j2c_decomp, solve_by_j2c};
 
 /// Get the skeleton of the second derivative of the Coulomb interaction.
 ///
@@ -974,7 +974,7 @@ pub fn generate_cderi_with_decomp(
 ) -> (Tsr, J2CDecompose) {
     let j3c = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s2ij", None, device);
     let j2c_decomp = get_j2c_decomp(aux, device, j2c_decomp_option);
-    let cderi = get_solved_j3c(j3c, &j2c_decomp, false);
+    let cderi = solve_by_j2c(j3c, &j2c_decomp, false);
     (cderi, j2c_decomp)
 }
 

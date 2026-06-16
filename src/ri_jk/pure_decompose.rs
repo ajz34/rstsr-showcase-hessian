@@ -68,6 +68,10 @@ pub fn get_j2c_decomp(mol: &CInt, device: &DeviceTsr, j2c_decomp_option: J2CDeco
 
 /// Transform 3c-2e ERI (j3c), use solve/inv-matmul to decomposed 3c-2e ERI (cderi).
 ///
+/// The function name was previously `get_solved_j3c`. However, this function actually works as
+/// transformation to auxiliary basis, independent to what physical nature (3c-ERI or 2c-ERI). So
+/// finally the name was changed to `solve_by_j2c` to reflect the actual mathematical operation.
+///
 /// - `j3c`: The 3c-2e ERI, of shape (..., naux) in column major order.
 ///   - The remaining dimensions should be contiguous if memory and efficiency is of concern.
 /// - `j2c_decomp`: The decomposed 2c-2e ERI, either from Cholesky or eigen decomposition.
@@ -76,8 +80,16 @@ pub fn get_j2c_decomp(mol: &CInt, device: &DeviceTsr, j2c_decomp_option: J2CDeco
 ///   - In some cases where gradient response evaluation is involved, we may need to solve the
 ///     `(J^-1/2)^T * cderi`, which requires `flip_uplo = true` (the `cderi` is already solved).
 ///     This option should not affect eigen decomposition since it's already symmetric.
-pub fn get_solved_j3c(j3c: Tsr, j2c_decomp: &J2CDecompose, flip_uplo: bool) -> Tsr {
+pub fn solve_by_j2c(mut j3c: Tsr, j2c_decomp: &J2CDecompose, flip_uplo: bool) -> Tsr {
     type T = f64;
+
+    if j3c.f_contig() {
+        let j3c_mut = j3c.view_mut();
+        solve_by_j2c_mut(j3c_mut, j2c_decomp, flip_uplo);
+        return j3c;
+    } else {
+        eprintln!("Input j3c is not column-major (Fortran-contiguous). It may cost more memory and time due to explicit transposition.")
+    }
 
     match j2c_decomp {
         J2CDecompose::Cd { j2c_l, uplo, .. } => {
@@ -136,6 +148,77 @@ pub fn get_solved_j3c(j3c: Tsr, j2c_decomp: &J2CDecompose, flip_uplo: bool) -> T
                 j3c_batch.assign(&scratch);
             }
             j3c_2d.into_shape(j3c_shape) // reshape back
+        },
+    }
+}
+
+pub fn solve_by_j2c_mut(mut j3c: TsrMut, j2c_decomp: &J2CDecompose, flip_uplo: bool) {
+    type T = f64;
+
+    if !j3c.f_contig() {
+        panic!("Input j3c must be column-major (Fortran-contiguous) for in-place solve_by_j2c_mut.")
+    }
+    let device = j3c.device().clone();
+
+    match j2c_decomp {
+        J2CDecompose::Cd { j2c_l, uplo, .. } => {
+            // cast type anyway, this is not bottleneck
+            let j2c_l = j2c_l.mapv(|x| T::from_f64(x).unwrap());
+            // get j3c shape, and reshape to 2d for triangular solve;
+            // note we assume j3c to be something similar to (x, x, naux).
+            let j3c_shape = j3c.shape().clone();
+            assert_eq!(
+                *j3c_shape.last().unwrap(),
+                j2c_l.shape()[0],
+                "Last dimension of j3c should match the shape of j2c_l (both to be naux)."
+            );
+            let naux = j2c_l.shape()[0];
+            let n = j3c.size() / naux;
+            let j3c_offset = j3c.offset();
+            let j3c_raw = &mut j3c.raw_mut()[j3c_offset..];
+            let j3c_2d = rt::asarray((j3c_raw, [n, naux].f(), &device));
+            match (uplo, flip_uplo) {
+                (Upper, false) => rt::linalg::solve_triangular((j2c_l.t(), j3c_2d, Lower)),
+                (Lower, false) => rt::linalg::solve_triangular((j2c_l, j3c_2d, Lower)),
+                (Upper, true) => rt::linalg::solve_triangular((j2c_l, j3c_2d, Upper)),
+                (Lower, true) => rt::linalg::solve_triangular((j2c_l.t(), j3c_2d, Upper)),
+            };
+        },
+        J2CDecompose::Eig { j2c_l_inv, .. } => {
+            // we need to perform inplace matmul at this case
+            // however, inplace matmul is not integrated at BLAS level, we need to batch it manually
+
+            // batch size is currently fixed, not related to available menory at this time:
+            // > max(1/25 remaining size, naux)
+            // - we assume the API caller leaves at least 4% of memory for storing j3c;
+            // - we assume size requirement of j2c copy is acceptable.
+
+            // cast type anyway, this is not bottleneck
+            let j2c_l_inv = j2c_l_inv.mapv(|x| T::from_f64(x).unwrap());
+            // get j3c shape, and reshape to 2d for matmul;
+            // note we assume j3c to be something similar to (x, x, naux).
+            let j3c_shape = j3c.shape().clone();
+            assert_eq!(
+                *j3c_shape.last().unwrap(),
+                j2c_l_inv.shape()[0],
+                "Last dimension of j3c should match the shape of j2c_l_inv (both to be naux)."
+            );
+            let naux = j2c_l_inv.shape()[0];
+            let n = j3c.size() / naux;
+            let j3c_offset = j3c.offset();
+            let j3c_raw = &mut j3c.raw_mut()[j3c_offset..];
+            let mut j3c_2d = rt::asarray((j3c_raw, [n, naux].f(), &device));
+            // determine batch size
+            let nbatch = ((n as f64 * 0.04).ceil() as usize).max(naux);
+            let mut scratch_vec: Vec<T> = vec![T::zero(); nbatch * naux];
+            // perform batched inplace-matmul
+            for start in (0..n).step_by(nbatch) {
+                let end = (start + nbatch).min(n);
+                let mut j3c_batch = j3c_2d.i_mut((start..end, ..));
+                let mut scratch = rt::asarray((&mut scratch_vec, [end - start, naux].f(), &device));
+                scratch.matmul_from(j3c_batch.view(), j2c_l_inv.view(), T::one(), T::zero());
+                j3c_batch.assign(&scratch);
+            }
         },
     }
 }
