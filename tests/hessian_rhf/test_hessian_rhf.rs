@@ -111,7 +111,7 @@ fn test_make_hess_faster(hess_case: &CaseAmoniaRHF) {
     let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
     let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
     let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
-    let mut rijk_obj = RHessRIJK::new(mol, aux, 1.0, 1.0);
+    let mut rijk_obj = RHessRIJK::new_without_cderi(mol, aux, 1.0, 1.0);
     let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
     let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
     let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];

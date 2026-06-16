@@ -14,6 +14,8 @@
 //! > Bykov, et al. Mol Phys. 113, 1961 (2015). DOI: 10.1080/00268976.2015.1025114
 
 use crate::prelude::*;
+use crate::ri_jk::decompose::*;
+use crate::ri_jk::pure_decompose::{get_j2c_decomp, get_solved_j3c};
 
 /// Get the skeleton of the second derivative of the Coulomb interaction.
 ///
@@ -51,7 +53,7 @@ pub fn get_decomposed_rij_skeleton_deriv2_naive(
     mo_coeff: TsrView,
     mo_occ: TsrView,
     atm_list: Option<&[usize]>,
-) -> HashMap<&'static str, Tsr> {
+) -> HashMap<String, Tsr> {
     // some elementary information
     let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
     let (aoslices, _) = filter_aoslices(mol, atm_list);
@@ -270,31 +272,34 @@ pub fn get_decomposed_rij_skeleton_deriv2_naive(
     let de_J02 =
         &de_J02_1 + &de_J02_2 + &de_J02_3a + &de_J02_3b + &de_J02_4 + &de_J02_5 + &de_J02_6 + &de_J02_7 + &de_J02_8;
 
-    HashMap::from([
-        // de_J20
-        ("de_J20_1", de_J20_1),
-        ("de_J20_2", de_J20_2),
-        ("de_J20_3", de_J20_3),
-        // de_J11
-        ("de_J11_1", de_J11_1),
-        ("de_J11_2", de_J11_2),
-        ("de_J11_3", de_J11_3),
-        ("de_J11_4", de_J11_4),
-        // de_J02
-        ("de_J02_1", de_J02_1),
-        ("de_J02_2", de_J02_2),
-        ("de_J02_3a", de_J02_3a),
-        ("de_J02_3b", de_J02_3b),
-        ("de_J02_4", de_J02_4),
-        ("de_J02_5", de_J02_5),
-        ("de_J02_6", de_J02_6),
-        ("de_J02_7", de_J02_7),
-        ("de_J02_8", de_J02_8),
-        // total
-        ("de_J20", de_J20),
-        ("de_J11", de_J11),
-        ("de_J02", de_J02),
-    ])
+    HashMap::from(
+        [
+            // de_J20
+            ("de_J20_1", de_J20_1),
+            ("de_J20_2", de_J20_2),
+            ("de_J20_3", de_J20_3),
+            // de_J11
+            ("de_J11_1", de_J11_1),
+            ("de_J11_2", de_J11_2),
+            ("de_J11_3", de_J11_3),
+            ("de_J11_4", de_J11_4),
+            // de_J02
+            ("de_J02_1", de_J02_1),
+            ("de_J02_2", de_J02_2),
+            ("de_J02_3a", de_J02_3a),
+            ("de_J02_3b", de_J02_3b),
+            ("de_J02_4", de_J02_4),
+            ("de_J02_5", de_J02_5),
+            ("de_J02_6", de_J02_6),
+            ("de_J02_7", de_J02_7),
+            ("de_J02_8", de_J02_8),
+            // total
+            ("de_J20", de_J20),
+            ("de_J11", de_J11),
+            ("de_J02", de_J02),
+        ]
+        .map(|(k, v)| (k.to_string(), v)),
+    )
 }
 
 /// Get the skeleton of the second derivative of the exchange interaction.
@@ -322,7 +327,7 @@ pub fn get_decomposed_rik_skeleton_deriv2_naive(
     mo_coeff: TsrView,
     mo_occ: TsrView,
     atm_list: Option<&[usize]>,
-) -> HashMap<&'static str, Tsr> {
+) -> HashMap<String, Tsr> {
     // some elementary information
     let (aoslices, _) = filter_aoslices(mol, atm_list);
     let (auxslices, _) = filter_aoslices(aux, atm_list);
@@ -612,32 +617,35 @@ pub fn get_decomposed_rik_skeleton_deriv2_naive(
     let de_K02 =
         &de_K02_1 + &de_K02_2 + &de_K02_3a + &de_K02_3b + &de_K02_4 + &de_K02_5 + &de_K02_6 + &de_K02_7 + &de_K02_8;
 
-    HashMap::from([
-        // de_K20
-        ("de_K20_1a", de_K20_1a),
-        ("de_K20_1b", de_K20_1b),
-        ("de_K20_2", de_K20_2),
-        ("de_K20_3", de_K20_3),
-        // de_K11
-        ("de_K11_1", de_K11_1),
-        ("de_K11_2", de_K11_2),
-        ("de_K11_3", de_K11_3),
-        ("de_K11_4", de_K11_4),
-        // de_K02
-        ("de_K02_1", de_K02_1),
-        ("de_K02_2", de_K02_2),
-        ("de_K02_3a", de_K02_3a),
-        ("de_K02_3b", de_K02_3b),
-        ("de_K02_4", de_K02_4),
-        ("de_K02_5", de_K02_5),
-        ("de_K02_6", de_K02_6),
-        ("de_K02_7", de_K02_7),
-        ("de_K02_8", de_K02_8),
-        // total
-        ("de_K20", de_K20),
-        ("de_K11", de_K11),
-        ("de_K02", de_K02),
-    ])
+    HashMap::from(
+        [
+            // de_K20
+            ("de_K20_1a", de_K20_1a),
+            ("de_K20_1b", de_K20_1b),
+            ("de_K20_2", de_K20_2),
+            ("de_K20_3", de_K20_3),
+            // de_K11
+            ("de_K11_1", de_K11_1),
+            ("de_K11_2", de_K11_2),
+            ("de_K11_3", de_K11_3),
+            ("de_K11_4", de_K11_4),
+            // de_K02
+            ("de_K02_1", de_K02_1),
+            ("de_K02_2", de_K02_2),
+            ("de_K02_3a", de_K02_3a),
+            ("de_K02_3b", de_K02_3b),
+            ("de_K02_4", de_K02_4),
+            ("de_K02_5", de_K02_5),
+            ("de_K02_6", de_K02_6),
+            ("de_K02_7", de_K02_7),
+            ("de_K02_8", de_K02_8),
+            // total
+            ("de_K20", de_K20),
+            ("de_K11", de_K11),
+            ("de_K02", de_K02),
+        ]
+        .map(|(k, v)| (k.to_string(), v)),
+    )
 }
 
 /// Get the first derivative of the Coulomb interaction in AO basis.
@@ -659,7 +667,7 @@ pub fn get_rij_deriv1_ao_naive(
     mo_coeff: TsrView,
     mo_occ: TsrView,
     atm_list: Option<&[usize]>,
-) -> HashMap<&'static str, Tsr> {
+) -> HashMap<String, Tsr> {
     // some elementary information
     let nao = mol.nao();
     let (aoslices, _) = filter_aoslices(mol, atm_list);
@@ -737,7 +745,7 @@ pub fn get_rij_deriv1_ao_naive(
         *&mut j1ao_aux1.i_mut((Ellipsis, A)) += scr;
     }
 
-    HashMap::from([("j1ao_aux0", j1ao_aux0), ("j1ao_aux1", j1ao_aux1)])
+    HashMap::from([("j1ao_aux0", j1ao_aux0), ("j1ao_aux1", j1ao_aux1)].map(|(k, v)| (k.to_string(), v)))
 }
 
 /// Get the first derivative of the exchange interaction in AO basis.
@@ -759,7 +767,7 @@ pub fn get_rik_deriv1_ao_naive(
     mo_coeff: TsrView,
     mo_occ: TsrView,
     atm_list: Option<&[usize]>,
-) -> HashMap<&'static str, Tsr> {
+) -> HashMap<String, Tsr> {
     // some elementary information
     let nao = mol.nao();
     let (aoslices, _) = filter_aoslices(mol, atm_list);
@@ -857,7 +865,7 @@ pub fn get_rik_deriv1_ao_naive(
         *&mut k1ao_aux1.i_mut((Ellipsis, A)) += scr;
     }
 
-    HashMap::from([("k1ao_aux0", k1ao_aux0), ("k1ao_aux1", k1ao_aux1)])
+    HashMap::from([("k1ao_aux0", k1ao_aux0), ("k1ao_aux1", k1ao_aux1)].map(|(k, v)| (k.to_string(), v)))
 }
 
 pub fn get_rijk_response_bra_naive(
@@ -904,24 +912,71 @@ pub fn get_rijk_response_bra_naive(
     resp.into_shape(bra_shape)
 }
 
-pub struct RHessRIJK {
+/// Generate cderi and decomposition.
+pub fn generate_cderi_with_decomp(
+    mol: &CInt,
+    aux: &CInt,
+    j2c_decomp_option: J2CDecompOption,
+    device: &DeviceTsr,
+) -> (Tsr, J2CDecompose) {
+    let j3c = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s2ij", None, device);
+    let j2c_decomp = get_j2c_decomp(aux, device, j2c_decomp_option);
+    let cderi = get_solved_j3c(j3c, &j2c_decomp, false);
+    (cderi, j2c_decomp)
+}
+
+pub struct RHessRIJK<'a> {
     pub mol: CInt,
     pub aux: CInt,
     pub scale_j: f64,
     pub scale_k: f64,
-    pub intmd: HashMap<&'static str, Tsr>, // intermediates
-    pub result: HashMap<&'static str, Tsr>,
+    pub cderi: TsrCow<'a>,
+    pub j2c_decomp: J2CDecompose,
+    pub intmd: HashMap<String, Tsr>, // intermediates
+    pub result: HashMap<String, Tsr>,
 }
 
-impl RHessRIJK {
-    pub fn new(mol: &CInt, aux: &CInt, scale_j: f64, scale_k: f64) -> Self {
-        Self { mol: mol.clone(), aux: aux.clone(), scale_j, scale_k, intmd: HashMap::new(), result: HashMap::new() }
+impl<'a> RHessRIJK<'a> {
+    pub fn new_without_cderi(mol: &CInt, aux: &CInt, scale_j: f64, scale_k: f64) -> Self {
+        let j2c_decomp_option = J2CDecompOption::default();
+        let device = DeviceTsr::default();
+        let (cderi, j2c_decomp) = generate_cderi_with_decomp(mol, aux, j2c_decomp_option, &device);
+        Self {
+            mol: mol.clone(),
+            aux: aux.clone(),
+            scale_j,
+            scale_k,
+            cderi: cderi.into_cow(),
+            j2c_decomp,
+            intmd: HashMap::new(),
+            result: HashMap::new(),
+        }
+    }
+
+    pub fn new_with_cderi(
+        mol: &CInt,
+        aux: &CInt,
+        scale_j: f64,
+        scale_k: f64,
+        cderi: TsrView<'a>,
+        j2c_decomp: J2CDecompose,
+    ) -> Self {
+        Self {
+            mol: mol.clone(),
+            aux: aux.clone(),
+            scale_j,
+            scale_k,
+            cderi: cderi.into_cow(),
+            j2c_decomp,
+            intmd: HashMap::new(),
+            result: HashMap::new(),
+        }
     }
 }
 
-impl HessUtilAPI for RHessRIJK {}
+impl<'a> HessUtilAPI for RHessRIJK<'a> {}
 
-impl RHessElecInteractAPI for RHessRIJK {
+impl<'a> RHessElecInteractAPI for RHessRIJK<'a> {
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
         let de_J_skeleton_dict =
             get_decomposed_rij_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
@@ -947,8 +1002,8 @@ impl RHessElecInteractAPI for RHessRIJK {
     }
 
     fn make_response_preparation(&mut self, mo_coeff: TsrView, mo_occ: TsrView) {
-        self.intmd.insert("mo_coeff", mo_coeff.into_contig(RowMajor));
-        self.intmd.insert("mo_occ", mo_occ.to_owned());
+        self.intmd.insert("mo_coeff".to_string(), mo_coeff.into_contig(RowMajor));
+        self.intmd.insert("mo_occ".to_string(), mo_occ.to_owned());
     }
 
     fn get_response_bra(&mut self, bra: TsrView) -> Tsr {
