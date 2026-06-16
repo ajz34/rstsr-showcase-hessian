@@ -93,4 +93,40 @@ fn test_make_hess(hess_case: &CaseAmoniaRHF) {
     let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
     assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 1e-6)));
     assert_abs_diff_eq!(fp(de_hess.view()), 1.4704252379360374, epsilon = 1e-5);
+
+    // print timing
+    println!("Hessian computation timing:");
+    for (key, value) in hess_scf.timing.iter() {
+        println!("    {:60}: {:10.6} seconds", key, value);
+    }
+}
+
+#[rstest]
+fn test_make_hess_faster(hess_case: &CaseAmoniaRHF) {
+    let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, mo_energy, ref_dict } = hess_case;
+
+    let mo_coeff = mo_coeff.view().into_contig(ColMajor);
+    let mo_occ = mo_occ.view().into_contig(ColMajor);
+    let mo_energy = mo_energy.view().into_contig(ColMajor);
+    let ovlp_obj = RHessOvlp::new(mol, &DeviceTsr::default());
+    let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
+    let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
+    let mut rijk_obj = RHessRIJK::new(mol, aux, 1.0, 1.0);
+    let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
+    let hcore_list: Vec<&mut dyn RHessCoreAPI> = vec![&mut hcore_obj];
+    let el_list: Vec<&mut dyn RHessElecInteractAPI> = vec![&mut rijk_obj];
+    let config = HessSCFConfig::default();
+    let mut hess_scf =
+        RHessSCF::new(mo_coeff, mo_occ, mo_energy, ovlp_obj, nuc_list, hcore_list, el_list, config, None);
+
+    let de_hess = hess_scf.make_hess();
+    let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
+    assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 1e-6)));
+    assert_abs_diff_eq!(fp(de_hess.view()), 1.4704252379360374, epsilon = 1e-5);
+
+    // print timing
+    println!("Hessian computation timing:");
+    for (key, value) in hess_scf.timing.iter() {
+        println!("    {:60}: {:10.6} seconds", key, value);
+    }
 }
