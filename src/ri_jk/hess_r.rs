@@ -870,14 +870,13 @@ pub fn get_rik_deriv1_ao_naive(
 
 #[allow(clippy::too_many_arguments)]
 pub fn get_rijk_response_bra(
-    mol: &CInt,
-    aux: &CInt,
     cderi: TsrView,
     mo_coeff: TsrView,
     mo_occ: TsrView,
-    mo1_bra: TsrView,
+    bra1: TsrView,
     scale_j: f64,
     scale_k: f64,
+    nbatch_aux: usize,
 ) -> Tsr {
     // notes on shape
     // - cderi: [nao_tp, naux]
@@ -899,12 +898,13 @@ pub fn get_rijk_response_bra(
     let occidx = mo_occ.view().greater(0).into_vec();
     let mocc = mo_coeff.bool_select(-1, &occidx);
     let nocc = occidx.iter().filter(|&&x| x).count();
-    let device = mo_coeff.device().clone();
 
     // reshape bra
-    let shape_bra = mo1_bra.shape();
-    let mo1_bra = mo1_bra.reshape((nao, nocc, -1));
-    let nprop = mo1_bra.shape()[2];
+    let shape_bra = bra1.shape();
+    assert_eq!(bra1.shape()[0], nao);
+    assert_eq!(bra1.shape()[1], nocc);
+    let bra1 = bra1.reshape((nao, nocc, -1));
+    let nprop = bra1.shape()[2];
 
     // --- J contribution --- //
 
@@ -913,39 +913,50 @@ pub fn get_rijk_response_bra(
     // - itm_j_aux: [naux, nprop]
     // - resp_tp_j: [nao_tp, nprop]
     // - resp_ao_j: [nao, nao, nprop]
-    let mo1_dm = &mo1_bra % &mocc.t();
-    let mo1_dm = &mo1_dm + &mo1_dm.swapaxes(0, 1);
-    let mo1_dm_tp = pack_triu_tilde(mo1_dm.view());
-    let itm_j_aux = cderi.t() % &mo1_dm_tp;
-    let resp_tp_j: Tsr = 2.0 * cderi % &itm_j_aux;
+    let dm1 = &bra1 % &mocc.t();
+    let dm1 = &dm1 + &dm1.swapaxes(0, 1);
+    let dm1_tp = pack_triu_tilde(dm1.view());
+    let itm_j_aux = cderi.t() % &dm1_tp;
+    let resp_tp_j: Tsr = 2.0 * &cderi % itm_j_aux;
     let resp_ao_j = resp_tp_j.unpack_tri(Upper, FlagSymm::Sy);
     let resp_bra_j = scale_j * (resp_ao_j % &mocc);
 
-    // --- naive impl --- //
-    // preparation
-    let nao = mol.nao();
-    let occidx = mo_occ.view().greater(0).into_vec();
-    let mocc = mo_coeff.bool_select(-1, &occidx);
-    let nocc = occidx.iter().filter(|&&x| x).count();
+    // --- K contribution --- //
 
-    let int2c2e = hess_intor(aux, "int2c2e", "s1", None, mo1_bra.device());
-    let int2c2e_inv = rt::linalg::inv(int2c2e);
-    let int3c2e = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s1", None, mo1_bra.device());
+    let mut resp_bra_k = rt::zeros_like(&resp_bra_j);
+    for iaux_start in (0..naux).step_by(nbatch_aux) {
+        let iaux_end = (iaux_start + nbatch_aux).min(naux);
+        let slc = rt::slice!(iaux_start, iaux_end);
+        // Please note following `naux` is actually in batch, just overwriting the outside `naux` for
+        // convenience.
+        let naux = iaux_end - iaux_start;
 
-    // reshape bra to (nao, nocc, -1)
-    let bra = mo1_bra.reshape((nao, nocc, -1));
+        // - cderi: [nao, nao, naux]
+        // - cderi_bxo: [nao, naux, nocc]
+        // - cderi_oxo: [nocc, naux, nocc]
+        // - cderi_box: [nao, nocc, naux]
+        let cderi = cderi.i((.., slc)).unpack_tri(Upper, FlagSymm::Sy);
+        let cderi_bxo = (cderi.reshape([nao, nao * naux]).t() % &mocc).into_shape([nao, naux, nocc]);
+        let cderi_oxo = (&mocc.t() % cderi_bxo.reshape([nao, naux * nocc])).into_shape([nocc, naux, nocc]);
 
-    // resp_bra_k0
-    let subscripts = "uvP, PQ, klQ, vjA, lj, ki -> uiA";
-    let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
-    let resp_bra_k0 = rt::tblis::einsum(subscripts, operands, true, None);
+        for A in 0..nprop {
+            let bra1A = bra1.i((.., .., A));
+            let mut respkA = resp_bra_k.i_mut((.., .., A));
+            // k contribution part 0
+            // - cderi_bxo_1: [nao, naux, nocc]
+            // - einsum progress: uPj, iPj -> ui
+            let cderi_bxo_1 = (cderi.reshape([nao, nao * naux]).t() % &bra1A).into_shape([nao, naux, nocc]);
+            respkA -= cderi_bxo_1.reshape([nao, naux * nocc]) % cderi_oxo.reshape([nocc, naux * nocc]).t();
+            // k contribution part 1
+            // - cderi_oxo_1: [nocc, naux, nocc] (note it is iPj, where j from bra1, i from mocc)
+            // - einsum progress: uPj, iPj -> ui
+            let cderi_oxo_1 = (mocc.t() % cderi_bxo_1.reshape([nao, naux * nocc])).into_shape([nocc, naux, nocc]);
+            respkA -= cderi_bxo.reshape([nao, naux * nocc]) % cderi_oxo_1.reshape([nocc, naux * nocc]).t();
+        }
+    }
+    resp_bra_k *= scale_k;
 
-    // resp_bra_k1
-    let subscripts = "uvP, PQ, klQ, kjA, vj, li -> uiA";
-    let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
-    let resp_bra_k1 = rt::tblis::einsum(subscripts, operands, true, None);
-
-    let resp: Tsr = resp_bra_j - scale_k * (resp_bra_k0 + resp_bra_k1);
+    let resp: Tsr = resp_bra_j + resp_bra_k;
     resp.into_shape(shape_bra)
 }
 
@@ -1047,6 +1058,7 @@ impl<'a> RHessElecInteractAPI for RHessRIJK<'a> {
         let mo_coeff = self.intmd["mo_coeff"].view();
         let mo_occ = self.intmd["mo_occ"].view();
         let cderi = self.cderi.view();
-        get_rijk_response_bra(&self.mol, &self.aux, cderi, mo_coeff, mo_occ, bra, self.scale_j, self.scale_k)
+        // TODO: batch size `72` should be tunable by max-memory.
+        get_rijk_response_bra(cderi, mo_coeff, mo_occ, bra, self.scale_j, self.scale_k, 72)
     }
 }
