@@ -905,58 +905,63 @@ pub fn get_rijk_response_bra(
     assert_eq!(bra1.shape()[1], nocc);
     let bra1 = bra1.reshape((nao, nocc, -1));
     let nprop = bra1.shape()[2];
+    let mut resp = rt::zeros_like(&bra1);
 
     // --- J contribution --- //
 
-    // - mo1_dm: [nao, nao, nprop]
-    // - mp1_dm_tp: [nao_tp, nprop]
-    // - itm_j_aux: [naux, nprop]
-    // - resp_tp_j: [nao_tp, nprop]
-    // - resp_ao_j: [nao, nao, nprop]
-    let dm1 = &bra1 % &mocc.t();
-    let dm1 = &dm1 + &dm1.swapaxes(0, 1);
-    let dm1_tp = pack_triu_tilde(dm1.view());
-    let itm_j_aux = cderi.t() % &dm1_tp;
-    let resp_tp_j: Tsr = 2.0 * &cderi % itm_j_aux;
-    let resp_ao_j = resp_tp_j.unpack_tri(Upper, FlagSymm::Sy);
-    let resp_bra_j = scale_j * (resp_ao_j % &mocc);
+    if scale_j != 0.0 {
+        // - mo1_dm: [nao, nao, nprop]
+        // - mp1_dm_tp: [nao_tp, nprop]
+        // - itm_j_aux: [naux, nprop]
+        // - resp_tp_j: [nao_tp, nprop]
+        // - resp_ao_j: [nao, nao, nprop]
+        let dm1 = &bra1 % &mocc.t();
+        let dm1 = &dm1 + &dm1.swapaxes(0, 1);
+        let dm1_tp = pack_triu_tilde(dm1.view());
+        let itm_j_aux = cderi.t() % &dm1_tp;
+        let resp_tp_j: Tsr = 2.0 * &cderi % itm_j_aux;
+        let resp_ao_j = resp_tp_j.unpack_tri(Upper, FlagSymm::Sy);
+        let resp_bra_j = scale_j * (resp_ao_j % &mocc);
+        resp += resp_bra_j;
+    }
 
     // --- K contribution --- //
 
-    let mut resp_bra_k = rt::zeros_like(&resp_bra_j);
-    for iaux_start in (0..naux).step_by(nbatch_aux) {
-        let iaux_end = (iaux_start + nbatch_aux).min(naux);
-        let slc = rt::slice!(iaux_start, iaux_end);
-        // Please note following `naux` is actually in batch, just overwriting the outside `naux` for
-        // convenience.
-        let naux = iaux_end - iaux_start;
+    if scale_k != 0.0 {
+        let mut resp_bra_k = rt::zeros_like(&resp);
+        for iaux_start in (0..naux).step_by(nbatch_aux) {
+            let iaux_end = (iaux_start + nbatch_aux).min(naux);
+            let slc = rt::slice!(iaux_start, iaux_end);
+            // Please note following `naux` is actually in batch, just overwriting the outside `naux` for
+            // convenience.
+            let naux = iaux_end - iaux_start;
 
-        // - cderi: [nao, nao, naux]
-        // - cderi_bxo: [nao, naux, nocc]
-        // - cderi_oxo: [nocc, naux, nocc]
-        // - cderi_box: [nao, nocc, naux]
-        let cderi = cderi.i((.., slc)).unpack_tri(Upper, FlagSymm::Sy);
-        let cderi_bxo = (cderi.reshape([nao, nao * naux]).t() % &mocc).into_shape([nao, naux, nocc]);
-        let cderi_oxo = (&mocc.t() % cderi_bxo.reshape([nao, naux * nocc])).into_shape([nocc, naux, nocc]);
+            // - cderi: [nao, nao, naux]
+            // - cderi_bxo: [nao, naux, nocc]
+            // - cderi_oxo: [nocc, naux, nocc]
+            // - cderi_box: [nao, nocc, naux]
+            let cderi = cderi.i((.., slc)).unpack_tri(Upper, FlagSymm::Sy);
+            let cderi_bxo = (cderi.reshape([nao, nao * naux]).t() % &mocc).into_shape([nao, naux, nocc]);
+            let cderi_oxo = (&mocc.t() % cderi_bxo.reshape([nao, naux * nocc])).into_shape([nocc, naux, nocc]);
 
-        for A in 0..nprop {
-            let bra1A = bra1.i((.., .., A));
-            let mut respkA = resp_bra_k.i_mut((.., .., A));
-            // k contribution part 0
-            // - cderi_bxo_1: [nao, naux, nocc]
-            // - einsum progress: uPj, iPj -> ui
-            let cderi_bxo_1 = (cderi.reshape([nao, nao * naux]).t() % &bra1A).into_shape([nao, naux, nocc]);
-            respkA -= cderi_bxo_1.reshape([nao, naux * nocc]) % cderi_oxo.reshape([nocc, naux * nocc]).t();
-            // k contribution part 1
-            // - cderi_oxo_1: [nocc, naux, nocc] (note it is iPj, where j from bra1, i from mocc)
-            // - einsum progress: uPj, iPj -> ui
-            let cderi_oxo_1 = (mocc.t() % cderi_bxo_1.reshape([nao, naux * nocc])).into_shape([nocc, naux, nocc]);
-            respkA -= cderi_bxo.reshape([nao, naux * nocc]) % cderi_oxo_1.reshape([nocc, naux * nocc]).t();
+            for A in 0..nprop {
+                let bra1A = bra1.i((.., .., A));
+                let mut respkA = resp_bra_k.i_mut((.., .., A));
+                // k contribution part 0
+                // - cderi_bxo_1: [nao, naux, nocc]
+                // - einsum progress: uPj, iPj -> ui
+                let cderi_bxo_1 = (cderi.reshape([nao, nao * naux]).t() % &bra1A).into_shape([nao, naux, nocc]);
+                respkA -= cderi_bxo_1.reshape([nao, naux * nocc]) % cderi_oxo.reshape([nocc, naux * nocc]).t();
+                // k contribution part 1
+                // - cderi_oxo_1: [nocc, naux, nocc] (note it is iPj, where j from bra1, i from mocc)
+                // - einsum progress: uPj, iPj -> ui
+                let cderi_oxo_1 = (mocc.t() % cderi_bxo_1.reshape([nao, naux * nocc])).into_shape([nocc, naux, nocc]);
+                respkA -= cderi_bxo.reshape([nao, naux * nocc]) % cderi_oxo_1.reshape([nocc, naux * nocc]).t();
+            }
         }
+        resp += scale_k * resp_bra_k;
     }
-    resp_bra_k *= scale_k;
 
-    let resp: Tsr = resp_bra_j + resp_bra_k;
     resp.into_shape(shape_bra)
 }
 
