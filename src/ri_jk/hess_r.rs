@@ -868,35 +868,72 @@ pub fn get_rik_deriv1_ao_naive(
     HashMap::from([("k1ao_aux0", k1ao_aux0), ("k1ao_aux1", k1ao_aux1)].map(|(k, v)| (k.to_string(), v)))
 }
 
-pub fn get_rijk_response_bra_naive(
+#[allow(clippy::too_many_arguments)]
+pub fn get_rijk_response_bra(
     mol: &CInt,
     aux: &CInt,
+    cderi: TsrView,
     mo_coeff: TsrView,
     mo_occ: TsrView,
-    bra: TsrView,
+    mo1_bra: TsrView,
     scale_j: f64,
     scale_k: f64,
 ) -> Tsr {
+    // notes on shape
+    // - cderi: [nao_tp, naux]
+    // - mo_coeff: [nao, nmo]
+    // - mo_occ: [nmo]
+    // - bra: [nao, nocc, ...]  (use nprop in program, and same to output shape)
+
+    // derived shapes
+    // - mocc: [nao, nocc]
+    // - oxb: [nocc, naux, nao] (occupied, auxiliary, basis)
+    // - oxo: [nocc, naux, nocc]
+    // - ......
+
+    // preparation
+    let nao = mo_coeff.shape()[0];
+    let naux = cderi.shape()[1];
+    let nao_tp = nao * (nao + 1) / 2;
+    assert_eq!(cderi.shape()[0], nao_tp);
+    let occidx = mo_occ.view().greater(0).into_vec();
+    let mocc = mo_coeff.bool_select(-1, &occidx);
+    let nocc = occidx.iter().filter(|&&x| x).count();
+    let device = mo_coeff.device().clone();
+
+    // reshape bra
+    let shape_bra = mo1_bra.shape();
+    let mo1_bra = mo1_bra.reshape((nao, nocc, -1));
+    let nprop = mo1_bra.shape()[2];
+
+    // --- J contribution --- //
+
+    // - mo1_dm: [nao, nao, nprop]
+    // - mp1_dm_tp: [nao_tp, nprop]
+    // - itm_j_aux: [naux, nprop]
+    // - resp_tp_j: [nao_tp, nprop]
+    // - resp_ao_j: [nao, nao, nprop]
+    let mo1_dm = &mo1_bra % &mocc.t();
+    let mo1_dm = &mo1_dm + &mo1_dm.swapaxes(0, 1);
+    let mo1_dm_tp = pack_triu_tilde(mo1_dm.view());
+    let itm_j_aux = cderi.t() % &mo1_dm_tp;
+    let resp_tp_j: Tsr = 2.0 * cderi % &itm_j_aux;
+    let resp_ao_j = resp_tp_j.unpack_tri(Upper, FlagSymm::Sy);
+    let resp_bra_j = scale_j * (resp_ao_j % &mocc);
+
+    // --- naive impl --- //
     // preparation
     let nao = mol.nao();
     let occidx = mo_occ.view().greater(0).into_vec();
     let mocc = mo_coeff.bool_select(-1, &occidx);
     let nocc = occidx.iter().filter(|&&x| x).count();
 
-    let int2c2e = hess_intor(aux, "int2c2e", "s1", None, bra.device());
+    let int2c2e = hess_intor(aux, "int2c2e", "s1", None, mo1_bra.device());
     let int2c2e_inv = rt::linalg::inv(int2c2e);
-    let int3c2e = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s1", None, bra.device());
+    let int3c2e = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s1", None, mo1_bra.device());
 
     // reshape bra to (nao, nocc, -1)
-    let bra_shape = bra.shape().to_vec();
-    check_shape!(bra_shape[0], nao, "bra.shape[0] should match nao");
-    check_shape!(bra_shape[1], nocc, "bra.shape[1] should match nocc");
-    let bra = bra.reshape((nao, nocc, -1));
-
-    // resp_bra_j
-    let subscripts = "uvP, PQ, klQ, kjA, lj, vi -> uiA";
-    let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
-    let resp_bra_j = rt::tblis::einsum(subscripts, operands, true, None);
+    let bra = mo1_bra.reshape((nao, nocc, -1));
 
     // resp_bra_k0
     let subscripts = "uvP, PQ, klQ, vjA, lj, ki -> uiA";
@@ -908,8 +945,8 @@ pub fn get_rijk_response_bra_naive(
     let operands = [int3c2e.view(), int2c2e_inv.view(), int3c2e.view(), bra.view(), mocc.view(), mocc.view()];
     let resp_bra_k1 = rt::tblis::einsum(subscripts, operands, true, None);
 
-    let resp: Tsr = 4.0 * scale_j * resp_bra_j - scale_k * (resp_bra_k0 + resp_bra_k1);
-    resp.into_shape(bra_shape)
+    let resp: Tsr = resp_bra_j - scale_k * (resp_bra_k0 + resp_bra_k1);
+    resp.into_shape(shape_bra)
 }
 
 /// Generate cderi and decomposition.
@@ -1009,6 +1046,7 @@ impl<'a> RHessElecInteractAPI for RHessRIJK<'a> {
     fn get_response_bra(&mut self, bra: TsrView) -> Tsr {
         let mo_coeff = self.intmd["mo_coeff"].view();
         let mo_occ = self.intmd["mo_occ"].view();
-        get_rijk_response_bra_naive(&self.mol, &self.aux, mo_coeff, mo_occ, bra, self.scale_j, self.scale_k)
+        let cderi = self.cderi.view();
+        get_rijk_response_bra(&self.mol, &self.aux, cderi, mo_coeff, mo_occ, bra, self.scale_j, self.scale_k)
     }
 }
