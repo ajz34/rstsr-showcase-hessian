@@ -53,13 +53,13 @@ def get_decomposed_skeleton(
     | TASK        | J | K |
     |-------------|---|---|
     | 20-1        |   |   |
-    | 20-2        |   |   |
-    | 20-3        |   |   |
-    | 11-1        |   |   |
+    | 20-2        | x | x |
+    | 20-3        | x | x |
+    | 11-1        | x | x |
     | 11-2        |   |   |
     | 11-3        |   |   |
     | 11-4        |   |   |
-    | 02-1        |   |   |
+    | 02-1        | x | x |
     | 02-2        | x | x |
     | 02-3a       | x | x |
     | 02-3b       | x | x |
@@ -399,6 +399,10 @@ def get_decomposed_skeleton(
     dbas_J20_3 = np.zeros((3, 3, nao, nao))
     dbas_J11_1 = np.zeros((3, 3, nao, naux))
     dbas_J02_1 = np.zeros((3, 3, naux))
+    dbas_K20_2 = np.zeros((3, 3, nao, nao))
+    dbas_K20_3 = np.zeros((3, 3, nao, nao))
+    dbas_K11_1 = np.zeros((3, 3, nao, naux))
+    dbas_K02_1 = np.zeros((3, 3, naux))
 
     for _sh0, _sh1, p0, p1 in aux_ranges:
 
@@ -427,25 +431,63 @@ def get_decomposed_skeleton(
         tmp1 = (j3c_ipip2 * dm0).sum(axis=(-1, -2))
         dbas_J02_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
+        # --- K preparation --- #
+        # tmp_k_ao[P,v,u] = einsum("Pij, vj, ui -> Pvu", llcd_eri_occ[P], mocc_2, mocc_2),
+        # built per-batch (Pij -> Pvu expansion) to bound memory to batch * nao^2.
+        # NOTE: tmp_k_ao is symmetric in its AO pair (v,u); this symmetry is what lets the
+        # K20/K11/K02 contractions below use plain elementwise `*` (the AO-pair order of the
+        # asymmetric 3c integrals does not need explicit swapping against tmp_k_ao).
+        tmp_k_ao = mocc_2 @ llcd_eri_occ[p0:p1] @ mocc_2.T
+
+        # --- K20-2 --- #
+        # dbas_K20_2 += einsum("tsPvu, Pvu -> tsvu", j3c_ipvip1, tmp_k_ao)
+        dbas_K20_2 += (j3c_ipvip1 * tmp_k_ao).sum(axis=-3)
+
+        # --- K20-3 --- #
+        # dbas_K20_3 += einsum("tsPvu, Pvu -> tsvu", j3c_ipip1, tmp_k_ao)
+        dbas_K20_3 += (j3c_ipip1 * tmp_k_ao).sum(axis=-3)
+
+        # --- K11-1 --- #
+        # dbas_K11_1[..., p0:p1] = einsum("tsPvu, Puv -> tsuP", j3c_ip1ip2, tmp_k_ao)
+        tmp1 = (j3c_ip1ip2 * tmp_k_ao).sum(axis=-2).swapaxes(-1, -2)
+        dbas_K11_1[..., p0:p1] = tmp1
+
+        # --- K02-1 --- #
+        # dbas_K02_1[..., p0:p1] = einsum("tsPvu, Pvu -> tsP", j3c_ipip2, tmp_k_ao[p0:p1])
+        dbas_K02_1[..., p0:p1] = (j3c_ipip2 * tmp_k_ao).sum(axis=(-1, -2))
+
     de_J20_2 = np.zeros((natm, natm, 3, 3))
     de_J20_3 = np.zeros((natm, natm, 3, 3))
     de_J11_1 = np.zeros((natm, natm, 3, 3))
     de_J02_1 = np.zeros((natm, natm, 3, 3))
-    # dbas_J20_2/3 are [t, s, v, u]; A -> u (axis -1), B -> v (axis -2).
+    de_K20_2 = np.zeros((natm, natm, 3, 3))
+    de_K20_3 = np.zeros((natm, natm, 3, 3))
+    de_K11_1 = np.zeros((natm, natm, 3, 3))
+    de_K02_1 = np.zeros((natm, natm, 3, 3))
+    # dbas_J20_2/3 and dbas_K20_2/3 are [t, s, v, u]; A -> u (axis -1), B -> v (axis -2).
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         de_J20_3[A, A] = 2 * dbas_J20_3[..., p0A:p1A].sum(axis=(-1, -2))
+        de_K20_3[A, A] = 2 * dbas_K20_3[..., p0A:p1A].sum(axis=(-1, -2))
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
             de_J20_2[A, B] = 2 * dbas_J20_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_K20_2[A, B] = 2 * dbas_K20_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
             de_J11_1[A, B] = 2 * dbas_J11_1[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K11_1[A, B] = 2 * dbas_K11_1[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
     de_J11_1 += de_J11_1.transpose(1, 0, 3, 2)
+    de_K11_1 += de_K11_1.transpose(1, 0, 3, 2)
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         de_J02_1[A, A] = dbas_J02_1[..., p0A:p1A].sum(axis=-1)
+        de_K02_1[A, A] = dbas_K02_1[..., p0A:p1A].sum(axis=-1)
     result["de_J20_2"] = de_J20_2
     result["de_J20_3"] = de_J20_3
     result["de_J11_1"] = de_J11_1
     result["de_J02_1"] = de_J02_1
+    result["de_K20_2"] = de_K20_2
+    result["de_K20_3"] = de_K20_3
+    result["de_K11_1"] = de_K11_1
+    result["de_K02_1"] = de_K02_1
 
     # endregion 4
 
