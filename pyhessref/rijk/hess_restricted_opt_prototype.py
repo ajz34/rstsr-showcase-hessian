@@ -64,9 +64,9 @@ def get_decomposed_skeleton(
     | 02-3a       | x | x |
     | 02-3b       | x | x |
     | 02-4        | x |   |
-    | 02-5        |   |   |
+    | 02-5        | x |   |
     | 02-6        | x | x |
-    | 02-7        |   |   |
+    | 02-7        | x |   |
     | 02-8        | x | x |
     | f1-aux0-1/2 |   |   |
     | f1-aux0-3/4 |   |   |
@@ -495,12 +495,32 @@ def get_decomposed_skeleton(
     dbas_J02_4 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, None, :] * j2c_inv
     dbas_J02_4 *= -1
 
+    # --- J02-5 --- #
+    # dbas_J02_5 = einsum("tP, PQ, sQ -> tsPQ", j3c_ip2_aux, j2c_inv, j3c_ip2_aux)
+    dbas_J02_5 = j3c_ip2_aux[:, None, :, None] * j3c_ip2_aux[None, :, None, :] * j2c_inv
+    dbas_J02_5 *= 0.5
+
+    # --- J02-7 --- #
+    # dbas_J02_7 = einsum("tP, sPR, R -> tsPR", j3c_ip2_aux, llcd_j2c_ip1, llcd_eri_aux)
+    tmp1 = llcd_j2c_ip1 * llcd_eri_aux[None, None, :]
+    dbas_J02_7 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, :, :]
+    dbas_J02_7 *= -1
+
+    # --- skeleton j2 (ip2-only) sum --- #
     de_J02_4 = np.zeros((natm, natm, 3, 3))
+    de_J02_5 = np.zeros((natm, natm, 3, 3))
+    de_J02_7 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
             de_J02_4[A, B] = dbas_J02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_J02_5[A, B] = dbas_J02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_J02_7[A, B] = dbas_J02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
     de_J02_4 += de_J02_4.transpose(1, 0, 3, 2)
+    de_J02_5 += de_J02_5.transpose(1, 0, 3, 2)
+    de_J02_7 += de_J02_7.transpose(1, 0, 3, 2)
     result["de_J02_4"] = de_J02_4
+    result["de_J02_5"] = de_J02_5
+    result["de_J02_7"] = de_J02_7
 
     # endregion 5
 
