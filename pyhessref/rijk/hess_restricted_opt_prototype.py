@@ -63,7 +63,7 @@ def get_decomposed_skeleton(
     | 02-2        | x | x |
     | 02-3a       | x | x |
     | 02-3b       | x | x |
-    | 02-4        |   |   |
+    | 02-4        | x |   |
     | 02-5        |   |   |
     | 02-6        | x | x |
     | 02-7        |   |   |
@@ -490,5 +490,29 @@ def get_decomposed_skeleton(
     result["de_K02_1"] = de_K02_1
 
     # endregion 4
+
+    # region 5. evaluation: ip2-only derivative
+
+    # --- shared ip2 intermediate --- #
+    # j3c_ip2_aux[t, P] = einsum("tPvu, vu -> tP", FULL3c_ip2, dm0)
+    j3c_ip2_aux = np.zeros((3, naux))
+    for _sh0, _sh1, p0, p1 in aux_ranges:
+        j3c_ip2_aux[:, p0:p1] = (FULL3c_ip2[:, p0:p1] * dm0).sum(axis=(-1, -2))  # use generator in real application
+
+    # --- J02-4 --- #
+    # tmp1[s, Q] = einsum("sRQ, R -> sQ", j2c_ip1, llcd_eri_aux)
+    tmp1 = - (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    # dbas_J02_4 = einsum("tP, PQ, sQ -> tsPQ", ip2_aux, j2c_inv, tmp1)
+    dbas_J02_4 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, None, :] * j2c_inv
+    dbas_J02_4 *= -1
+
+    de_J02_4 = np.zeros((natm, natm, 3, 3))
+    for A, (_, _, p0A, p1A) in enumerate(auxslices):
+        for B, (_, _, p0B, p1B) in enumerate(auxslices):
+            de_J02_4[A, B] = dbas_J02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+    de_J02_4 += de_J02_4.transpose(1, 0, 3, 2)
+    result["de_J02_4"] = de_J02_4
+
+    # endregion 5
 
     return result
