@@ -384,17 +384,6 @@ def get_decomposed_skeleton(
 
     # region 4. evaluation: one-shot derivative
 
-    # NOTE on AO index layout for `dbas_J20_*` / `dbas_K20_*` (shape `(3, 3, nao, nao)`):
-    # In 08-2-*.ipynb these are indexed `[t, s, u, v]` (i.e. `tsuv`), with the AO-pair
-    # following the native ERI order `u` (mu, first AO) then `v` (nu, second AO).
-    # Here in hess_restricted_opt_prototype.py we adopt the *opposite* AO-pair order
-    # `[t, s, v, u]` (i.e. `tsvu`), consistent with the `tsPvu` memory layout used
-    # throughout this file (the FULL3c_* integrals are sorted to `...Pvu`). Because
-    # the FULL3c_* tensors are already `tsPvu`, contracting with the symmetric `dm0`
-    # needs NO `swapaxes(-1, -2)` anymore -- the `vu` pair is already the wanted order.
-    # The commented einsum strings below are written in this `[t, s, v, u]` convention
-    # so they match the active code.
-
     dbas_J20_2 = np.zeros((3, 3, nao, nao))
     dbas_J20_3 = np.zeros((3, 3, nao, nao))
     dbas_J11_1 = np.zeros((3, 3, nao, naux))
@@ -409,14 +398,14 @@ def get_decomposed_skeleton(
         # --- J20-2 --- #
         j3c_ipvip1 = FULL3c_ipvip1[:, :, p0:p1]  # use generator in real application
         tmp1 = (j3c_ipvip1 * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
-        # dbas_J20_2 += einsum("tsvu, vu -> tsvu", tmp1, dm0)
-        dbas_J20_2 += tmp1 * dm0
+        # dbas_J20_2 += einsum("tsvu, uv -> tsuv", tmp1, dm0)
+        dbas_J20_2 += tmp1.swapaxes(-1, -2) * dm0
 
         # --- J20-3 --- #
         j3c_ipip1 = FULL3c_ipip1[:, :, p0:p1]  # use generator in real application
         tmp1 = (j3c_ipip1 * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
-        # dbas_J20_3 += einsum("tsvu, vu -> tsvu", tmp1, dm0)
-        dbas_J20_3 += tmp1 * dm0
+        # dbas_J20_3 += einsum("tsvu, uv -> tsuv", tmp1, dm0)
+        dbas_J20_3 += tmp1.swapaxes(-1, -2) * dm0
 
         # --- J11-1 --- #
         # NOTE: J11-1 is (basis_1st x aux_1st); the AO index `u` and aux index `P`
@@ -440,12 +429,12 @@ def get_decomposed_skeleton(
         tmp_k_ao = mocc_2 @ llcd_eri_occ[p0:p1] @ mocc_2.T
 
         # --- K20-2 --- #
-        # dbas_K20_2 += einsum("tsPvu, Pvu -> tsvu", j3c_ipvip1, tmp_k_ao)
-        dbas_K20_2 += (j3c_ipvip1 * tmp_k_ao).sum(axis=-3)
+        # dbas_K20_2 += einsum("tsPvu, Pvu -> tsuv", j3c_ipvip1, tmp_k_ao)
+        dbas_K20_2 += (j3c_ipvip1 * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
 
         # --- K20-3 --- #
-        # dbas_K20_3 += einsum("tsPvu, Pvu -> tsvu", j3c_ipip1, tmp_k_ao)
-        dbas_K20_3 += (j3c_ipip1 * tmp_k_ao).sum(axis=-3)
+        # dbas_K20_3 += einsum("tsPvu, Pvu -> tsuv", j3c_ipip1, tmp_k_ao)
+        dbas_K20_3 += (j3c_ipip1 * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
 
         # --- K11-1 --- #
         # dbas_K11_1[..., p0:p1] = einsum("tsPvu, Puv -> tsuP", j3c_ip1ip2, tmp_k_ao)
@@ -464,13 +453,13 @@ def get_decomposed_skeleton(
     de_K20_3 = np.zeros((natm, natm, 3, 3))
     de_K11_1 = np.zeros((natm, natm, 3, 3))
     de_K02_1 = np.zeros((natm, natm, 3, 3))
-    # dbas_J20_2/3 and dbas_K20_2/3 are [t, s, v, u]; A -> u (axis -1), B -> v (axis -2).
+    # dbas_J20_2/3 and dbas_K20_2/3 are [t, s, u, v]; A -> u (axis -2), B -> v (axis -1).
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
-        de_J20_3[A, A] = 2 * dbas_J20_3[..., p0A:p1A].sum(axis=(-1, -2))
-        de_K20_3[A, A] = 2 * dbas_K20_3[..., p0A:p1A].sum(axis=(-1, -2))
+        de_J20_3[A, A] = 2 * dbas_J20_3[..., p0A:p1A, :].sum(axis=(-1, -2))
+        de_K20_3[A, A] = 2 * dbas_K20_3[..., p0A:p1A, :].sum(axis=(-1, -2))
         for B, (_, _, p0B, p1B) in enumerate(aoslices):
-            de_J20_2[A, B] = 2 * dbas_J20_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_K20_2[A, B] = 2 * dbas_K20_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_J20_2[A, B] = 2 * dbas_J20_2[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K20_2[A, B] = 2 * dbas_K20_2[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
     for A, (_, _, p0A, p1A) in enumerate(aoslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
             de_J11_1[A, B] = 2 * dbas_J11_1[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
