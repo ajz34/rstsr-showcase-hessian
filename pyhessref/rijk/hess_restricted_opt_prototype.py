@@ -71,7 +71,7 @@ def get_decomposed_skeleton(
     | f1-aux0-1/2 |   |   |
     | f1-aux0-3/4 |   |   |
     | f1-aux1-1/2 |   |   |
-    | f1-aux1-3/4 |   |   |
+    | f1-aux1-3/4 | x | x |
     """
 
     # region 1. basic preparation
@@ -202,7 +202,7 @@ def get_decomposed_skeleton(
 
     # endregion 2
 
-    # region 3j. evaluation: non cderi derivative (j part)
+    # region 3j2. evaluation: non cderi derivative (j part)
 
     # --- J02-2 --- #
 
@@ -262,9 +262,37 @@ def get_decomposed_skeleton(
     result["de_J02_6"] = de_J02_6
     result["de_J02_8"] = de_J02_8
 
-    # endregion 3j
+    # endregion 3j2
 
-    # region 3k. evaluation: non cderi derivative (k part)
+    # region 3j1. evaluation: non cderi derivative (j1ao part)
+
+    # temporary area for j1 aux1-3
+    # tmp1 = np.einsum("tRQ, R -> tQ", j2c_ip1, llcd_eri_aux)
+    tmp1 = - (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    tmp2 = np.zeros((natm, 3, naux))
+    for A in range(mol.natm):
+        _, _, p0, p1 = auxslices[A]
+        slcA = slice(p0, p1)
+        tmp2[A, :, slcA] = tmp1[:, slcA]
+    tmp3 = solve_by_j2c(tmp2, left=False, flip=True)
+    j1ao_aux1_3_tp = tmp3.reshape(natm * 3, naux) @ cderi
+    j1ao_aux1_3 = lib.unpack_tril(j1ao_aux1_3_tp).reshape(natm, 3, nao, nao)
+    result["j1ao_aux1_3"] = j1ao_aux1_3
+
+    # temporary area for j1 aux1-4
+    tmp1 = lcd_j2c_ip1 * llcd_eri_aux
+    tmp2 = np.zeros((natm, 3, naux))
+    for A in range(mol.natm):
+        _, _, p0, p1 = auxslices[A]
+        slcA = slice(p0, p1)
+        tmp2[A] = tmp1[:, :, slcA].sum(axis=-1)
+    j1ao_aux1_4_tp = tmp2.reshape(natm * 3, naux) @ cderi
+    j1ao_aux1_4 = lib.unpack_tril(j1ao_aux1_4_tp).reshape(natm, 3, nao, nao)
+    result["j1ao_aux1_4"] = j1ao_aux1_4
+
+    # endregion 3j1
+
+    # region 3k2. evaluation: non cderi derivative (k part)
 
     # --- K02-2 --- #
 
@@ -321,6 +349,37 @@ def get_decomposed_skeleton(
     result["de_K02_6"] = de_K02_6
     result["de_K02_8"] = de_K02_8
 
-    # endregion 3k
+    # endregion 3k2
+
+    # region 3k1. evaluation: non cderi derivative (k1bra part)
+
+    # additional memory: tmp1 (aux * basis * occ)
+    k1bra_aux1_3 = np.zeros([natm, 3, nocc, nao])
+    for t in range(3):
+        # tmp1 = np.einsum("RQ, Rjk -> Qjk", j2c_ip1[t], llcd_eri_bra)
+        tmp1 = j2c_ip1[t].T @ llcd_eri_bra.reshape(naux, nocc * nao)
+        tmp1 = tmp1.reshape(naux, nocc, nao)
+        for A in range(mol.natm):
+            _, _, p0, p1 = auxslices[A]
+            slcA = slice(p0, p1)
+            # k1bra_aux1_3[A, t] = np.einsum("Qji, Qjk -> ik", llcd_eri_occ[slcA], tmp1[slcA])
+            k1bra_aux1_3[A, t] = llcd_eri_occ[slcA].reshape(-1, nocc).T @ tmp1[slcA].reshape(-1, nao)
+    k1bra_aux1_3 *= occ_invsqrt[None, None, :, None]
+    result["k1bra_aux1_3"] = k1bra_aux1_3
+
+    # additional memory: tmp1 (aux * occ * occ)
+    k1bra_aux1_4 = np.zeros([natm, 3, nocc, nao])
+    for t in range(3):
+        # tmp1 = np.einsum("Qij, QR -> Rij", llcd_eri_occ, j2c_ip1[t])
+        tmp1 = (j2c_ip1[t].T @ llcd_eri_occ.reshape(naux, nocc * nocc)).reshape(naux, nocc, nocc)
+        for A in range(mol.natm):
+            _, _, p0, p1 = auxslices[A]
+            slcA = slice(p0, p1)
+            # k1bra_aux1_4[A, t] = np.einsum("Rji, Rjk -> ik", tmp1[slcA], llcd_eri_bra[slcA])
+            k1bra_aux1_4[A, t] = tmp1[slcA].reshape(-1, nocc).T @ llcd_eri_bra[slcA].reshape(-1, nao)
+    k1bra_aux1_4 *= occ_invsqrt[None, None, :, None]
+    result["k1bra_aux1_4"] = k1bra_aux1_4
+
+    # endregion 3k1
 
     return result

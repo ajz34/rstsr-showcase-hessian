@@ -781,6 +781,8 @@ def get_rij_deriv1_ao_naive(
     dm0 = get_dm0_restricted(mo_coeff, mo_occ)
     aoslices = mol.aoslice_by_atom()
     auxslices = aux.aoslice_by_atom()
+    occidx = mo_occ > 0
+    mocc = mo_coeff[:, occidx]
 
     int2c2e = aux.intor("int2c2e")
     int2c2e_inv = np.linalg.inv(int2c2e)
@@ -794,13 +796,17 @@ def get_rij_deriv1_ao_naive(
     # --- aux derivative 0 --- #
 
     j1ao_aux0 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux0_1 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux0_2 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux0_3 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux0_4 = np.zeros([natm, 3, nao, nao])
     for A in range(natm):
         _, _, p0, p1 = aoslices[A]
         slc = slice(p0, p1)
         # (10|0)(0|00)
-        j1ao_aux0[A, :, slc, :] -= scr1[:, slc, :]
+        j1ao_aux0_1[A, :, slc, :] -= scr1[:, slc, :]
         # (01|0)(0|00) (can be symmetrized)
-        j1ao_aux0[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
+        j1ao_aux0_2[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
         # (00|0)(0|10), (00|0)(0|01)
         scr2 = einsum(
             "tklP, PQ, uvQ, kl -> tuv",
@@ -809,16 +815,22 @@ def get_rij_deriv1_ao_naive(
             int3c2e,
             dm0[slc],
         )
-        j1ao_aux0[A] -= 2 * scr2
+        j1ao_aux0_3[A] -= scr2
+        j1ao_aux0_4[A] -= scr2
+    j1ao_aux0 = j1ao_aux0_1 + j1ao_aux0_2 + j1ao_aux0_3 + j1ao_aux0_4
 
     # --- aux derivative 1 --- #
 
     j1ao_aux1 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux1_1 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux1_2 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux1_3 = np.zeros([natm, 3, nao, nao])
+    j1ao_aux1_4 = np.zeros([natm, 3, nao, nao])
     for A in range(natm):
         _, _, p0, p1 = auxslices[A]
         slc = slice(p0, p1)
         # (00|1)(0|00)
-        j1ao_aux1[A] -= einsum(
+        j1ao_aux1_1[A] -= einsum(
             "tuvP, PQ, klQ, kl -> tuv",
             int3c2e_ip2[:, :, :, slc],
             int2c2e_inv[slc, :],
@@ -826,7 +838,7 @@ def get_rij_deriv1_ao_naive(
             dm0,
         )
         # (00|0)(1|00)
-        j1ao_aux1[A] -= einsum(
+        j1ao_aux1_2[A] -= einsum(
             "uvP, PQ, tklQ, kl -> tuv",
             int3c2e,
             int2c2e_inv[:, slc],
@@ -834,7 +846,7 @@ def get_rij_deriv1_ao_naive(
             dm0,
         )
         # (00|0)(1|0)(0|00)
-        j1ao_aux1[A] += einsum(
+        j1ao_aux1_3[A] += einsum(
             "uvP, PQ, tQR, RS, klS, kl -> tuv",
             int3c2e,
             int2c2e_inv[:, slc],
@@ -844,7 +856,7 @@ def get_rij_deriv1_ao_naive(
             dm0,
         )
         # (00|0)(0|1)(0|00)
-        j1ao_aux1[A] += einsum(
+        j1ao_aux1_4[A] += einsum(
             "uvP, PQ, tRQ, RS, klS, kl -> tuv",
             int3c2e,
             int2c2e_inv,
@@ -853,8 +865,28 @@ def get_rij_deriv1_ao_naive(
             int3c2e,
             dm0,
         )
+    j1ao_aux1 = j1ao_aux1_1 + j1ao_aux1_2 + j1ao_aux1_3 + j1ao_aux1_4
 
-    return {"j1ao_aux0": j1ao_aux0, "j1ao_aux1": j1ao_aux1}
+    return {
+        "j1ao_aux0": j1ao_aux0,
+        "j1ao_aux1": j1ao_aux1,
+        "j1ao_aux0_1": j1ao_aux0_1,
+        "j1ao_aux0_2": j1ao_aux0_2,
+        "j1ao_aux0_3": j1ao_aux0_3,
+        "j1ao_aux0_4": j1ao_aux0_4,
+        "j1ao_aux1_1": j1ao_aux1_1,
+        "j1ao_aux1_2": j1ao_aux1_2,
+        "j1ao_aux1_3": j1ao_aux1_3,
+        "j1ao_aux1_4": j1ao_aux1_4,
+        "j1bra_aux0_1": mocc.T @ j1ao_aux0_1,
+        "j1bra_aux0_2": mocc.T @ j1ao_aux0_2,
+        "j1bra_aux0_3": mocc.T @ j1ao_aux0_3,
+        "j1bra_aux0_4": mocc.T @ j1ao_aux0_4,
+        "j1bra_aux1_1": mocc.T @ j1ao_aux1_1,
+        "j1bra_aux1_2": mocc.T @ j1ao_aux1_2,
+        "j1bra_aux1_3": mocc.T @ j1ao_aux1_3,
+        "j1bra_aux1_4": mocc.T @ j1ao_aux1_4,
+    }
 
 
 def get_rik_deriv1_ao_naive(
@@ -900,33 +932,43 @@ def get_rik_deriv1_ao_naive(
     scr1 = einsum("tuvP, PQ, klQ, vi, li -> tuk", int3c2e_ip1, int2c2e_inv, int3c2e, mocc_2, mocc_2)
 
     k1ao_aux0 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux0_1 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux0_2 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux0_3 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux0_4 = np.zeros([natm, 3, nao, nao])
     for A in range(natm):
         _, _, p0, p1 = aoslices[A]
         slc = slice(p0, p1)
         # (10|0)(0|00)
-        k1ao_aux0[A, :, slc, :] -= scr1[:, slc, :]
+        k1ao_aux0_1[A, :, slc, :] -= scr1[:, slc, :]
         # (01|0)(0|00)
-        k1ao_aux0[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
+        k1ao_aux0_2[A, :, :, slc] -= scr1[:, slc, :].swapaxes(-1, -2)
         # (00|0)(0|10), (00|0)(0|01)
         scr2 = einsum("tklP, PQ, uvQ, ki, ui -> tlv", int3c2e_ip1[:, slc], int2c2e_inv, int3c2e, mocc_2[slc], mocc_2)
-        k1ao_aux0[A] -= scr2 + scr2.swapaxes(-1, -2)
+        k1ao_aux0_3[A] -= scr2
+        k1ao_aux0_4[A] -= scr2.swapaxes(-1, -2)
+    k1ao_aux0 = k1ao_aux0_1 + k1ao_aux0_2 + k1ao_aux0_3 + k1ao_aux0_4
 
     # --- aux derivative 1 --- #
 
     k1ao_aux1 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux1_1 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux1_2 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux1_3 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux1_4 = np.zeros([natm, 3, nao, nao])
     for A in range(natm):
         _, _, p0, p1 = auxslices[A]
         slc = slice(p0, p1)
         # (00|1)(0|00)
-        k1ao_aux1[A] -= einsum(
+        k1ao_aux1_1[A] -= einsum(
             "tuvP, PQ, klQ, vi, li -> tuk", int3c2e_ip2[:, :, :, slc], int2c2e_inv[slc, :], int3c2e, mocc_2, mocc_2
         )
         # (00|0)(1|00)
-        k1ao_aux1[A] -= einsum(
+        k1ao_aux1_2[A] -= einsum(
             "uvP, PQ, tklQ, vi, li -> tuk", int3c2e, int2c2e_inv[:, slc], int3c2e_ip2[:, :, :, slc], mocc_2, mocc_2
         )
         # (00|0)(1|0)(0|00)
-        k1ao_aux1[A] += einsum(
+        k1ao_aux1_3[A] += einsum(
             "uvP, PQ, tQR, RS, klS, vi, li -> tuk",
             int3c2e,
             int2c2e_inv[:, slc],
@@ -937,7 +979,7 @@ def get_rik_deriv1_ao_naive(
             mocc_2,
         )
         # (00|0)(0|1)(0|00)
-        k1ao_aux1[A] += einsum(
+        k1ao_aux1_4[A] += einsum(
             "uvP, PQ, tRQ, RS, klS, vi, li -> tuk",
             int3c2e,
             int2c2e_inv,
@@ -947,8 +989,28 @@ def get_rik_deriv1_ao_naive(
             mocc_2,
             mocc_2,
         )
+    k1ao_aux1 = k1ao_aux1_1 + k1ao_aux1_2 + k1ao_aux1_3 + k1ao_aux1_4
 
-    return {"k1ao_aux0": k1ao_aux0, "k1ao_aux1": k1ao_aux1}
+    return {
+        "k1ao_aux0": k1ao_aux0,
+        "k1ao_aux1": k1ao_aux1,
+        "k1ao_aux0_1": k1ao_aux0_1,
+        "k1ao_aux0_2": k1ao_aux0_2,
+        "k1ao_aux0_3": k1ao_aux0_3,
+        "k1ao_aux0_4": k1ao_aux0_4,
+        "k1ao_aux1_1": k1ao_aux1_1,
+        "k1ao_aux1_2": k1ao_aux1_2,
+        "k1ao_aux1_3": k1ao_aux1_3,
+        "k1ao_aux1_4": k1ao_aux1_4,
+        "k1bra_aux0_1": mocc.T @ k1ao_aux0_1,
+        "k1bra_aux0_2": mocc.T @ k1ao_aux0_2,
+        "k1bra_aux0_3": mocc.T @ k1ao_aux0_3,
+        "k1bra_aux0_4": mocc.T @ k1ao_aux0_4,
+        "k1bra_aux1_1": mocc.T @ k1ao_aux1_1,
+        "k1bra_aux1_2": mocc.T @ k1ao_aux1_2,
+        "k1bra_aux1_3": mocc.T @ k1ao_aux1_3,
+        "k1bra_aux1_4": mocc.T @ k1ao_aux1_4,
+    }
 
 
 def get_rijk_response_bra_naive(
