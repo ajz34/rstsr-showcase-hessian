@@ -268,7 +268,7 @@ def get_decomposed_skeleton(
 
     # temporary area for j1 aux1-3
     # tmp1 = np.einsum("tRQ, R -> tQ", j2c_ip1, llcd_eri_aux)
-    tmp1 = - (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    tmp1 = -(j2c_ip1 * llcd_eri_aux).sum(axis=-1)
     tmp2 = np.zeros((natm, 3, naux))
     for A in range(mol.natm):
         _, _, p0, p1 = auxslices[A]
@@ -381,5 +381,23 @@ def get_decomposed_skeleton(
     result["k1bra_aux1_4"] = k1bra_aux1_4
 
     # endregion 3k1
+
+    # region 4. evaluation: one-shot derivative
+
+    dbas_J02_1 = np.zeros((3, 3, naux))
+
+    for _sh0, _sh1, p0, p1 in aux_ranges:
+
+        # --- J02-1 --- #
+        j3c_ipip2 = FULL3c_ipip2[:, :, p0:p1]  # use generator in real application
+        tmp1 = (j3c_ipip2 * dm0).sum(axis=(-1, -2))
+        dbas_J02_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
+
+    de_J02_1 = np.zeros((natm, natm, 3, 3))
+    for A, (_, _, p0A, p1A) in enumerate(auxslices):
+        de_J02_1[A, A] = dbas_J02_1[..., p0A:p1A].sum(axis=-1)
+    result["de_J02_1"] = de_J02_1
+
+    # endregion 4
 
     return result

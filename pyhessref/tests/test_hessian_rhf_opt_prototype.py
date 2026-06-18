@@ -56,5 +56,3 @@ class TestHessianRHFOptPrototype(unittest.TestCase):
         for key in sorted(result.keys()):
             print(f"{key:<20}, val {lib.fp(result[key]):>20.12f}, ref {lib.fp(ref_dict[key]):>20.12f}")
             self.assertTrue(np.allclose(result[key], ref_dict[key], rtol=1e-4, atol=1e-6))
-
-
