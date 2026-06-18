@@ -48,18 +48,13 @@ class TestHessianRHFOptPrototype(unittest.TestCase):
 
         cderi = mf.with_df._cderi
         result = get_decomposed_skeleton(mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72, atm_list=None)
-        ref_j2 = get_decomposed_rij_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
-        ref_k2 = get_decomposed_rik_skeleton_deriv2_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         ref_j1ao = get_rij_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         ref_k1ao = get_rik_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
-        # concate the reference values into a single dict
-        ref_dict = {}
-        ref_dict.update(ref_j2)
-        ref_dict.update(ref_k2)
+        ref_dict = dict(ref_value).copy()
         ref_dict.update(ref_j1ao)
         ref_dict.update(ref_k1ao)
-        for key in ["de_J02_2"]:
-            print(f"{key:>20}, val {lib.fp(result[key]):>20.12f}, ref {lib.fp(ref_dict[key]):>20.12f}")
+        for key in sorted(result.keys()):
+            print(f"{key:<20}, val {lib.fp(result[key]):>20.12f}, ref {lib.fp(ref_dict[key]):>20.12f}")
             self.assertTrue(np.allclose(result[key], ref_dict[key], rtol=1e-4, atol=1e-6))
 
 

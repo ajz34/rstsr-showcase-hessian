@@ -12,6 +12,7 @@ from pyhessref.util import get_dm0_restricted
 
 # override einsum for some efficiency
 einsum = partial(np.einsum, optimize=True)
+np.einsum = partial(np.einsum, optimize=True)
 
 
 def gen_solve_by_j2c(int2c):
@@ -46,7 +47,34 @@ def get_decomposed_skeleton(
     nbatch_aux: int,
     atm_list: list[int] | None = None,
 ) -> dict[str, np.ndarray]:
-    # === 1. basic preparation === #
+    # === TASKS TO DO === #
+
+    """
+    | TASK        | J | K |
+    |-------------|---|---|
+    | 20-1        |   |   |
+    | 20-2        |   |   |
+    | 20-3        |   |   |
+    | 11-1        |   |   |
+    | 11-2        |   |   |
+    | 11-3        |   |   |
+    | 11-4        |   |   |
+    | 02-1        |   |   |
+    | 02-2        | x | x |
+    | 02-3a       | x | x |
+    | 02-3b       | x | x |
+    | 02-4        |   |   |
+    | 02-5        |   |   |
+    | 02-6        | x | x |
+    | 02-7        |   |   |
+    | 02-8        | x | x |
+    | f1-aux0-1/2 |   |   |
+    | f1-aux0-3/4 |   |   |
+    | f1-aux1-1/2 |   |   |
+    | f1-aux1-3/4 |   |   |
+    """
+
+    # region 1. basic preparation
 
     # --- 1.1 really basic --- #
 
@@ -111,7 +139,9 @@ def get_decomposed_skeleton(
     FULL3c_ip1ip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ip1ip2))
     FULL3c_ipip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipip2))
 
-    # === 2. common tensor preparation === #
+    # endregion 1
+
+    # region 2. common tensor preparation
 
     # --- 2.1 solve_by_j2c --- #
 
@@ -131,15 +161,18 @@ def get_decomposed_skeleton(
     lcd_eri_bra = np.empty([naux, nocc, nao])
     for p in range(naux):  # PAR-ITER
         tmp1 = lib.unpack_tril(cderi[p])
-        lcd_eri_bra[p] = mocc.T @ tmp1
-        lcd_eri_occ[p] = lcd_eri_bra[p] @ mocc
+        lcd_eri_bra[p] = mocc_2.T @ tmp1
+        lcd_eri_occ[p] = lcd_eri_bra[p] @ mocc_2
 
     # llcd_eri_aux          [naux]                          solved_itm_j
     # llcd_eri_occ          [naux, nocc, nocc]              solved_itm_k_occ
     # llcd_eri_bra          [naux, nocc, nao]               solved_cderi_xob
+    # fold_eri_aux          [naux, naux]                    solved_itm_k_aux
     llcd_eri_aux = solve_by_j2c(lcd_eri_aux, left=True, flip=True)
     llcd_eri_occ = solve_by_j2c(lcd_eri_occ, left=True, flip=True)
     llcd_eri_bra = solve_by_j2c(lcd_eri_bra, left=True, flip=True)
+    # fold_eri_aux = np.einsum("Pij, Qij -> PQ", llcd_eri_occ, llcd_eri_occ)
+    fold_eri_aux = llcd_eri_occ.reshape(naux, -1) @ llcd_eri_occ.reshape(naux, -1).T
 
     # --- 2.3 2c related --- #
 
@@ -155,17 +188,139 @@ def get_decomposed_skeleton(
     j2c_ipip1 = np.ascontiguousarray(einsum("tsPQ -> tsQP", j2c_ipip1))
     j2c_ip1ip2 = np.ascontiguousarray(einsum("tsPQ -> tsQP", j2c_ip1ip2))
 
-    # === 3. evaluation: ip2 === #
+    rcd_j2c_ip1 = np.asarray([solve_by_j2c(m, left=False, flip=True) for m in j2c_ip1])
+    rrcd_j2c_ip1 = np.asarray([solve_by_j2c(m, left=False, flip=False) for m in rcd_j2c_ip1])
+    lcd_j2c_ip1 = np.asarray([solve_by_j2c(m, left=True, flip=False) for m in j2c_ip1])
+    llcd_j2c_ip1 = np.asarray([solve_by_j2c(m, left=True, flip=True) for m in lcd_j2c_ip1])
 
-    # --- 3.1 J02_2 --- #
+    assert np.allclose(rrcd_j2c_ip1, -llcd_j2c_ip1.swapaxes(-1, -2))
+    assert np.allclose(rcd_j2c_ip1, -lcd_j2c_ip1.swapaxes(-1, -2))
+    # we should try disable one of the cholesky solve, since for ip1, solve left/right is asymmetric
+    del rcd_j2c_ip1, rrcd_j2c_ip1
+
+    j2c_inv = solve_by_j2c(solve_by_j2c(np.eye(naux), left=True, flip=True), left=False, flip=False)
+
+    # endregion 2
+
+    # region 3j. evaluation: non cderi derivative (j part)
+
+    # --- J02-2 --- #
 
     # dbas_J02_2 = np.einsum("P, tsPQ, Q -> tsP", llcd_eri_aux, j2c_ipip1, llcd_eri_aux)
     dbas_J02_2 = (j2c_ipip1 * llcd_eri_aux).sum(axis=-1) * llcd_eri_aux
+    dbas_J02_2 *= -1
+
+    # --- J02-3a --- #
+
+    # dbas_J02_3a = np.einsum("P, tsPQ, Q -> tsPQ", llcd_eri_aux, j2c_ip1ip2, llcd_eri_aux)
+    dbas_J02_3a = j2c_ip1ip2 * llcd_eri_aux[:, None] * llcd_eri_aux[None, :]
+    dbas_J02_3a *= -0.5
+
+    # --- J02-3b --- #
+
+    # dbas_J02_3b = np.einsum("P, tRP, sRQ, Q -> tsPQ", llcd_eri_aux, lcd_j2c_ip1, lcd_j2c_ip1, llcd_eri_aux)
+    tmp1 = lcd_j2c_ip1 * llcd_eri_aux
+    dbas_J02_3b = tmp1[:, None].swapaxes(-1, -2) @ tmp1[None, :]
+    dbas_J02_3b *= 0.5
+
+    # --- J02-6 --- #
+
+    # dbas_J02_6 = einsum("R, tRP, PQ, sSQ, S -> tsPQ", llcd_eri_aux, j2c_ip1, j2c_inv, j2c_ip1, llcd_eri_aux)
+    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    dbas_J02_6 = tmp1[:, None, :, None] * j2c_inv * tmp1[None, :, None, :]
+    dbas_J02_6 *= 0.5
+
+    # --- J02-8 --- #
+
+    # dbas_J02_8 = np.einsum("R, tPR, sPQ, Q -> tsPQ", llcd_eri_aux, j2c_ip1, llcd_j2c_ip1, llcd_eri_aux)
+    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    tmp2 = llcd_j2c_ip1 * llcd_eri_aux
+    dbas_J02_8 = tmp1[:, None, :, None] * tmp2
+    dbas_J02_8 *= -1
+
+    # --- skeleton j2 sum --- #
 
     de_J02_2 = np.zeros((natm, natm, 3, 3))
-    for A, (_, _, p0, p1) in enumerate(auxslices):
-        # de_J02_2[A, A] += -1 * np.einsum("tsQ -> ts", dbas_J02_2[:, :, p0:p1])
-        de_J02_2[A, A] += -1 * dbas_J02_2[..., p0:p1].sum(axis=-1)
+    de_J02_3a = np.zeros((natm, natm, 3, 3))
+    de_J02_3b = np.zeros((natm, natm, 3, 3))
+    de_J02_6 = np.zeros((natm, natm, 3, 3))
+    de_J02_8 = np.zeros((natm, natm, 3, 3))
+    for A, (_, _, p0A, p1A) in enumerate(auxslices):
+        de_J02_2[A, A] = dbas_J02_2[..., p0A:p1A].sum(axis=-1)
+        for B, (_, _, p0B, p1B) in enumerate(auxslices):
+            de_J02_3a[A, B] = dbas_J02_3a[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_J02_3b[A, B] = dbas_J02_3b[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_J02_6[A, B] = dbas_J02_6[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_J02_8[A, B] = dbas_J02_8[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+    de_J02_3a += de_J02_3a.transpose(1, 0, 3, 2)
+    de_J02_3b += de_J02_3b.transpose(1, 0, 3, 2)
+    de_J02_6 += de_J02_6.transpose(1, 0, 3, 2)
+    de_J02_8 += de_J02_8.transpose(1, 0, 3, 2)
     result["de_J02_2"] = de_J02_2
+    result["de_J02_3a"] = de_J02_3a
+    result["de_J02_3b"] = de_J02_3b
+    result["de_J02_6"] = de_J02_6
+    result["de_J02_8"] = de_J02_8
+
+    # endregion 3j
+
+    # region 3k. evaluation: non cderi derivative (k part)
+
+    # --- K02-2 --- #
+
+    # dbas_K02_2 = np.einsum("PQ, tsPQ -> tsQ", fold_eri_aux, j2c_ipip1)
+    # dbas_K02_2 = np.einsum("PQ, tsPQ -> tsP", fold_eri_aux, j2c_ipip1)
+    dbas_K02_2 = (j2c_ipip1 * fold_eri_aux).sum(axis=-1)
+    dbas_K02_2 *= -1
+
+    # --- K02-3a --- #
+
+    # dbas_K02_3a = np.einsum("PQ, tsPQ -> tsPQ", fold_eri_aux, j2c_ip1ip2)
+    dbas_K02_3a = j2c_ip1ip2 * fold_eri_aux
+    dbas_K02_3a *= -0.5
+
+    # --- K02-3b --- #
+
+    # dbas_K02_3b = np.einsum("PQ, tRP, sRQ -> tsPQ", fold_eri_aux, lcd_j2c_ip1, lcd_j2c_ip1)
+    dbas_K02_3b = lcd_j2c_ip1[:, None].swapaxes(-1, -2) @ lcd_j2c_ip1[None, :] * fold_eri_aux
+    dbas_K02_3b *= 0.5
+
+    # --- K02-6 --- #
+
+    # dbas_K02_6 = - np.einsum("RS, tRP, PQ, sSQ -> tsPQ", fold_eri_aux, j2c_ip1, j2c_inv, j2c_ip1)
+    dbas_K02_6 = j2c_ip1[:, None] @ fold_eri_aux @ j2c_ip1[None, :] * j2c_inv
+    dbas_K02_6 *= -0.5
+
+    # --- K02-8 --- #
+
+    # dbas_K02_8 = np.einsum("PS, tQP, sQS -> tsPQ", fold_eri_aux, llcd_j2c_ip1, j2c_ip1)
+    dbas_K02_8 = fold_eri_aux @ j2c_ip1[None, :].swapaxes(-1, -2) * llcd_j2c_ip1[:, None].swapaxes(-1, -2)
+    dbas_K02_8 *= -1
+
+    # --- skeleton k2 sum --- #
+
+    de_K02_2 = np.zeros((natm, natm, 3, 3))
+    de_K02_3a = np.zeros((natm, natm, 3, 3))
+    de_K02_3b = np.zeros((natm, natm, 3, 3))
+    de_K02_6 = np.zeros((natm, natm, 3, 3))
+    de_K02_8 = np.zeros((natm, natm, 3, 3))
+    for A, (_, _, p0A, p1A) in enumerate(auxslices):
+        de_K02_2[A, A] = dbas_K02_2[..., p0A:p1A].sum(axis=-1)
+        for B, (_, _, p0B, p1B) in enumerate(auxslices):
+            de_K02_3a[A, B] = dbas_K02_3a[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K02_3b[A, B] = dbas_K02_3b[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K02_6[A, B] = dbas_K02_6[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K02_8[A, B] = dbas_K02_8[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+    de_K02_3a += de_K02_3a.transpose(1, 0, 3, 2)
+    de_K02_3b += de_K02_3b.transpose(1, 0, 3, 2)
+    de_K02_6 += de_K02_6.transpose(1, 0, 3, 2)
+    de_K02_8 += de_K02_8.transpose(1, 0, 3, 2)
+    result["de_K02_2"] = de_K02_2
+    result["de_K02_3a"] = de_K02_3a
+    result["de_K02_3b"] = de_K02_3b
+    result["de_K02_6"] = de_K02_6
+    result["de_K02_8"] = de_K02_8
+
+    # endregion 3k
 
     return result
