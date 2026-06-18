@@ -384,18 +384,67 @@ def get_decomposed_skeleton(
 
     # region 4. evaluation: one-shot derivative
 
+    # NOTE on AO index layout for `dbas_J20_*` / `dbas_K20_*` (shape `(3, 3, nao, nao)`):
+    # In 08-2-*.ipynb these are indexed `[t, s, u, v]` (i.e. `tsuv`), with the AO-pair
+    # following the native ERI order `u` (mu, first AO) then `v` (nu, second AO).
+    # Here in hess_restricted_opt_prototype.py we adopt the *opposite* AO-pair order
+    # `[t, s, v, u]` (i.e. `tsvu`), consistent with the `tsPvu` memory layout used
+    # throughout this file (the FULL3c_* integrals are sorted to `...Pvu`). Because
+    # the FULL3c_* tensors are already `tsPvu`, contracting with the symmetric `dm0`
+    # needs NO `swapaxes(-1, -2)` anymore -- the `vu` pair is already the wanted order.
+    # The commented einsum strings below are written in this `[t, s, v, u]` convention
+    # so they match the active code.
+
+    dbas_J20_2 = np.zeros((3, 3, nao, nao))
+    dbas_J20_3 = np.zeros((3, 3, nao, nao))
+    dbas_J11_1 = np.zeros((3, 3, nao, naux))
     dbas_J02_1 = np.zeros((3, 3, naux))
 
     for _sh0, _sh1, p0, p1 in aux_ranges:
+
+        # --- J20-2 --- #
+        j3c_ipvip1 = FULL3c_ipvip1[:, :, p0:p1]  # use generator in real application
+        tmp1 = (j3c_ipvip1 * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+        # dbas_J20_2 += einsum("tsvu, vu -> tsvu", tmp1, dm0)
+        dbas_J20_2 += tmp1 * dm0
+
+        # --- J20-3 --- #
+        j3c_ipip1 = FULL3c_ipip1[:, :, p0:p1]  # use generator in real application
+        tmp1 = (j3c_ipip1 * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+        # dbas_J20_3 += einsum("tsvu, vu -> tsvu", tmp1, dm0)
+        dbas_J20_3 += tmp1 * dm0
+
+        # --- J11-1 --- #
+        # NOTE: J11-1 is (basis_1st x aux_1st); the AO index `u` and aux index `P`
+        # are different species, so it keeps the notebook `tsuP` layout (no tsvu swap).
+        j3c_ip1ip2 = FULL3c_ip1ip2[:, :, p0:p1]  # use generator in real application
+        # dbas_J11_1[..., p0:p1] = einsum("tsPvu, uv, P -> tsuP", j3c_ip1ip2, dm0, llcd_eri_aux[p0:p1])
+        tmp1 = (j3c_ip1ip2 * dm0).sum(axis=-2).swapaxes(-1, -2)
+        dbas_J11_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
         # --- J02-1 --- #
         j3c_ipip2 = FULL3c_ipip2[:, :, p0:p1]  # use generator in real application
         tmp1 = (j3c_ipip2 * dm0).sum(axis=(-1, -2))
         dbas_J02_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
+    de_J20_2 = np.zeros((natm, natm, 3, 3))
+    de_J20_3 = np.zeros((natm, natm, 3, 3))
+    de_J11_1 = np.zeros((natm, natm, 3, 3))
     de_J02_1 = np.zeros((natm, natm, 3, 3))
+    # dbas_J20_2/3 are [t, s, v, u]; A -> u (axis -1), B -> v (axis -2).
+    for A, (_, _, p0A, p1A) in enumerate(aoslices):
+        de_J20_3[A, A] = 2 * dbas_J20_3[..., p0A:p1A].sum(axis=(-1, -2))
+        for B, (_, _, p0B, p1B) in enumerate(aoslices):
+            de_J20_2[A, B] = 2 * dbas_J20_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+    for A, (_, _, p0A, p1A) in enumerate(aoslices):
+        for B, (_, _, p0B, p1B) in enumerate(auxslices):
+            de_J11_1[A, B] = 2 * dbas_J11_1[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+    de_J11_1 += de_J11_1.transpose(1, 0, 3, 2)
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         de_J02_1[A, A] = dbas_J02_1[..., p0A:p1A].sum(axis=-1)
+    result["de_J20_2"] = de_J20_2
+    result["de_J20_3"] = de_J20_3
+    result["de_J11_1"] = de_J11_1
     result["de_J02_1"] = de_J02_1
 
     # endregion 4
