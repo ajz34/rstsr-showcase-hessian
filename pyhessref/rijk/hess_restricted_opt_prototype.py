@@ -64,9 +64,9 @@ def get_decomposed_skeleton(
     | 02-3a       | x | x |
     | 02-3b       | x | x |
     | 02-4        | x | x |
-    | 02-5        | x |   |
+    | 02-5        | x | x |
     | 02-6        | x | x |
-    | 02-7        | x |   |
+    | 02-7        | x | x |
     | 02-8        | x | x |
     | f1-aux0-1/2 |   |   |
     | f1-aux0-3/4 |   |   |
@@ -522,25 +522,52 @@ def get_decomposed_skeleton(
         dbas_K02_4[:, s] = (j3c_ip2_occ_2d @ tmp1_s) * j2c_inv  # [t, P, Q]
     dbas_K02_4 *= 1
 
+    # --- K02-5 --- #
+    # dbas_K02_5 = einsum("tPij, sQij -> tsPQ", j3c_ip2_occ, j3c_ip2_occ) * j2c_inv
+    # contract the shared (i, j) pair of two copies of j3c_ip2_occ; loop over s-component.
+    dbas_K02_5 = np.empty((3, 3, naux, naux))
+    for s in range(3):
+        tmp1_s = j3c_ip2_occ[s].reshape(naux, nocc * nocc).T  # [ij, Q]
+        dbas_K02_5[:, s] = (j3c_ip2_occ_2d @ tmp1_s) * j2c_inv  # [t, P, Q]
+    dbas_K02_5 *= 0.5
+
+    # --- K02-7 --- #
+    # tmp1[t, P, R] = einsum("tPij, Rij -> tPR", j3c_ip2_occ, llcd_eri_occ)
+    # dbas_K02_7 = einsum("tPR, sPR -> tsPR", tmp1, llcd_j2c_ip1)
+    llcd_eri_occ_2d = llcd_eri_occ.reshape(naux, nocc * nocc).T  # [ij, R]
+    tmp1 = np.empty((3, naux, naux))  # [t, P, R]
+    for t in range(3):
+        tmp1[t] = j3c_ip2_occ_2d[t] @ llcd_eri_occ_2d  # [P, ij] @ [ij, R] -> [P, R]
+    dbas_K02_7 = tmp1[:, None, :, :] * llcd_j2c_ip1[None, :, :, :]  # [t, s, P, R]
+    dbas_K02_7 *= -1
+
     # --- skeleton j2/k2 (ip2-only) sum --- #
     de_J02_4 = np.zeros((natm, natm, 3, 3))
     de_J02_5 = np.zeros((natm, natm, 3, 3))
     de_J02_7 = np.zeros((natm, natm, 3, 3))
     de_K02_4 = np.zeros((natm, natm, 3, 3))
+    de_K02_5 = np.zeros((natm, natm, 3, 3))
+    de_K02_7 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
             de_J02_4[A, B] = dbas_J02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
             de_J02_5[A, B] = dbas_J02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
             de_J02_7[A, B] = dbas_J02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
             de_K02_4[A, B] = dbas_K02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K02_5[A, B] = dbas_K02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K02_7[A, B] = dbas_K02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
     de_J02_4 += de_J02_4.transpose(1, 0, 3, 2)
     de_J02_5 += de_J02_5.transpose(1, 0, 3, 2)
     de_J02_7 += de_J02_7.transpose(1, 0, 3, 2)
     de_K02_4 += de_K02_4.transpose(1, 0, 3, 2)
+    de_K02_5 += de_K02_5.transpose(1, 0, 3, 2)
+    de_K02_7 += de_K02_7.transpose(1, 0, 3, 2)
     result["de_J02_4"] = de_J02_4
     result["de_J02_5"] = de_J02_5
     result["de_J02_7"] = de_J02_7
     result["de_K02_4"] = de_K02_4
+    result["de_K02_5"] = de_K02_5
+    result["de_K02_7"] = de_K02_7
 
     # endregion 5
 
