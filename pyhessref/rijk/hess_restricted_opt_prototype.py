@@ -63,7 +63,7 @@ def get_decomposed_skeleton(
     | 02-2        | x | x |
     | 02-3a       | x | x |
     | 02-3b       | x | x |
-    | 02-4        | x |   |
+    | 02-4        | x | x |
     | 02-5        | x |   |
     | 02-6        | x | x |
     | 02-7        | x |   |
@@ -396,28 +396,26 @@ def get_decomposed_skeleton(
     for _sh0, _sh1, p0, p1 in aux_ranges:
 
         # --- J20-2 --- #
-        j3c_ipvip1 = FULL3c_ipvip1[:, :, p0:p1]  # use generator in real application
-        tmp1 = (j3c_ipvip1 * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+        j3c_ipvip1_batch = FULL3c_ipvip1[:, :, p0:p1]  # use generator in real application
+        tmp1 = (j3c_ipvip1_batch * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
         # dbas_J20_2 += einsum("tsvu, uv -> tsuv", tmp1, dm0)
         dbas_J20_2 += tmp1.swapaxes(-1, -2) * dm0
 
         # --- J20-3 --- #
-        j3c_ipip1 = FULL3c_ipip1[:, :, p0:p1]  # use generator in real application
-        tmp1 = (j3c_ipip1 * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+        j3c_ipip1_batch = FULL3c_ipip1[:, :, p0:p1]  # use generator in real application
+        tmp1 = (j3c_ipip1_batch * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
         # dbas_J20_3 += einsum("tsvu, uv -> tsuv", tmp1, dm0)
         dbas_J20_3 += tmp1.swapaxes(-1, -2) * dm0
 
         # --- J11-1 --- #
-        # NOTE: J11-1 is (basis_1st x aux_1st); the AO index `u` and aux index `P`
-        # are different species, so it keeps the notebook `tsuP` layout (no tsvu swap).
-        j3c_ip1ip2 = FULL3c_ip1ip2[:, :, p0:p1]  # use generator in real application
+        j3c_ip1ip2_batch = FULL3c_ip1ip2[:, :, p0:p1]  # use generator in real application
         # dbas_J11_1[..., p0:p1] = einsum("tsPvu, uv, P -> tsuP", j3c_ip1ip2, dm0, llcd_eri_aux[p0:p1])
-        tmp1 = (j3c_ip1ip2 * dm0).sum(axis=-2).swapaxes(-1, -2)
+        tmp1 = (j3c_ip1ip2_batch * dm0).sum(axis=-2).swapaxes(-1, -2)
         dbas_J11_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
         # --- J02-1 --- #
-        j3c_ipip2 = FULL3c_ipip2[:, :, p0:p1]  # use generator in real application
-        tmp1 = (j3c_ipip2 * dm0).sum(axis=(-1, -2))
+        j3c_ipip2_batch = FULL3c_ipip2[:, :, p0:p1]  # use generator in real application
+        tmp1 = (j3c_ipip2_batch * dm0).sum(axis=(-1, -2))
         dbas_J02_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
         # --- K preparation --- #
@@ -430,20 +428,20 @@ def get_decomposed_skeleton(
 
         # --- K20-2 --- #
         # dbas_K20_2 += einsum("tsPvu, Pvu -> tsuv", j3c_ipvip1, tmp_k_ao)
-        dbas_K20_2 += (j3c_ipvip1 * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
+        dbas_K20_2 += (j3c_ipvip1_batch * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
 
         # --- K20-3 --- #
         # dbas_K20_3 += einsum("tsPvu, Pvu -> tsuv", j3c_ipip1, tmp_k_ao)
-        dbas_K20_3 += (j3c_ipip1 * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
+        dbas_K20_3 += (j3c_ipip1_batch * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
 
         # --- K11-1 --- #
         # dbas_K11_1[..., p0:p1] = einsum("tsPvu, Puv -> tsuP", j3c_ip1ip2, tmp_k_ao)
-        tmp1 = (j3c_ip1ip2 * tmp_k_ao).sum(axis=-2).swapaxes(-1, -2)
+        tmp1 = (j3c_ip1ip2_batch * tmp_k_ao).sum(axis=-2).swapaxes(-1, -2)
         dbas_K11_1[..., p0:p1] = tmp1
 
         # --- K02-1 --- #
         # dbas_K02_1[..., p0:p1] = einsum("tsPvu, Pvu -> tsP", j3c_ipip2, tmp_k_ao[p0:p1])
-        dbas_K02_1[..., p0:p1] = (j3c_ipip2 * tmp_k_ao).sum(axis=(-1, -2))
+        dbas_K02_1[..., p0:p1] = (j3c_ipip2_batch * tmp_k_ao).sum(axis=(-1, -2))
 
     de_J20_2 = np.zeros((natm, natm, 3, 3))
     de_J20_3 = np.zeros((natm, natm, 3, 3))
@@ -483,10 +481,17 @@ def get_decomposed_skeleton(
     # region 5. evaluation: ip2-only derivative
 
     # --- shared ip2 intermediate --- #
-    # j3c_ip2_aux[t, P] = einsum("tPvu, vu -> tP", FULL3c_ip2, dm0)
+    # j3c_ip2_aux[t, P] = einsum("tPvu, vu -> tP", FULL3c_ip2, dm0)            (J; AO-contracted)
+    # j3c_ip2_occ[t, P, i, j] = einsum("tPvu, vj, ui -> tPij", FULL3c_ip2, mocc_2, mocc_2)   (K; occ-contracted)
     j3c_ip2_aux = np.zeros((3, naux))
+    j3c_ip2_occ = np.zeros((3, naux, nocc, nocc))
     for _sh0, _sh1, p0, p1 in aux_ranges:
-        j3c_ip2_aux[:, p0:p1] = (FULL3c_ip2[:, p0:p1] * dm0).sum(axis=(-1, -2))  # use generator in real application
+        j3c_ip2_batch = FULL3c_ip2[:, p0:p1]  # use generator in real application
+        j3c_ip2_aux[:, p0:p1] = (j3c_ip2_batch * dm0).sum(axis=(-1, -2))
+        for t in range(3):
+            # j3c_ip2_occ[t, p0:p1] = einsum("Pvu, vj, ui -> Pij", FULL3c_ip2[t, p0:p1], mocc_2, mocc_2)
+            tmp1 = (j3c_ip2_batch[t] @ mocc_2).swapaxes(-1, -2)  # [P, i, v]
+            j3c_ip2_occ[t, p0:p1] = tmp1 @ mocc_2                    # [P, i, j]
 
     # --- J02-4 --- #
     # tmp1[s, Q] = einsum("sRQ, R -> sQ", j2c_ip1, llcd_eri_aux)
@@ -506,21 +511,36 @@ def get_decomposed_skeleton(
     dbas_J02_7 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, :, :]
     dbas_J02_7 *= -1
 
-    # --- skeleton j2 (ip2-only) sum --- #
+    # --- K02-4 --- #
+    # tmp1[s, Q, i, j] = einsum("sRQ, Rij -> Qij", j2c_ip1, llcd_eri_occ)
+    tmp1 = (j2c_ip1 @ llcd_eri_occ.reshape(naux, -1)).reshape(3, naux, nocc, nocc)  # [s, Q, i, j]
+    # dbas_K02_4 = einsum("tPij, sQij -> tsPQ", j3c_ip2_occ, tmp1) * j2c_inv
+    dbas_K02_4 = np.empty((3, 3, naux, naux))
+    j3c_ip2_occ_2d = j3c_ip2_occ.reshape(3, naux, nocc * nocc)  # [t, P, ij]
+    for s in range(3):
+        tmp1_s = tmp1[s].reshape(naux, nocc * nocc).T  # [ij, Q]
+        dbas_K02_4[:, s] = (j3c_ip2_occ_2d @ tmp1_s) * j2c_inv  # [t, P, Q]
+    dbas_K02_4 *= 1
+
+    # --- skeleton j2/k2 (ip2-only) sum --- #
     de_J02_4 = np.zeros((natm, natm, 3, 3))
     de_J02_5 = np.zeros((natm, natm, 3, 3))
     de_J02_7 = np.zeros((natm, natm, 3, 3))
+    de_K02_4 = np.zeros((natm, natm, 3, 3))
     for A, (_, _, p0A, p1A) in enumerate(auxslices):
         for B, (_, _, p0B, p1B) in enumerate(auxslices):
             de_J02_4[A, B] = dbas_J02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
             de_J02_5[A, B] = dbas_J02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
             de_J02_7[A, B] = dbas_J02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+            de_K02_4[A, B] = dbas_K02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
     de_J02_4 += de_J02_4.transpose(1, 0, 3, 2)
     de_J02_5 += de_J02_5.transpose(1, 0, 3, 2)
     de_J02_7 += de_J02_7.transpose(1, 0, 3, 2)
+    de_K02_4 += de_K02_4.transpose(1, 0, 3, 2)
     result["de_J02_4"] = de_J02_4
     result["de_J02_5"] = de_J02_5
     result["de_J02_7"] = de_J02_7
+    result["de_K02_4"] = de_K02_4
 
     # endregion 5
 
