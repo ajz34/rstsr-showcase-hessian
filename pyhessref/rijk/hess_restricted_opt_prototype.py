@@ -147,7 +147,6 @@ def get_decomposed_skeleton(
 
     # endregion 1
 
-
     # region 2. common tensor preparation
     #
     # Memory (units: #floats; naux ~ 3*nao, nocc ~ 6*natm):
@@ -592,7 +591,9 @@ def get_decomposed_skeleton(
             # used as-is -- int3c2e_ip2 is symmetric in its AO pair (k,l), so no swapaxes needed).
             for t in range(3):
                 # np.einsum("Pil, Pkl -> ik", tmp_k1[slc_full], j3c_ip2_batch[t, slc_batch]) == (tmp_k1[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0)
-                k1bra_aux1_2[A, t] += -(tmp_k1[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0) * occ_invsqrt[:, None]
+                k1bra_aux1_2[A, t] += (
+                    -(tmp_k1[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0) * occ_invsqrt[:, None]
+                )
     result["j1ao_aux1_1"] = j1ao_aux1_1
     result["k1bra_aux1_2"] = k1bra_aux1_2
 
@@ -710,8 +711,22 @@ def get_decomposed_skeleton(
     result["k1bra_aux1_1"] = k1bra_aux1_1
 
     # endregion 5
-    
+
     # all remaining carried inputs are now consumed; free them before returning.
-    del cderi, dm0, j2c_inv, j2c_l_inv, j2c_ip1, llcd_j2c_ip1, llcd_eri_aux, llcd_eri_occ, llcd_eri_bra, FULL3c_ip2, j3c_ip2_aux, j3c_ip2_occ, tmp_k1
+    del (
+        cderi,
+        dm0,
+        j2c_inv,
+        j2c_l_inv,
+        j2c_ip1,
+        llcd_j2c_ip1,
+        llcd_eri_aux,
+        llcd_eri_occ,
+        llcd_eri_bra,
+        FULL3c_ip2,
+        j3c_ip2_aux,
+        j3c_ip2_occ,
+        tmp_k1,
+    )
 
     return result
