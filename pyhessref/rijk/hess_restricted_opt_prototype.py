@@ -70,7 +70,7 @@ def get_decomposed_skeleton(
     | 02-8        | x | x |
     | f1-aux0-1/2 |   |   |
     | f1-aux0-3/4 |   |   |
-    | f1-aux1-1/2 |   |   |
+    | f1-aux1-1/2 | x |   |
     | f1-aux1-3/4 | x | x |
     """
 
@@ -198,7 +198,9 @@ def get_decomposed_skeleton(
     # we should try disable one of the cholesky solve, since for ip1, solve left/right is asymmetric
     del rcd_j2c_ip1, rrcd_j2c_ip1
 
-    j2c_inv = solve_by_j2c(solve_by_j2c(np.eye(naux), left=True, flip=True), left=False, flip=False)
+    # j2c_inv = solve_by_j2c(solve_by_j2c(np.eye(naux), left=True, flip=True), left=False, flip=False)
+    j2c_l_inv = solve_by_j2c(np.eye(naux), left=True, flip=True)
+    j2c_inv = solve_by_j2c(j2c_l_inv.T, left=True, flip=True)
 
     # endregion 2
 
@@ -568,6 +570,32 @@ def get_decomposed_skeleton(
     result["de_K02_4"] = de_K02_4
     result["de_K02_5"] = de_K02_5
     result["de_K02_7"] = de_K02_7
+
+    # --- j1ao aux1-1/2 --- #
+    # These are Fock 1st-derivative (not 2nd skeleton) contributions, but their only 3c-2e
+    # derivative integral is int3c2e_ip2, so they share the ip2-only region. Both use the
+    # aux-atom slice: the derivative is on the auxiliary center A (j1ao_aux1 is wrt aux atoms).
+    # j1ao_aux1_1: (00|1)(0|00);  j1ao_aux1_2: (00|0)(1|00)  (solved_itm_j ~ llcd_eri_aux)
+
+    # j1ao_aux1_1[A, t, v, u] = - einsum("tPvu, P -> tvu", j3c_ip2[:, slcA], llcd_eri_aux[slcA])
+    j1ao_aux1_1 = np.zeros((natm, 3, nao, nao))
+    for A in range(natm):
+        _, _, p0, p1 = auxslices[A]
+        slcA = slice(p0, p1)
+        j1ao_aux1_1[A] = -(FULL3c_ip2[:, slcA] * llcd_eri_aux[slcA, None, None]).sum(axis=1)
+    result["j1ao_aux1_1"] = j1ao_aux1_1
+
+    # j1ao_aux1_2: tmp1[A, t, P in A] = j3c_ip2_aux[t, P]; solve_by_j2c (right, flip);
+    #              then contract with triangular-packed cderi (same pattern as j1ao_aux1_3/4).
+    tmp1 = np.zeros((natm, 3, naux))
+    for A in range(natm):
+        _, _, p0, p1 = auxslices[A]
+        slcA = slice(p0, p1)
+        tmp1[A, :, slcA] = j3c_ip2_aux[:, slcA]
+    tmp2 = solve_by_j2c(tmp1, left=False, flip=True)
+    j1ao_aux1_2_tp = tmp2.reshape(natm * 3, naux) @ cderi
+    j1ao_aux1_2 = -lib.unpack_tril(j1ao_aux1_2_tp).reshape(natm, 3, nao, nao)
+    result["j1ao_aux1_2"] = j1ao_aux1_2
 
     # endregion 5
 
