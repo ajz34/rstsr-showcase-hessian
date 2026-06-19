@@ -421,8 +421,7 @@ def get_decomposed_skeleton(
         dbas_J02_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
         # --- K preparation --- #
-        # tmp_k_ao[P,v,u] = einsum("Pij, vj, ui -> Pvu", llcd_eri_occ[P], mocc_2, mocc_2),
-        # built per-batch (Pij -> Pvu expansion) to bound memory to batch * nao^2.
+        # tmp_k_ao = np.einsum("Pij, vj, ui -> Pvu", llcd_eri_occ[p0:p1], mocc_2, mocc_2)
         # NOTE: tmp_k_ao is symmetric in its AO pair (v,u); this symmetry is what lets the
         # K20/K11/K02 contractions below use plain elementwise `*` (the AO-pair order of the
         # asymmetric 3c integrals does not need explicit swapping against tmp_k_ao).
@@ -483,30 +482,32 @@ def get_decomposed_skeleton(
     # region 5. evaluation: ip2-only derivative
 
     # --- shared ip2 intermediate --- #
-    # j3c_ip2_aux[t, P] = einsum("tPvu, vu -> tP", FULL3c_ip2, dm0)            (J; AO-contracted)
-    # j3c_ip2_occ[t, P, i, j] = einsum("tPvu, vj, ui -> tPij", FULL3c_ip2, mocc_2, mocc_2)   (K; occ-contracted)
+    # j3c_ip2_aux[t, P] (J; AO-contracted):
+    #   j3c_ip2_aux = np.einsum("tPvu, vu -> tP", FULL3c_ip2, dm0)
+    # j3c_ip2_occ[t, P, i, j] (K; occ-contracted):
+    #   j3c_ip2_occ = np.einsum("tPvu, vj, ui -> tPij", FULL3c_ip2, mocc_2, mocc_2)
     j3c_ip2_aux = np.zeros((3, naux))
     j3c_ip2_occ = np.zeros((3, naux, nocc, nocc))
     j1ao_aux1_1 = np.zeros((natm, 3, nao, nao))
     # k1bra_aux1_2 needs the *full* int3c2e_ip2 (tPvu), so it is fused into the same batched
     # generator pass as j1ao_aux1_1 to avoid a second ip2 evaluation. Precompute the
-    # P-shared factor A[P, i, l] = einsum("Pij, lj -> Pil", llcd_eri_occ, mocc_2) once.
+    # P-shared factor A[P, i, l] once:
+    #   tmp_k1 = np.einsum("Pij, lj -> Pil", llcd_eri_occ, mocc_2)   (l = u AO index)
     k1bra_aux1_2 = np.zeros((natm, 3, nocc, nao))
-    k1bra_aux1_2_A = llcd_eri_occ @ mocc_2.T  # [naux, nocc, nao]  (l = u AO index)
+    tmp_k1 = llcd_eri_occ @ mocc_2.T  # [naux, nocc, nao]  (l = u AO index)
     for _sh0, _sh1, p0, p1 in aux_ranges:
         j3c_ip2_batch = FULL3c_ip2[:, p0:p1]  # use generator in real application
+        # j3c_ip2_aux[:, p0:p1] = np.einsum("tPvu, vu -> tP", j3c_ip2_batch, dm0)
         j3c_ip2_aux[:, p0:p1] = (j3c_ip2_batch * dm0).sum(axis=(-1, -2))
         for t in range(3):
-            # j3c_ip2_occ[t, p0:p1] = einsum("Pvu, vj, ui -> Pij", FULL3c_ip2[t, p0:p1], mocc_2, mocc_2)
-            tmp1 = mocc_2.T @ j3c_ip2_batch[t]  # [P, i, v]
-            j3c_ip2_occ[t, p0:p1] = tmp1 @ mocc_2                    # [P, i, j]
+            # j3c_ip2_occ[t, p0:p1] = np.einsum("Pvu, vj, ui -> Pij", j3c_ip2_batch[t], mocc_2, mocc_2)
+            j3c_ip2_occ[t, p0:p1] = mocc_2.T @ j3c_ip2_batch[t] @ mocc_2  # [P, i, j]
 
-        # --- j1ao_aux1_1 --- #
-        # j1ao_aux1_1[A, t, v, u] = - einsum("tPvu, P -> tvu", j3c_ip2[:, slcA], llcd_eri_aux[slcA])
-        # --- k1bra_aux1_2 --- #
-        # k1bra_aux1_2[A, t, i, k] = - occ_invsqrt[i] * einsum("Pij, tPkl, lj -> tik",
-        #     llcd_eri_occ[slcA], j3c_ip2[:, slcA], mocc_2)  (k=v, l=u AO indices)
-        # both consume the full j3c_ip2_batch on atom A's aux slice, so share the overlap slice.
+        # --- j1ao_aux1_1 / k1bra_aux1_2 --- #
+        # Both consume the full j3c_ip2_batch on atom A's aux slice, so share the overlap slice.
+        #   j1ao_aux1_1[A] = - np.einsum("tPvu, P -> tvu", j3c_ip2_batch[:, slc_batch], llcd_eri_aux[slc_full])
+        #   k1bra_aux1_2[A, t] = - np.einsum("Pil, Pkl, i -> ik", tmp_k1[slc_full], j3c_ip2_batch[t, slc_batch], occ_invsqrt)
+        #     (k=v, l=u AO indices)
         for A in range(natm):
             _, _, p0A, p1A = auxslices[A]
             start = max(p0, p0A)
@@ -516,39 +517,42 @@ def get_decomposed_skeleton(
             slc_batch = slice(start - p0, end - p0)
             slc_full = slice(start, end)
             j1ao_aux1_1[A] += -(j3c_ip2_batch[:, slc_batch] * llcd_eri_aux[slc_full, None, None]).sum(axis=1)
-            # k1bra_aux1_2: contract (P, l) of A[slcA, i, l] and j3c_ip2_batch[t, slcA, k=v, l=u]
-            # via batched matmul over Ps (A stays contiguous; only j3c_s[t] gets a last-two-axes
-            # swap, which is a view -- no flatten/copy of the Ps*l block).
-            A_s = k1bra_aux1_2_A[slc_full]            # [Ps, i, l]
-            j3c_s = j3c_ip2_batch[:, slc_batch]       # [t, Ps, k, l]
+            # k1bra_aux1_2: contract (P, l) of tmp_k1[slc_full] and j3c_ip2_batch[t, slc_batch]
+            # via batched matmul over Ps (tmp_k1 stays contiguous; j3c_ip2_batch[t, slc_batch]
+            # used as-is -- int3c2e_ip2 is symmetric in its AO pair (k,l), so no swapaxes needed).
             for t in range(3):
-                # einsum("Pil, Pkl -> ik", A_s, j3c_s[t]) = (A_s @ j3c_s[t].swapaxes(-1,-2)).sum(Ps)
-                k1bra_aux1_2[A, t] += -(A_s @ j3c_s[t]).sum(axis=0) * occ_invsqrt[:, None]
+                # np.einsum("Pil, Pkl -> ik", tmp_k1[slc_full], j3c_ip2_batch[t, slc_batch]) == (tmp_k1[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0)
+                k1bra_aux1_2[A, t] += -(tmp_k1[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0) * occ_invsqrt[:, None]
     result["j1ao_aux1_1"] = j1ao_aux1_1
     result["k1bra_aux1_2"] = k1bra_aux1_2
 
     # --- J02-4 --- #
-    # tmp1[s, Q] = einsum("sRQ, R -> sQ", j2c_ip1, llcd_eri_aux)
-    tmp1 = - (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
-    # dbas_J02_4 = einsum("tP, PQ, sQ -> tsPQ", ip2_aux, j2c_inv, tmp1)
+    # tmp1 = np.einsum("sRQ, R -> sQ", j2c_ip1, llcd_eri_aux)
+    tmp1 = -(j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    # dbas_J02_4 = np.einsum("tP, PQ, sQ -> tsPQ", j3c_ip2_aux, j2c_inv, tmp1)
     dbas_J02_4 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, None, :] * j2c_inv
     dbas_J02_4 *= -1
 
     # --- J02-5 --- #
-    # dbas_J02_5 = einsum("tP, PQ, sQ -> tsPQ", j3c_ip2_aux, j2c_inv, j3c_ip2_aux)
+    # dbas_J02_5 = np.einsum("tP, PQ, sQ -> tsPQ", j3c_ip2_aux, j2c_inv, j3c_ip2_aux)
     dbas_J02_5 = j3c_ip2_aux[:, None, :, None] * j3c_ip2_aux[None, :, None, :] * j2c_inv
     dbas_J02_5 *= 0.5
 
     # --- J02-7 --- #
-    # dbas_J02_7 = einsum("tP, sPR, R -> tsPR", j3c_ip2_aux, llcd_j2c_ip1, llcd_eri_aux)
+    # dbas_J02_7 = np.einsum("tP, sPR, R -> tsPR", j3c_ip2_aux, llcd_j2c_ip1, llcd_eri_aux)
     tmp1 = llcd_j2c_ip1 * llcd_eri_aux[None, None, :]
     dbas_J02_7 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, :, :]
     dbas_J02_7 *= -1
 
     # --- K02-4 --- #
-    # tmp1[s, Q, i, j] = einsum("sRQ, Rij -> Qij", j2c_ip1, llcd_eri_occ)
+    # tmp1: contract j2c_ip1 with llcd_eri_occ. Production contracts the *contiguous* Q axis
+    # (last axis of j2c_ip1) via matmul, exploiting j2c_ip1's antisymmetry in (R,Q); the labeled
+    # reference einsum("sRQ, Rij -> sQij", ...) is sign-flipped relative to the matmul below, so
+    # the matmul form is kept as the active implementation.
+    # tmp1 = np.einsum("sRQ, Rij -> sQij", j2c_ip1, llcd_eri_occ)
     tmp1 = (j2c_ip1 @ llcd_eri_occ.reshape(naux, -1)).reshape(3, naux, nocc, nocc)  # [s, Q, i, j]
-    # dbas_K02_4 = einsum("tPij, sQij -> tsPQ", j3c_ip2_occ, tmp1) * j2c_inv
+    # dbas_K02_4 = np.einsum("tPij, sQij -> tsPQ", j3c_ip2_occ, tmp1) * j2c_inv
+    # contract the shared (i, j) pair; loop over s-component, each a [t, P, ij] @ [ij, Q] matmul.
     dbas_K02_4 = np.empty((3, 3, naux, naux))
     j3c_ip2_occ_2d = j3c_ip2_occ.reshape(3, naux, nocc * nocc)  # [t, P, ij]
     for s in range(3):
@@ -557,7 +561,7 @@ def get_decomposed_skeleton(
     dbas_K02_4 *= 1
 
     # --- K02-5 --- #
-    # dbas_K02_5 = einsum("tPij, sQij -> tsPQ", j3c_ip2_occ, j3c_ip2_occ) * j2c_inv
+    # dbas_K02_5 = np.einsum("tPij, sQij -> tsPQ", j3c_ip2_occ, j3c_ip2_occ) * j2c_inv
     # contract the shared (i, j) pair of two copies of j3c_ip2_occ; loop over s-component.
     dbas_K02_5 = np.empty((3, 3, naux, naux))
     for s in range(3):
@@ -566,11 +570,12 @@ def get_decomposed_skeleton(
     dbas_K02_5 *= 0.5
 
     # --- K02-7 --- #
-    # tmp1[t, P, R] = einsum("tPij, Rij -> tPR", j3c_ip2_occ, llcd_eri_occ)
-    # dbas_K02_7 = einsum("tPR, sPR -> tsPR", tmp1, llcd_j2c_ip1)
+    # tmp1 = np.einsum("tPij, Rij -> tPR", j3c_ip2_occ, llcd_eri_occ)
+    # dbas_K02_7 = np.einsum("tPR, sPR -> tsPR", tmp1, llcd_j2c_ip1)
     llcd_eri_occ_2d = llcd_eri_occ.reshape(naux, nocc * nocc).T  # [ij, R]
     tmp1 = np.empty((3, naux, naux))  # [t, P, R]
     for t in range(3):
+        # tmp1[t] = np.einsum("Pij, Rij -> PR", j3c_ip2_occ[t], llcd_eri_occ)
         tmp1[t] = j3c_ip2_occ_2d[t] @ llcd_eri_occ_2d  # [P, ij] @ [ij, R] -> [P, R]
     dbas_K02_7 = tmp1[:, None, :, :] * llcd_j2c_ip1[None, :, :, :]  # [t, s, P, R]
     dbas_K02_7 *= -1
@@ -604,9 +609,11 @@ def get_decomposed_skeleton(
     result["de_K02_7"] = de_K02_7
 
     # --- j1ao aux1-2 --- #
-
-    # j1ao_aux1_2: tmp1[A, t, P in A] = j3c_ip2_aux[t, P]; solve_by_j2c (right, flip);
-    #              then contract with triangular-packed cderi (same pattern as j1ao_aux1_3/4).
+    # Scatter j3c_ip2_aux into a per-atom buffer (derivative on aux center A), solve by j2c
+    # (right, flip), then contract with the triangular-packed cderi (same pattern as
+    # j1ao_aux1_3/4). The final contraction, if cderi were unpacked to cderi_ao[P,u,v], is:
+    #   j1ao_aux1_2 = - np.einsum("Puv, AtP -> Atuv", cderi_ao, tmp2)
+    # production uses the packed cderi + lib.unpack_tril to avoid the full [naux,nao,nao].
     tmp1 = np.zeros((natm, 3, naux))
     for A in range(natm):
         _, _, p0, p1 = auxslices[A]
@@ -618,8 +625,8 @@ def get_decomposed_skeleton(
     result["j1ao_aux1_2"] = j1ao_aux1_2
 
     # --- k1bra aux1-1 --- #
-    # k1bra_aux1_1[A, t, i, k] = - occ_invsqrt[i] * einsum("tPij, Pjk -> tik",
-    #     j3c_ip2_occ[:, slcA], llcd_eri_bra[slcA])  (contract P, j via batched matmul, loop t)
+    # k1bra_aux1_1[A] = - np.einsum("tPij, Pjk, i -> tik", j3c_ip2_occ[:, slcA], llcd_eri_bra[slcA], occ_invsqrt)
+    # contract (P, j) via batched matmul over Ps, loop t.
     k1bra_aux1_1 = np.zeros((natm, 3, nocc, nao))
     for A in range(natm):
         _, _, p0, p1 = auxslices[A]
