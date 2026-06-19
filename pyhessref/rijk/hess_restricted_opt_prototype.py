@@ -70,7 +70,7 @@ def get_decomposed_skeleton(
     | 02-8        | x | x |
     | f1-aux0-1/2 |   |   |
     | f1-aux0-3/4 |   |   |
-    | f1-aux1-1/2 | x |   |
+    | f1-aux1-1/2 | x | x |
     | f1-aux1-3/4 | x | x |
     """
 
@@ -488,16 +488,25 @@ def get_decomposed_skeleton(
     j3c_ip2_aux = np.zeros((3, naux))
     j3c_ip2_occ = np.zeros((3, naux, nocc, nocc))
     j1ao_aux1_1 = np.zeros((natm, 3, nao, nao))
+    # k1bra_aux1_2 needs the *full* int3c2e_ip2 (tPvu), so it is fused into the same batched
+    # generator pass as j1ao_aux1_1 to avoid a second ip2 evaluation. Precompute the
+    # P-shared factor A[P, i, l] = einsum("Pij, lj -> Pil", llcd_eri_occ, mocc_2) once.
+    k1bra_aux1_2 = np.zeros((natm, 3, nocc, nao))
+    k1bra_aux1_2_A = llcd_eri_occ @ mocc_2.T  # [naux, nocc, nao]  (l = u AO index)
     for _sh0, _sh1, p0, p1 in aux_ranges:
         j3c_ip2_batch = FULL3c_ip2[:, p0:p1]  # use generator in real application
         j3c_ip2_aux[:, p0:p1] = (j3c_ip2_batch * dm0).sum(axis=(-1, -2))
         for t in range(3):
             # j3c_ip2_occ[t, p0:p1] = einsum("Pvu, vj, ui -> Pij", FULL3c_ip2[t, p0:p1], mocc_2, mocc_2)
-            tmp1 = (j3c_ip2_batch[t] @ mocc_2).swapaxes(-1, -2)  # [P, i, v]
+            tmp1 = mocc_2.T @ j3c_ip2_batch[t]  # [P, i, v]
             j3c_ip2_occ[t, p0:p1] = tmp1 @ mocc_2                    # [P, i, j]
 
         # --- j1ao_aux1_1 --- #
         # j1ao_aux1_1[A, t, v, u] = - einsum("tPvu, P -> tvu", j3c_ip2[:, slcA], llcd_eri_aux[slcA])
+        # --- k1bra_aux1_2 --- #
+        # k1bra_aux1_2[A, t, i, k] = - occ_invsqrt[i] * einsum("Pij, tPkl, lj -> tik",
+        #     llcd_eri_occ[slcA], j3c_ip2[:, slcA], mocc_2)  (k=v, l=u AO indices)
+        # both consume the full j3c_ip2_batch on atom A's aux slice, so share the overlap slice.
         for A in range(natm):
             _, _, p0A, p1A = auxslices[A]
             start = max(p0, p0A)
@@ -507,7 +516,16 @@ def get_decomposed_skeleton(
             slc_batch = slice(start - p0, end - p0)
             slc_full = slice(start, end)
             j1ao_aux1_1[A] += -(j3c_ip2_batch[:, slc_batch] * llcd_eri_aux[slc_full, None, None]).sum(axis=1)
+            # k1bra_aux1_2: contract (P, l) of A[slcA, i, l] and j3c_ip2_batch[t, slcA, k=v, l=u]
+            # via batched matmul over Ps (A stays contiguous; only j3c_s[t] gets a last-two-axes
+            # swap, which is a view -- no flatten/copy of the Ps*l block).
+            A_s = k1bra_aux1_2_A[slc_full]            # [Ps, i, l]
+            j3c_s = j3c_ip2_batch[:, slc_batch]       # [t, Ps, k, l]
+            for t in range(3):
+                # einsum("Pil, Pkl -> ik", A_s, j3c_s[t]) = (A_s @ j3c_s[t].swapaxes(-1,-2)).sum(Ps)
+                k1bra_aux1_2[A, t] += -(A_s @ j3c_s[t]).sum(axis=0) * occ_invsqrt[:, None]
     result["j1ao_aux1_1"] = j1ao_aux1_1
+    result["k1bra_aux1_2"] = k1bra_aux1_2
 
     # --- J02-4 --- #
     # tmp1[s, Q] = einsum("sRQ, R -> sQ", j2c_ip1, llcd_eri_aux)
@@ -598,6 +616,20 @@ def get_decomposed_skeleton(
     j1ao_aux1_2_tp = tmp2.reshape(natm * 3, naux) @ cderi
     j1ao_aux1_2 = -lib.unpack_tril(j1ao_aux1_2_tp).reshape(natm, 3, nao, nao)
     result["j1ao_aux1_2"] = j1ao_aux1_2
+
+    # --- k1bra aux1-1 --- #
+    # k1bra_aux1_1[A, t, i, k] = - occ_invsqrt[i] * einsum("tPij, Pjk -> tik",
+    #     j3c_ip2_occ[:, slcA], llcd_eri_bra[slcA])  (contract P, j via batched matmul, loop t)
+    k1bra_aux1_1 = np.zeros((natm, 3, nocc, nao))
+    for A in range(natm):
+        _, _, p0, p1 = auxslices[A]
+        slcA = slice(p0, p1)
+        for t in range(3):
+            # j3c_ip2_occ[t, slcA]: [Ps, i, j]; llcd_eri_bra[slcA]: [Ps, j, k];
+            # batched @ -> [Ps, i, k], sum over Ps.
+            k1bra_aux1_1[A, t] = -(j3c_ip2_occ[t, slcA] @ llcd_eri_bra[slcA]).sum(axis=0)
+    k1bra_aux1_1 *= occ_invsqrt[None, None, :, None]
+    result["k1bra_aux1_1"] = k1bra_aux1_1
 
     # endregion 5
 
