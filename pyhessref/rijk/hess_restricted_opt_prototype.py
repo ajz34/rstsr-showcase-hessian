@@ -124,6 +124,12 @@ def get_decomposed_skeleton(
     # --- 1.5 integral generator --- #
     # NOTE: this is prototype optimize implementation, we use full integrals instead
     #       the 3c full integrals are not supposed to be stored in memory in real applications
+    #
+    # Memory (units: #floats; naux ~ 3*nao, nocc ~ 6*natm, nao > nocc):
+    #   Per-batch production cost (the real bound): nbatch_aux * nao^2 per 1st-deriv slice,
+    #   3 * nbatch_aux * nao^2 per 2nd-deriv slice (the t / t,s component is NOT batched).
+    # FULL3c_ip1 is computed but never consumed downstream (f1-aux0 uses a separate scr1 path);
+    # drop it immediately.
 
     FULL3c_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")().reshape([3, nao, nao, naux])
     FULL3c_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")().reshape([3, nao, nao, naux])
@@ -132,16 +138,30 @@ def get_decomposed_skeleton(
     FULL3c_ip1ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip1ip2", "s1")().reshape([3, 3, nao, nao, naux])
     FULL3c_ipip2 = _int3c_wrapper(mol, aux, "int3c2e_ipip2", "s1")().reshape([3, 3, nao, nao, naux])
 
-    FULL3c_ip1 = np.ascontiguousarray(einsum("tuvP -> tPvu", FULL3c_ip1))
     FULL3c_ip2 = np.ascontiguousarray(einsum("tuvP -> tPvu", FULL3c_ip2))
     FULL3c_ipip1 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipip1))
     FULL3c_ipvip1 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipvip1))
     FULL3c_ip1ip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ip1ip2))
     FULL3c_ipip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipip2))
+    del FULL3c_ip1  # unused downstream
 
     # endregion 1
 
+
     # region 2. common tensor preparation
+    #
+    # Memory (units: #floats; naux ~ 3*nao, nocc ~ 6*natm):
+    #   cderi          [naux, nao_tp]         ~ 0.5 * nao^2 * naux    (input, kept)
+    #   lcd_eri_aux    [naux]                 ~ naux                  (transient -> llcd_eri_aux)
+    #   lcd_eri_occ    [naux, nocc, nocc]     ~ naux * nocc^2         (transient -> llcd_eri_occ)
+    #   lcd_eri_bra    [naux, nocc, nao]      ~ naux * nocc * nao     (transient -> llcd_eri_bra)
+    #   llcd_eri_*     same shapes as lcd_*                            (kept through region 5)
+    #   fold_eri_aux   [naux, naux]           ~ naux^2                (kept through 3k2)
+    #   j2c_ip1 [3,naux,naux], j2c_ipip1/j2c_ip1ip2 [3,3,naux,naux]  ~ 3*naux^2 / 9*naux^2
+    #   lcd/llcd_j2c_ip1 [3,naux,naux] each                          ~ 3*naux^2 each
+    #   j2c_inv, j2c_l_inv [naux,naux] each                          ~ naux^2 each
+    #   region-2 carried peak ~ naux^2 + 2*naux*nocc*nao (lcd_eri_bra x2) + small;
+    #   after llcd_* are built, lcd_* are freed.
 
     # --- 2.1 solve_by_j2c --- #
 
@@ -171,6 +191,7 @@ def get_decomposed_skeleton(
     llcd_eri_aux = solve_by_j2c(lcd_eri_aux, left=True, flip=True)
     llcd_eri_occ = solve_by_j2c(lcd_eri_occ, left=True, flip=True)
     llcd_eri_bra = solve_by_j2c(lcd_eri_bra, left=True, flip=True)
+    del lcd_eri_aux, lcd_eri_occ, lcd_eri_bra
     # fold_eri_aux = np.einsum("Pij, Qij -> PQ", llcd_eri_occ, llcd_eri_occ)
     fold_eri_aux = llcd_eri_occ.reshape(naux, -1) @ llcd_eri_occ.reshape(naux, -1).T
 
@@ -205,6 +226,12 @@ def get_decomposed_skeleton(
     # endregion 2
 
     # region 3j2. evaluation: non cderi derivative (j part)
+    #
+    # Memory (units: #floats): all dbas_J02_* are aux-pair tensors.
+    #   dbas_J02_2   [3,3,naux]            ~ 9*naux
+    #   dbas_J02_3a/3b/6/8 [3,3,naux,naux] ~ 9*naux^2 each  (4 of them)
+    #   region-3j2 additional peak ~ 4 * 9 * naux^2 = 36 * naux^2  (+ transient tmp1/tmp2 ~ naux^2)
+    # Inputs j2c_ipip1, j2c_ip1ip2 are shared with 3k2 -> freed after 3k2.
 
     # --- J02-2 --- #
 
@@ -263,10 +290,16 @@ def get_decomposed_skeleton(
     result["de_J02_3b"] = de_J02_3b
     result["de_J02_6"] = de_J02_6
     result["de_J02_8"] = de_J02_8
+    del dbas_J02_2, dbas_J02_3a, dbas_J02_3b, dbas_J02_6, dbas_J02_8
 
     # endregion 3j2
 
     # region 3j1. evaluation: non cderi derivative (j1ao part)
+    #
+    # Memory (units: #floats): j1ao_aux1_3/4 outputs are [natm,3,nao,nao] ~ natm*nao^2 each.
+    #   per-t transients: tmp1 [naux,nocc,nao] or [naux,nocc,nocc] ~ naux*nocc*nao
+    #   tmp2 [natm,3,naux], j1ao_aux1_*_tp [natm*3, nao_tp] ~ natm*nao^2
+    #   region-3j1 additional peak ~ natm*nao^2 (output) + naux*nocc*nao (tmp1) + natm*nao^2 (tp)
 
     # temporary area for j1 aux1-3
     # tmp1 = np.einsum("tRQ, R -> tQ", j2c_ip1, llcd_eri_aux)
@@ -295,6 +328,12 @@ def get_decomposed_skeleton(
     # endregion 3j1
 
     # region 3k2. evaluation: non cderi derivative (k part)
+    #
+    # Memory (units: #floats): same aux-pair shapes as 3j2.
+    #   dbas_K02_2   [3,3,naux]            ~ 9*naux
+    #   dbas_K02_3a/3b/6/8 [3,3,naux,naux] ~ 9*naux^2 each  (4 of them)
+    #   region-3k2 additional peak ~ 36 * naux^2 (+ transient ~ naux^2)
+    # Inputs j2c_ipip1, j2c_ip1ip2 (shared with 3j2), fold_eri_aux, lcd_j2c_ip1 freed at end of 3k2.
 
     # --- K02-2 --- #
 
@@ -350,10 +389,16 @@ def get_decomposed_skeleton(
     result["de_K02_3b"] = de_K02_3b
     result["de_K02_6"] = de_K02_6
     result["de_K02_8"] = de_K02_8
+    del dbas_K02_2, dbas_K02_3a, dbas_K02_3b, dbas_K02_6, dbas_K02_8
+    del j2c_ipip1, j2c_ip1ip2, fold_eri_aux, lcd_j2c_ip1
 
     # endregion 3k2
 
     # region 3k1. evaluation: non cderi derivative (k1bra part)
+    #
+    # Memory (units: #floats): k1bra_aux1_3/4 outputs [natm,3,nocc,nao] ~ natm*nocc*nao each.
+    #   per-t transients: tmp1 [naux,nocc,nao] or [naux,nocc,nocc] ~ naux*nocc*nao
+    #   region-3k1 additional peak ~ 2*natm*nocc*nao (outputs) + naux*nocc*nao (tmp1)
 
     # additional memory: tmp1 (aux * basis * occ)
     k1bra_aux1_3 = np.zeros([natm, 3, nocc, nao])
@@ -385,6 +430,16 @@ def get_decomposed_skeleton(
     # endregion 3k1
 
     # region 4. evaluation: one-shot derivative
+    #
+    # Memory (units: #floats): the 3c 2nd-deriv integrals are consumed per aux batch (size
+    # nbatch_aux); only the batch slice lives in memory in production.
+    #   per-batch slice j3c_*_batch [3,3,nbatch_aux,nao,nao] ~ 9 * nbatch_aux * nao^2
+    #   tmp1 [3,3,nao,nao] ~ 9*nao^2  (per-batch transient); tmp_k_ao [nbatch_aux,nao,nao]
+    #   accumulated dbas_J20_2/3, dbas_K20_2/3   [3,3,nao,nao] ~ 9*nao^2 each  (4 of them)
+    #   accumulated dbas_J11_1, dbas_K11_1       [3,3,nao,naux] ~ 9*nao*naux each  (2 of them)
+    #   accumulated dbas_J02_1, dbas_K02_1       [3,3,naux] ~ 9*naux each
+    #   region-4 production peak ~ 9*nbatch_aux*nao^2 (slice) + 4*9*nao^2 + 2*9*nao*naux (dbas)
+    # The 4 FULL3c_* 2nd-deriv integrals are freed at the end of region 4 (region 5 needs only ip2).
 
     dbas_J20_2 = np.zeros((3, 3, nao, nao))
     dbas_J20_3 = np.zeros((3, 3, nao, nao))
@@ -476,10 +531,25 @@ def get_decomposed_skeleton(
     result["de_K20_3"] = de_K20_3
     result["de_K11_1"] = de_K11_1
     result["de_K02_1"] = de_K02_1
+    del FULL3c_ipvip1, FULL3c_ipip1, FULL3c_ip1ip2, FULL3c_ipip2
 
     # endregion 4
 
     # region 5. evaluation: ip2-only derivative
+    #
+    # Memory (units: #floats): the only 3c-2e derivative integral here is int3c2e_ip2, consumed
+    # per aux batch; only the batch slice lives in memory in production.
+    #   per-batch slice j3c_ip2_batch [3,nbatch_aux,nao,nao] ~ 3 * nbatch_aux * nao^2
+    #   j3c_ip2_aux   [3,naux]                       ~ 3*naux
+    #   j3c_ip2_occ   [3,naux,nocc,nocc]             ~ 3*naux*nocc^2
+    #   j1ao_aux1_1   [natm,3,nao,nao]               ~ natm*nao^2
+    #   k1bra_aux1_2  [natm,3,nocc,nao]              ~ natm*nocc*nao
+    #   tmp_k1        [naux,nocc,nao]                ~ naux*nocc*nao
+    #   dbas_J02_4/5/7, dbas_K02_4/5/7 [3,3,naux,naux] ~ 9*naux^2 each (6 of them)
+    #   region-5 production peak ~ 3*nbatch_aux*nao^2 (slice) + 6*9*naux^2 (dbas, dominates)
+    #     + 3*naux*nocc^2 (j3c_ip2_occ) + natm*nao^2 (j1ao_aux1_1)
+    # After region 5, all remaining carried inputs (cderi, dm0, j2c_*, llcd_*, FULL3c_ip2) are
+    # freed -- the result dict holds only the small [natm,...] / [natm,natm,3,3] outputs.
 
     # --- shared ip2 intermediate --- #
     # j3c_ip2_aux[t, P] (J; AO-contracted):
@@ -607,6 +677,7 @@ def get_decomposed_skeleton(
     result["de_K02_4"] = de_K02_4
     result["de_K02_5"] = de_K02_5
     result["de_K02_7"] = de_K02_7
+    del dbas_J02_4, dbas_J02_5, dbas_J02_7, dbas_K02_4, dbas_K02_5, dbas_K02_7
 
     # --- j1ao aux1-2 --- #
     # Scatter j3c_ip2_aux into a per-atom buffer (derivative on aux center A), solve by j2c
@@ -639,5 +710,8 @@ def get_decomposed_skeleton(
     result["k1bra_aux1_1"] = k1bra_aux1_1
 
     # endregion 5
+    
+    # all remaining carried inputs are now consumed; free them before returning.
+    del cderi, dm0, j2c_inv, j2c_l_inv, j2c_ip1, llcd_j2c_ip1, llcd_eri_aux, llcd_eri_occ, llcd_eri_bra, FULL3c_ip2, j3c_ip2_aux, j3c_ip2_occ, tmp_k1
 
     return result
