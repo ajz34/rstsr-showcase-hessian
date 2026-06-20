@@ -138,12 +138,12 @@ def get_decomposed_skeleton(
     FULL3c_ip1ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip1ip2", "s1")().reshape([3, 3, nao, nao, naux])
     FULL3c_ipip2 = _int3c_wrapper(mol, aux, "int3c2e_ipip2", "s1")().reshape([3, 3, nao, nao, naux])
 
+    FULL3c_ip1 = np.ascontiguousarray(einsum("tuvP -> tPvu", FULL3c_ip1))
     FULL3c_ip2 = np.ascontiguousarray(einsum("tuvP -> tPvu", FULL3c_ip2))
     FULL3c_ipip1 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipip1))
     FULL3c_ipvip1 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipvip1))
     FULL3c_ip1ip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ip1ip2))
     FULL3c_ipip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipip2))
-    del FULL3c_ip1  # unused downstream
 
     # endregion 1
 
@@ -389,7 +389,7 @@ def get_decomposed_skeleton(
     result["de_K02_6"] = de_K02_6
     result["de_K02_8"] = de_K02_8
     del dbas_K02_2, dbas_K02_3a, dbas_K02_3b, dbas_K02_6, dbas_K02_8
-    del j2c_ipip1, j2c_ip1ip2, fold_eri_aux, lcd_j2c_ip1
+    del j2c_ipip1, j2c_ip1ip2, fold_eri_aux
 
     # endregion 3k2
 
@@ -711,6 +711,77 @@ def get_decomposed_skeleton(
     result["k1bra_aux1_1"] = k1bra_aux1_1
 
     # endregion 5
+
+    # region 6. evaluation: ip1
+
+    j3c_ip1_aux = np.zeros((3, naux, nao))
+    j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
+    for _sh0, _sh1, p0, p1 in aux_ranges:
+        j3c_ip1_batch = FULL3c_ip1[:, p0:p1]
+        # j3c_ip1_aux[:, p0:p1] = np.einsum("tPvu, vu -> tPu", j3c_ip1_batch, dm0)
+        j3c_ip1_aux[:, p0:p1] = (j3c_ip1_batch * dm0).sum(axis=-2)
+
+    lcd_j3c_ip1_aux = np.zeros((3, naux, nao))
+    for t in range(3):
+        lcd_j3c_ip1_aux[t] = solve_by_j2c(j3c_ip1_aux[t], left=True, flip=False)
+
+    # --- J20-1 --- #
+    dbas_J20_1 = np.einsum("tPu, sPk -> tsku", lcd_j3c_ip1_aux, lcd_j3c_ip1_aux)
+    dbas_J20_1 = np.zeros((3, 3, nao, nao))
+    for t in range(3):
+        for s in range(3):
+            dbas_J20_1[t, s] = lcd_j3c_ip1_aux[s].T @ lcd_j3c_ip1_aux[t]
+    dbas_J20_1 *= 2
+
+    # --- J11-2 --- #
+    # dbas_J11_2 = np.einsum("tPu, sPR, R -> tsRu", lcd_j3c_ip1_aux, lcd_j2c_ip1, llcd_eri_aux)
+    dbas_J11_2 = np.zeros([3, 3, naux, nao])
+    for t in range(3):
+        for s in range(3):
+            dbas_J11_2[t, s] = (lcd_j2c_ip1[s] * llcd_eri_aux).T @ lcd_j3c_ip1_aux[t]
+    dbas_J11_2 *= -2
+    
+    # --- solve j3c_ip1 once more --- #
+
+    llcd_j3c_ip1_aux = np.zeros((3, naux, nao))
+    for t in range(3):
+        llcd_j3c_ip1_aux[t] = solve_by_j2c(lcd_j3c_ip1_aux[t], left=True, flip=True)
+    del lcd_j3c_ip1_aux
+
+    # --- J11-3 --- #
+    # dbas_J11_3 = np.einsum("tQu, sQR, R -> tsQu", llcd_j3c_ip1_aux, j2c_ip1, llcd_eri_aux)
+    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    dbas_J11_3 = llcd_j3c_ip1_aux[:, None, :, :] * tmp1[None, :, :, None]
+    dbas_J11_3 *= 2
+
+    # --- J11-4 --- #
+    # dbas_J11_4 = np.einsum("tQu, sQ -> tsQu", llcd_j3c_ip1_aux, j3c_ip2_aux)
+    dbas_J11_4 = llcd_j3c_ip1_aux[:, None, :, :] * j3c_ip2_aux[None, :, :, None]
+    dbas_J11_4 *= 2
+
+    de_J11_2 = np.zeros((natm, natm, 3, 3))
+    de_J11_3 = np.zeros((natm, natm, 3, 3))
+    de_J11_4 = np.zeros((natm, natm, 3, 3))
+    for B, (_, _, p0B, p1B) in enumerate(auxslices):
+        for A, (_, _, p0A, p1A) in enumerate(aoslices):
+            de_J11_2[A, B] = dbas_J11_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_J11_3[A, B] = dbas_J11_3[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_J11_4[A, B] = dbas_J11_4[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+    de_J11_2 += de_J11_2.transpose(1, 0, 3, 2)
+    de_J11_3 += de_J11_3.transpose(1, 0, 3, 2)
+    de_J11_4 += de_J11_4.transpose(1, 0, 3, 2)
+    result["de_J11_2"] = de_J11_2
+    result["de_J11_3"] = de_J11_3
+    result["de_J11_4"] = de_J11_4
+
+    de_J20_1 = np.zeros((natm, natm, 3, 3))
+    for B, (_, _, p0B, p1B) in enumerate(aoslices):
+        for A, (_, _, p0A, p1A) in enumerate(aoslices):
+            de_J20_1[A, B] = dbas_J20_1[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+    de_J20_1 += de_J20_1.transpose(1, 0, 3, 2)
+    result["de_J20_1"] = de_J20_1
+
+    # endregion 6
 
     # all remaining carried inputs are now consumed; free them before returning.
     del (
