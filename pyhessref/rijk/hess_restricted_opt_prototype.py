@@ -52,13 +52,13 @@ def get_decomposed_skeleton(
     """
     | TASK        | J | K |
     |-------------|---|---|
-    | 20-1        |   |   |
+    | 20-1        | x | x |
     | 20-2        | x | x |
     | 20-3        | x | x |
     | 11-1        | x | x |
-    | 11-2        |   |   |
-    | 11-3        |   |   |
-    | 11-4        |   |   |
+    | 11-2        | x | x |
+    | 11-3        | x | x |
+    | 11-4        | x | x |
     | 02-1        | x | x |
     | 02-2        | x | x |
     | 02-3a       | x | x |
@@ -128,8 +128,6 @@ def get_decomposed_skeleton(
     # Memory (units: #floats; naux ~ 3*nao, nocc ~ 6*natm, nao > nocc):
     #   Per-batch production cost (the real bound): nbatch_aux * nao^2 per 1st-deriv slice,
     #   3 * nbatch_aux * nao^2 per 2nd-deriv slice (the t / t,s component is NOT batched).
-    # FULL3c_ip1 is computed but never consumed downstream (f1-aux0 uses a separate scr1 path);
-    # drop it immediately.
 
     FULL3c_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")().reshape([3, nao, nao, naux])
     FULL3c_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")().reshape([3, nao, nao, naux])
@@ -730,7 +728,7 @@ def get_decomposed_skeleton(
         lcd_j3c_ip1_bra[t] = solve_by_j2c(j3c_ip1_bra[t], left=True, flip=False)
 
     # --- J20-1 --- #
-    dbas_J20_1 = np.einsum("tPu, sPk -> tsku", lcd_j3c_ip1_aux, lcd_j3c_ip1_aux)
+    # dbas_J20_1 = np.einsum("tPu, sPv -> tsuv", lcd_j3c_ip1_aux, lcd_j3c_ip1_aux)
     dbas_J20_1 = np.zeros((3, 3, nao, nao))
     for t in range(3):
         for s in range(3):
