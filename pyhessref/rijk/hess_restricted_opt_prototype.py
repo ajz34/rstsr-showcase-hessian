@@ -737,13 +737,31 @@ def get_decomposed_skeleton(
             dbas_J20_1[t, s] = lcd_j3c_ip1_aux[s].T @ lcd_j3c_ip1_aux[t]
     dbas_J20_1 *= 2
 
+    # --- J11 preparation --- #
+
+    llcd_j3c_ip1_aux = np.zeros((3, naux, nao))
+    for t in range(3):
+        llcd_j3c_ip1_aux[t] = solve_by_j2c(lcd_j3c_ip1_aux[t], left=True, flip=True)
+    del lcd_j3c_ip1_aux
+
     # --- J11-2 --- #
-    # dbas_J11_2 = np.einsum("tPu, sPR, R -> tsRu", lcd_j3c_ip1_aux, lcd_j2c_ip1, llcd_eri_aux)
+    # dbas_J11_2 = np.einsum("tPu, sPR, R -> tsRu", llcd_j3c_ip1_aux, j2c_ip1, llcd_eri_aux)
     dbas_J11_2 = np.zeros([3, 3, naux, nao])
     for t in range(3):
         for s in range(3):
-            dbas_J11_2[t, s] = (lcd_j2c_ip1[s] * llcd_eri_aux).T @ lcd_j3c_ip1_aux[t]
+            dbas_J11_2[t, s] = (j2c_ip1[s] * llcd_eri_aux).T @ llcd_j3c_ip1_aux[t]
     dbas_J11_2 *= -2
+
+    # --- J11-3 --- #
+    # dbas_J11_3 = np.einsum("tQu, sQR, R -> tsQu", llcd_j3c_ip1_aux, j2c_ip1, llcd_eri_aux)
+    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+    dbas_J11_3 = llcd_j3c_ip1_aux[:, None, :, :] * tmp1[None, :, :, None]
+    dbas_J11_3 *= 2
+
+    # --- J11-4 --- #
+    # dbas_J11_4 = np.einsum("tQu, sQ -> tsQu", llcd_j3c_ip1_aux, j3c_ip2_aux)
+    dbas_J11_4 = llcd_j3c_ip1_aux[:, None, :, :] * j3c_ip2_aux[None, :, :, None]
+    dbas_J11_4 *= 2
 
     # --- K20-1a --- #
     # dbas_K20_1a = np.zeros((3, 3, nao, nao))
@@ -761,38 +779,68 @@ def get_decomposed_skeleton(
         tmp1 = mocc_2 @ lcd_j3c_ip1_bra[:, p]  # [t, v, u]
         dbas_K20_1b += tmp1[:, None, :, :] * tmp1[None, :, :, :].swapaxes(-1, -2)
 
-    # --- solve j3c_ip1 once more --- #
+    # --- K11 preparation --- #
 
-    llcd_j3c_ip1_aux = np.zeros((3, naux, nao))
+    # fold_j3c_bra = np.einsum("Pji, ui -> Pju", llcd_eri_occ, mocc_2)
+    fold_j3c_bra = llcd_eri_occ @ mocc_2.T  # in production code, use reshape
+
+    llcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
     for t in range(3):
-        llcd_j3c_ip1_aux[t] = solve_by_j2c(lcd_j3c_ip1_aux[t], left=True, flip=True)
-    del lcd_j3c_ip1_aux
+        llcd_j3c_ip1_bra[t] = solve_by_j2c(lcd_j3c_ip1_bra[t], left=True, flip=True)
 
-    # --- J11-3 --- #
-    # dbas_J11_3 = np.einsum("tQu, sQR, R -> tsQu", llcd_j3c_ip1_aux, j2c_ip1, llcd_eri_aux)
-    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
-    dbas_J11_3 = llcd_j3c_ip1_aux[:, None, :, :] * tmp1[None, :, :, None]
-    dbas_J11_3 *= 2
+    # --- K11-2 --- #
+    # dbas_K11_2 = np.einsum("tPju, sRP, Rju -> tsRu", llcd_j3c_ip1_bra, j2c_ip1, fold_j3c_bra)
+    dbas_K11_2 = np.zeros((3, 3, naux, nao))
+    for t in range(3):
+        for s in range(3):
+            tmp1 = (j2c_ip1[s] @ llcd_j3c_ip1_bra[t].reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
+            dbas_K11_2[t, s] = (fold_j3c_bra * tmp1).sum(axis=-2)
+    dbas_K11_2 *= 2
 
-    # --- J11-4 --- #
-    # dbas_J11_4 = np.einsum("tQu, sQ -> tsQu", llcd_j3c_ip1_aux, j3c_ip2_aux)
-    dbas_J11_4 = llcd_j3c_ip1_aux[:, None, :, :] * j3c_ip2_aux[None, :, :, None]
-    dbas_J11_4 *= 2
+    # --- K11-3 --- #
+    # dbas_K11_3 = np.einsum("tQju, sQR, Rju -> tsQu", llcd_j3c_ip1_bra, j2c_ip1, fold_j3c_bra)
+    dbas_K11_3 = np.zeros((3, 3, naux, nao))
+    for s in range(3):
+        tmp1 = (j2c_ip1[s] @ fold_j3c_bra.reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
+        for t in range(3):
+            dbas_K11_3[t, s] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
+    dbas_K11_3 *= 2
+
+    # --- K11-4 --- #
+    # dbas_K11_4 = np.einsum("tPju, sPji, ui -> tsPu", llcd_j3c_ip1_bra, j3c_ip2_occ, mocc_2)
+    dbas_K11_4 = np.zeros((3, 3, naux, nao))
+    for s in range(3):
+        tmp1 = j3c_ip2_occ[s] @ mocc_2.T
+        for t in range(3):
+            dbas_K11_4[t, s] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
+    dbas_K11_4 *= 2
 
     de_J11_2 = np.zeros((natm, natm, 3, 3))
     de_J11_3 = np.zeros((natm, natm, 3, 3))
     de_J11_4 = np.zeros((natm, natm, 3, 3))
+    de_K11_2 = np.zeros((natm, natm, 3, 3))
+    de_K11_3 = np.zeros((natm, natm, 3, 3))
+    de_K11_4 = np.zeros((natm, natm, 3, 3))
     for B, (_, _, p0B, p1B) in enumerate(auxslices):
         for A, (_, _, p0A, p1A) in enumerate(aoslices):
             de_J11_2[A, B] = dbas_J11_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
             de_J11_3[A, B] = dbas_J11_3[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
             de_J11_4[A, B] = dbas_J11_4[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_K11_2[A, B] = dbas_K11_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_K11_3[A, B] = dbas_K11_3[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_K11_4[A, B] = dbas_K11_4[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
     de_J11_2 += de_J11_2.transpose(1, 0, 3, 2)
     de_J11_3 += de_J11_3.transpose(1, 0, 3, 2)
     de_J11_4 += de_J11_4.transpose(1, 0, 3, 2)
+    de_K11_2 += de_K11_2.transpose(1, 0, 3, 2)
+    de_K11_3 += de_K11_3.transpose(1, 0, 3, 2)
+    de_K11_4 += de_K11_4.transpose(1, 0, 3, 2)
     result["de_J11_2"] = de_J11_2
     result["de_J11_3"] = de_J11_3
     result["de_J11_4"] = de_J11_4
+    result["de_K11_2"] = de_K11_2
+    result["de_K11_3"] = de_K11_3
+    result["de_K11_4"] = de_K11_4
 
     de_J20_1 = np.zeros((natm, natm, 3, 3))
     de_K20_1a = np.zeros((natm, natm, 3, 3))
