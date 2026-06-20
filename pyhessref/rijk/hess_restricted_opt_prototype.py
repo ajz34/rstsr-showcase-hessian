@@ -720,10 +720,14 @@ def get_decomposed_skeleton(
         j3c_ip1_batch = FULL3c_ip1[:, p0:p1]
         # j3c_ip1_aux[:, p0:p1] = np.einsum("tPvu, vu -> tPu", j3c_ip1_batch, dm0)
         j3c_ip1_aux[:, p0:p1] = (j3c_ip1_batch * dm0).sum(axis=-2)
+        # j3c_ip1_bra[:, p0:p1] = np.einsum("tPvu, vj -> tPju", j3c_ip1_batch, mocc_2)
+        j3c_ip1_bra[:, p0:p1] = mocc_2.T @ j3c_ip1_batch
 
     lcd_j3c_ip1_aux = np.zeros((3, naux, nao))
+    lcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
     for t in range(3):
         lcd_j3c_ip1_aux[t] = solve_by_j2c(j3c_ip1_aux[t], left=True, flip=False)
+        lcd_j3c_ip1_bra[t] = solve_by_j2c(j3c_ip1_bra[t], left=True, flip=False)
 
     # --- J20-1 --- #
     dbas_J20_1 = np.einsum("tPu, sPk -> tsku", lcd_j3c_ip1_aux, lcd_j3c_ip1_aux)
@@ -740,7 +744,23 @@ def get_decomposed_skeleton(
         for s in range(3):
             dbas_J11_2[t, s] = (lcd_j2c_ip1[s] * llcd_eri_aux).T @ lcd_j3c_ip1_aux[t]
     dbas_J11_2 *= -2
-    
+
+    # --- K20-1a --- #
+    # dbas_K20_1a = np.zeros((3, 3, nao, nao))
+    # dbas_K20_1a = np.einsum("tPju, sPjv, ui, vi -> tsvu", lcd_j3c_ip1_bra, lcd_j3c_ip1_bra, mocc_2, mocc_2)
+    dbas_K20_1a = np.zeros((3, 3, nao, nao))
+    lcd_j3c_ip1_bra_view = lcd_j3c_ip1_bra.reshape(3, naux * nocc, nao)
+    for t in range(3):
+        for s in range(3):
+            dbas_K20_1a[t, s] = (lcd_j3c_ip1_bra_view[s].T @ lcd_j3c_ip1_bra_view[t]) * dm0
+
+    # --- K20-1b --- #
+    # dbas_K20_1b = np.einsum("tPju, sPiv, ui, vj -> tsvu", lcd_j3c_ip1_bra, lcd_j3c_ip1_bra, mocc_2, mocc_2)
+    dbas_K20_1b = np.zeros((3, 3, nao, nao))
+    for p in range(naux):  # PAR-ITER, use buffer for reduction
+        tmp1 = mocc_2 @ lcd_j3c_ip1_bra[:, p]  # [t, v, u]
+        dbas_K20_1b += tmp1[:, None, :, :] * tmp1[None, :, :, :].swapaxes(-1, -2)
+
     # --- solve j3c_ip1 once more --- #
 
     llcd_j3c_ip1_aux = np.zeros((3, naux, nao))
@@ -775,11 +795,19 @@ def get_decomposed_skeleton(
     result["de_J11_4"] = de_J11_4
 
     de_J20_1 = np.zeros((natm, natm, 3, 3))
+    de_K20_1a = np.zeros((natm, natm, 3, 3))
+    de_K20_1b = np.zeros((natm, natm, 3, 3))
     for B, (_, _, p0B, p1B) in enumerate(aoslices):
         for A, (_, _, p0A, p1A) in enumerate(aoslices):
             de_J20_1[A, B] = dbas_J20_1[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_K20_1a[A, B] = dbas_K20_1a[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+            de_K20_1b[A, B] = dbas_K20_1b[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
     de_J20_1 += de_J20_1.transpose(1, 0, 3, 2)
+    de_K20_1a += de_K20_1a.transpose(1, 0, 3, 2)
+    de_K20_1b += de_K20_1b.transpose(1, 0, 3, 2)
     result["de_J20_1"] = de_J20_1
+    result["de_K20_1a"] = de_K20_1a
+    result["de_K20_1b"] = de_K20_1b
 
     # endregion 6
 
