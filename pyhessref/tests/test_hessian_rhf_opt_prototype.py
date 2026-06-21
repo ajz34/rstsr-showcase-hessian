@@ -56,3 +56,25 @@ class TestHessianRHFOptPrototype(unittest.TestCase):
         for key in sorted(result.keys()):
             print(f"{key:<20}, val {lib.fp(result[key]):>20.12f}, ref {lib.fp(ref_dict[key]):>20.12f}")
             self.assertTrue(np.allclose(result[key], ref_dict[key], rtol=1e-4, atol=1e-6))
+
+    def test_get_decomposed_skeleton_separated(self):
+        from pyhessref.rijk.hess_restricted_opt_prototype import (
+            get_decomposed_skeleton,
+            get_decomposed_skeleton_separated,
+        )
+
+        cderi = mf.with_df._cderi
+        result = get_decomposed_skeleton_separated(
+            mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72, atm_list=None
+        )
+        ref_j1ao = get_rij_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
+        ref_k1ao = get_rik_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
+        ref_dict = dict(ref_value).copy()
+        ref_dict.update(ref_j1ao)
+        ref_dict.update(ref_k1ao)
+        # must produce the same key set as the baseline
+        baseline = get_decomposed_skeleton(mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72, atm_list=None)
+        self.assertEqual(set(result.keys()), set(baseline.keys()))
+        for key in sorted(result.keys()):
+            print(f"{key:<20}, val {lib.fp(result[key]):>20.12f}, ref {lib.fp(ref_dict[key]):>20.12f}")
+            self.assertTrue(np.allclose(result[key], ref_dict[key], rtol=1e-4, atol=1e-6))
