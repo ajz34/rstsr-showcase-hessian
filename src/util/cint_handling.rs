@@ -73,6 +73,24 @@ pub fn hess_intor_cross(
     rt::asarray((out, shape, device))
 }
 
+/// A wrapper that generates 3c-2e ERIs.
+///
+/// This returns a closure that takes `shls_aux` as input. So, the batch is always on the auxiliary
+/// shell dimension. Also note input is shell index, not AO index.
+pub fn generator_hess_intor_j3c_by_aux<'a>(
+    mol: &'a CInt,
+    aux: &'a CInt,
+    intor_name: &'a str,
+    symm: &'a str,
+    device: &DeviceTsr,
+) -> impl Fn([usize; 2]) -> Tsr + 'a {
+    let shls_mol = [0, mol.nbas()];
+    let device = device.clone();
+    move |shls_aux: [usize; 2]| {
+        hess_intor_cross(&[mol, mol, aux], intor_name, symm, [shls_mol, shls_mol, shls_aux], &device)
+    }
+}
+
 pub fn get_ecp_atoms(mol: &CInt) -> Vec<usize> {
     const ATOM_OF: usize = libcint::ffi::cint_ffi::ATOM_OF as usize;
     // remove duplicates and sort
