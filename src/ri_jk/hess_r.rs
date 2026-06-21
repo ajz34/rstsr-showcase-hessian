@@ -14,6 +14,11 @@
 //! > Bykov, et al. Mol Phys. 113, 1961 (2015). DOI: 10.1080/00268976.2015.1025114
 
 use crate::prelude::*;
+#[allow(unused_imports)]
+use FlagSide::L as Left;
+#[allow(unused_imports)]
+use FlagSide::R as Right;
+
 use crate::ri_jk::decompose::*;
 use crate::ri_jk::pure_decompose::{get_j2c_decomp, solve_by_j2c};
 
@@ -974,7 +979,7 @@ pub fn generate_cderi_with_decomp(
 ) -> (Tsr, J2CDecompose) {
     let j3c = hess_intor_cross(&[mol, mol, aux], "int3c2e", "s2ij", None, device);
     let j2c_decomp = get_j2c_decomp(aux, device, j2c_decomp_option);
-    let cderi = solve_by_j2c(j3c, &j2c_decomp, false);
+    let cderi = solve_by_j2c(j3c, &j2c_decomp, Right, false);
     (cderi, j2c_decomp)
 }
 
@@ -991,7 +996,12 @@ pub struct RHessRIJK<'a> {
 
 impl<'a> RHessRIJK<'a> {
     pub fn new_without_cderi(mol: &CInt, aux: &CInt, scale_j: f64, scale_k: f64) -> Self {
-        let j2c_decomp_option = J2CDecompOption::default();
+        let j2c_decomp_option = J2CDecompOption { policy: J2CDecompPolicy::Cd, threshold: Some(1e-14), uplo: Upper };
+        // note: the following two options are also valid
+        // let j2c_decomp_option = J2CDecompOption { policy: J2CDecompPolicy::Cd, threshold: Some(1e-14),
+        // uplo: Lower };
+        // let j2c_decomp_option = J2CDecompOption { policy: J2CDecompPolicy::Eig, threshold: Some(1e-14),
+        // uplo: Upper };
         let device = DeviceTsr::default();
         let (cderi, j2c_decomp) = generate_cderi_with_decomp(mol, aux, j2c_decomp_option, &device);
         Self {
