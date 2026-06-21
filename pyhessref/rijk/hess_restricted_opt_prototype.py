@@ -12,9 +12,11 @@ from pyhessref.util import get_dm0_restricted
 from pyhessref.hess_trait_restricted import RHessElecInteractAPI
 from pyhessref.rijk.hess_restricted_naive import get_rijk_response_bra_naive
 
-# override einsum for some efficiency
+# local optimized einsum for this module's own contractions.
+# NOTE: do *not* monkeypatch the global `np.einsum` -- that perturbs PySCF internals
+# (which use np.einsum) and shifts integral values by ~1e-9, breaking tight fingerprint
+# tolerances in co-loaded test modules (e.g. the UHF naive places=8 checks).
 einsum = partial(np.einsum, optimize=True)
-np.einsum = partial(np.einsum, optimize=True)
 
 
 def gen_solve_by_j2c(int2c):

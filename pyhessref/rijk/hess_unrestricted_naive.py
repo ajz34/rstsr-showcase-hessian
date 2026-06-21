@@ -89,11 +89,19 @@ def get_uik_deriv1_ao_naive(
 
     Returns a dict whose values have shape ``[2, natm, 3, nao, nao]`` (the leading
     dimension indexes spin).
+
+    Only the AO-form keys (``k1ao_*``, uniform ``[natm, 3, nao, nao]`` across spins) are
+    stacked. The bra-form keys (``k1bra_*``) have a spin-dependent ``nocc`` axis and are
+    therefore not stackable into a single array; they are dropped here (the AO path only
+    consumes ``k1ao_*``). The per-spin bra derivatives are available directly from
+    ``get_rik_deriv1_ao_naive`` if needed.
     """
     out = {}
     for s in range(2):
         per_spin = get_rik_deriv1_ao_naive(mol, aux, mo_coeff[s], mo_occ[s])
         for k, v in per_spin.items():
+            if not k.startswith("k1ao"):
+                continue
             if k not in out:
                 out[k] = np.zeros((2,) + v.shape)
             out[k][s] = v
