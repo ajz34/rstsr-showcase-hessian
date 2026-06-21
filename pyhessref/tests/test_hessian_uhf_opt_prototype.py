@@ -13,11 +13,7 @@ from pyhessref.rijk.hess_unrestricted_naive import (
     get_uij_deriv1_ao_naive,
     get_uik_deriv1_ao_naive,
 )
-from pyhessref.rijk.hess_unrestricted_opt_prototype import (
-    UHessRIJKOptPrototype,
-    get_decomposed_uij_skeleton_deriv2_opt,
-    get_decomposed_uik_skeleton_deriv2_opt,
-)
+from pyhessref.rijk.hess_unrestricted_opt_prototype import UHessRIJKOptPrototype
 from pyhessref.hess_scf_unrestricted import UHessSCF
 
 
@@ -47,24 +43,6 @@ def setUpModule():
 
 
 class TestHessianUHFOptPrototype(unittest.TestCase):
-    def test_get_decomposed_uij_skeleton_opt(self):
-        """UHF J skeleton (optimized, via fake-mo reuse) matches the stored reference."""
-        cderi = mf.with_df._cderi
-        de_J_skeleton = get_decomposed_uij_skeleton_deriv2_opt(
-            mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72
-        )
-        for key in ["de_J20", "de_J11", "de_J02"]:
-            self.assertTrue(np.allclose(de_J_skeleton[key], ref_value[key], atol=1e-5, rtol=1e-4), msg=key)
-
-    def test_get_decomposed_uik_skeleton_opt(self):
-        """UHF K skeleton (optimized, per-spin reuse, summed) matches the stored reference."""
-        cderi = mf.with_df._cderi
-        de_K_skeleton = get_decomposed_uik_skeleton_deriv2_opt(
-            mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72
-        )
-        for key in ["de_K20", "de_K11", "de_K02"]:
-            self.assertTrue(np.allclose(de_K_skeleton[key], ref_value[key], atol=1e-5, rtol=1e-4), msg=key)
-
     def test_uhess_rijk_opt_api(self):
         """The optimized-prototype class matches UHessRIJKNaive on skeleton + deriv1_bra."""
         cderi = mf.with_df._cderi

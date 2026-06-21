@@ -8,7 +8,7 @@ from pyscf import gto, ao2mo, lib
 from functools import partial
 from pyscf.df.grad.rhf import _int3c_wrapper
 
-from pyhessref.util import get_dm0_restricted
+from pyhessref.util import get_dm0_restricted, get_dm0_unrestricted
 from pyhessref.hess_trait_restricted import RHessElecInteractAPI
 from pyhessref.rijk.hess_restricted_naive import get_rijk_response_bra_naive
 
@@ -971,68 +971,73 @@ def get_decomposed_skeleton(
 
 
 # =====================================================================================
-# Separated implementation.
+# Separated implementation (J/K split).
 #
 # `get_decomposed_skeleton` above is the single-function baseline kept for implementation
 # comprehension. `get_decomposed_skeleton_separated` below decomposes it into per-region
-# private helpers. This is a prototype for a strongly-typed (Rust) translation, so the data
-# flow is kept explicit:
+# private helpers with J and K evaluation **separated**, so that:
+#   - J-only functionals (PBE) or K-only functionals (future range-separated) can skip the
+#     unused half entirely (`do_j` / `do_k` keywords);
+#   - UHF runs J (total density, once) + K^alpha + K^beta in a single pass that **shares each
+#     3c-integral batch** across J and all K spins (vs 3 separate optimizer calls before).
 #
-#   ctx  : dict of *tensors* kept through the whole program (acceptable to store). Members:
-#          - essentials:  cderi, dm0, mocc, mocc_2, occ_invsqrt
-#          - llcd_eri_aux / llcd_eri_occ / llcd_eri_bra   (the J/K ERIs; bra is the largest,
-#            one naux*nocc*nao tensor held through the program is acceptable)
-#          - j2c terms:   j2c_ip1, lcd_j2c_ip1, llcd_j2c_ip1, j2c_inv
-#            (j2c-related terms are acceptable to store; comparable in size to llcd_eri_bra.
-#             Single-downstream-consumer ones are `pop`-ed at that consumer.)
-#   dims: dict of integer sizes {nao, naux, nocc, natm}.
-#   usual args: mol, aux, aoslices, auxslices, aux_ranges, solve_by_j2c.
+# Layering (mirrors the verified tensor ownership):
+#   shared : j2c terms (j2c_ip1, lcd_j2c_ip1, llcd_j2c_ip1, j2c_inv) + cderi + slices +
+#            solve_by_j2c + mol/aux + dims. The only J-and-K-shared tensors. j2c terms are
+#            "acceptable to store", so they are not aggressively pop-ed mid-stream.
+#   j_ctx  : dm0 (true total density) + llcd_eri_aux. Built from dm0 ONLY (no MOs needed for J).
+#            None when do_j=False. J is dm-only.
+#   k_ctx[sigma] : mocc/mocc_2/occ_invsqrt/nocc + llcd_eri_occ + llcd_eri_bra, per spin.
+#            [] when do_k=False. K is occupation-only.
 #
-# Large / handled-with-care tensors are NOT in ctx -- they are passed as explicit arguments so
-# their lifetime is visible (the j3c-k `*bra*` chain is naux*nocc*nao with a 3x derivative
-# factor; multiple bra tensors must not be alive at once). Specifically:
-#   - the j3c_ip1 bra chain (j3c_ip1_bra -> lcd_j3c_ip1_bra -> llcd_j3c_ip1_bra) and the
-#     j3c_ip1 aux chain are built and freed *inside* _evaluate_ip1 (local lifetime, no args).
-#   - the region-5 -> region-6 seam (j3c_ip2_aux, j3c_ip2_occ, fold_eri_bra) is built in
-#     _evaluate_ip2, returned as the `seam` tuple, and passed into _evaluate_ip1, which frees
-#     each at its last consumer.
+# Input: mo_coeff 2D [nao,nmo] + mo_occ 1D [nmo] -> RHF (1 K channel, unsqueezed to
+#        [1,nao,nmo]/[1,nmo]); 3D [2,nao,nmo] + 2D [2,nmo] -> UHF (2 K channels).
+# dm0 ([nao,nao], optional): if given, used for J directly; else built from mo.
 #
-# Memory win vs the baseline: the six FULL3c_* 3c-2e derivative integrals are generated lazily
-# inside the single region that consumes them (_evaluate_oneshot / _evaluate_ip2 /
-# _evaluate_ip1) and freed at the end of that region, instead of all six being built up-front.
+# Return: (j_result | None, k_results: list[dict]) -- one dict per K spin (unsuffixed keys),
+#         spin distinguished by list position.
+#
+# NOTE (K20-1a): the factor `* dm0` in the baseline K20-1a is really `mocc_2 @ mocc_2.T` (a
+# per-spin occupation product), NOT the true density. For RHF occ=2 they coincide; for UHF
+# per-spin they do not. Here K20-1a[sigma] uses `mocc_2[sigma] @ mocc_2[sigma].T`, so dm0 stays
+# J-only and the unified UHF path is correct.
 # =====================================================================================
 
 
-def _prepare_common(mol, aux, mo_coeff, mo_occ, cderi, nbatch_aux, atm_list):
-    """Regions 1.1-1.4 + 2: returns (ctx, dims, aoslices, auxslices, aux_ranges, solve_by_j2c).
+# --- result-key groups (shared between this module and the API classes) --- #
+_J20_KEYS = ("de_J20_1", "de_J20_2", "de_J20_3")
+_J11_KEYS = ("de_J11_1", "de_J11_2", "de_J11_3", "de_J11_4")
+_J02_KEYS = ("de_J02_1", "de_J02_2", "de_J02_3a", "de_J02_3b", "de_J02_4",
+             "de_J02_5", "de_J02_6", "de_J02_7", "de_J02_8")
+_K20_KEYS = ("de_K20_1a", "de_K20_1b", "de_K20_2", "de_K20_3")
+_K11_KEYS = ("de_K11_1", "de_K11_2", "de_K11_3", "de_K11_4")
+_K02_KEYS = ("de_K02_1", "de_K02_2", "de_K02_3a", "de_K02_3b", "de_K02_4",
+             "de_K02_5", "de_K02_6", "de_K02_7", "de_K02_8")
+_J1AO_KEYS = ("j1ao_aux0", "j1ao_aux1_1", "j1ao_aux1_2", "j1ao_aux1_3", "j1ao_aux1_4")
+_K1BRA_KEYS = ("k1bra_aux0_1", "k1bra_aux0_2", "k1bra_aux0_3", "k1bra_aux0_4",
+               "k1bra_aux1_1", "k1bra_aux1_2", "k1bra_aux1_3", "k1bra_aux1_4")
 
-    `ctx` holds the kept tensors (essentials + llcd_eri_* + j2c terms); `dims` the integer
-    sizes. dm0_tp and j2c_l_inv are local transients (freed here). No FULL3c_* yet.
+
+
+def _prepare_shared(mol, aux, cderi, nbatch_aux, atm_list):
+    """Build the J/K-shared layer.
+
+    Returns ``(dims, aoslices, auxslices, aux_ranges, solve_by_j2c, shared)`` where:
+    - ``dims``   : numbers-only dict {nao, naux, natm}.
+    - ``shared`` : tensors-only dict {cderi, j2c_ip1, lcd_j2c_ip1, llcd_j2c_ip1, j2c_inv}
+                   (the j2c terms, the only tensors consumed by both J and K regions).
+    - the rest (mol, aux, aoslices, auxslices, aux_ranges, solve_by_j2c) are special-typed and
+      returned to be passed as direct arguments (not stored in a dict).
     """
     nao = mol.nao
     naux = aux.nao
 
-    # --- 1.2 occupation --- #
-    occidx = mo_occ > 0
-    mocc = mo_coeff[:, occidx]
-    occ = mo_occ[occidx]
-    nocc = len(occ)
-    mocc_2 = mocc * np.sqrt(occ)
-    occ_invsqrt = occ**-0.5
-    dm0 = get_dm0_restricted(mo_coeff, mo_occ)
-    dm0_ = 2 * dm0
-    for i in range(nao):
-        dm0_[i, i] *= 0.5
-    dm0_tp = lib.pack_tril(dm0_)
-
-    # --- 1.3 aoslices --- #
     aoslices = mol.aoslice_by_atom()
     auxslices = aux.aoslice_by_atom()
     aoslices = aoslices if atm_list is None else [aoslices[A] for A in atm_list]
     auxslices = auxslices if atm_list is None else [auxslices[A] for A in atm_list]
     natm = len(aoslices)
 
-    # --- 1.4 partition --- #
     aux_ranges_ = ao2mo.outcore.balance_partition(aux.ao_loc, nbatch_aux)
     aux_ranges = []
     p0 = 0
@@ -1041,24 +1046,9 @@ def _prepare_common(mol, aux, mo_coeff, mo_occ, cderi, nbatch_aux, atm_list):
         aux_ranges.append((sh0, sh1, p0, p1))
         p0 = p1
 
-    # --- 2.1 solve_by_j2c --- #
     j2c = aux.intor("int2c2e")
     solve_by_j2c = gen_solve_by_j2c(j2c)
 
-    # --- 2.2 cderi related --- #
-    lcd_eri_aux = cderi @ dm0_tp
-    lcd_eri_occ = np.empty([naux, nocc, nocc])
-    lcd_eri_bra = np.empty([naux, nocc, nao])
-    for p in range(naux):  # PAR-ITER
-        tmp1 = lib.unpack_tril(cderi[p])
-        lcd_eri_bra[p] = mocc_2.T @ tmp1
-        lcd_eri_occ[p] = lcd_eri_bra[p] @ mocc_2
-    llcd_eri_aux = solve_by_j2c(lcd_eri_aux, left=True, flip=True)
-    llcd_eri_occ = solve_by_j2c(lcd_eri_occ, left=True, flip=True)
-    llcd_eri_bra = solve_by_j2c(lcd_eri_bra, left=True, flip=True)
-    del lcd_eri_aux, lcd_eri_occ, lcd_eri_bra, dm0_tp
-
-    # --- 2.3 2c related --- #
     j2c_ip1 = aux.intor("int2c2e_ip1")
     j2c_ip1 = np.ascontiguousarray(einsum("tPQ -> tQP", j2c_ip1))
     lcd_j2c_ip1 = np.asarray([solve_by_j2c(m, left=True, flip=False) for m in j2c_ip1])
@@ -1067,220 +1057,229 @@ def _prepare_common(mol, aux, mo_coeff, mo_occ, cderi, nbatch_aux, atm_list):
     j2c_inv = solve_by_j2c(j2c_l_inv.T, left=True, flip=True)
     del j2c_l_inv
 
-    ctx = {
-        "cderi": cderi,
-        "dm0": dm0,
-        "mocc": mocc,
-        "mocc_2": mocc_2,
-        "occ_invsqrt": occ_invsqrt,
-        "llcd_eri_aux": llcd_eri_aux,
-        "llcd_eri_occ": llcd_eri_occ,
-        "llcd_eri_bra": llcd_eri_bra,
-        "j2c_ip1": j2c_ip1,
-        "lcd_j2c_ip1": lcd_j2c_ip1,
-        "llcd_j2c_ip1": llcd_j2c_ip1,
-        "j2c_inv": j2c_inv,
+    dims = {"nao": nao, "naux": naux, "natm": natm}
+    shared = {
+        "cderi": cderi, "j2c_ip1": j2c_ip1, "lcd_j2c_ip1": lcd_j2c_ip1,
+        "llcd_j2c_ip1": llcd_j2c_ip1, "j2c_inv": j2c_inv,
     }
-    dims = {"nao": nao, "naux": naux, "nocc": nocc, "natm": natm}
-    return ctx, dims, aoslices, auxslices, aux_ranges, solve_by_j2c
+    return dims, aoslices, auxslices, aux_ranges, solve_by_j2c, shared
 
 
-def _evaluate_jk02_ipip1(ctx, dims, aux, auxslices):
-    """Regions 3j2 + 3k2: aux-pair terms from j2c 2nd derivatives.
+def _prepare_j(shared, solve_by_j2c, dims, dm0):
+    """Build the J input layer from the total density `dm0` (no MOs needed).
 
-    Builds j2c_ipip1 / j2c_ip1ip2 / fold_eri_aux locally (j2c 2nd-derivs, only used here) and
-    frees them at the end. lcd_j2c_ip1 is still needed downstream (j1ao aux1-4) -> left in ctx.
+    Returns ``j_in``: tensors-only dict {dm0, llcd_eri_aux}, or None.
+    """
+    if dm0 is None:
+        return None
+    nao = dims["nao"]
+    cderi = shared["cderi"]
+    dm0_ = 2 * dm0
+    for i in range(nao):
+        dm0_[i, i] *= 0.5
+    dm0_tp = lib.pack_tril(dm0_)
+    llcd_eri_aux = solve_by_j2c(cderi @ dm0_tp, left=True, flip=True)
+    del dm0_tp
+    return {"dm0": dm0, "llcd_eri_aux": llcd_eri_aux}
+
+
+def _prepare_k(shared, solve_by_j2c, mo_coeff_s, mo_occ_s):
+    """Build one K-spin input layer from (mo_coeff_s [nao,nmo], mo_occ_s [nmo]).
+
+    Returns ``k_in``: tensors-only dict {mocc, mocc_2, occ_invsqrt, llcd_eri_occ, llcd_eri_bra}.
+    (``nocc`` is derived downstream from ``mocc_2.shape[1]`` so the dict stays tensors-only.)
+    """
+    naux = shared["cderi"].shape[0]  # = dims["naux"]
+    nao = mo_coeff_s.shape[0]
+    cderi = shared["cderi"]
+    occidx = mo_occ_s > 1e-15
+    mocc = mo_coeff_s[:, occidx]
+    occ = mo_occ_s[occidx]
+    mocc_2 = mocc * np.sqrt(occ)
+    occ_invsqrt = occ**-0.5
+    nocc = mocc_2.shape[1]
+
+    # build lcd_eri_occ/bra via per-p unpack; llcd via solve.
+    lcd_eri_occ = np.empty([naux, nocc, nocc])
+    lcd_eri_bra = np.empty([naux, nocc, nao])
+    for p in range(naux):  # PAR-ITER
+        tmp1 = lib.unpack_tril(cderi[p])
+        lcd_eri_bra[p] = mocc_2.T @ tmp1
+        lcd_eri_occ[p] = lcd_eri_bra[p] @ mocc_2
+    llcd_eri_occ = solve_by_j2c(lcd_eri_occ, left=True, flip=True)
+    llcd_eri_bra = solve_by_j2c(lcd_eri_bra, left=True, flip=True)
+    del lcd_eri_occ, lcd_eri_bra
+    return {
+        "mocc": mocc, "mocc_2": mocc_2, "occ_invsqrt": occ_invsqrt,
+        "llcd_eri_occ": llcd_eri_occ, "llcd_eri_bra": llcd_eri_bra,
+    }
+
+
+def _evaluate_jk02_ipip1(dims, aux, auxslices, shared, j_in, k_ins, j_out, k_outs):
+    """Regions 3j2 + 3k2: aux-pair terms from j2c 2nd derivatives (no 3c integrals).
+
+    Builds j2c_ipip1 / j2c_ip1ip2 locally (shared by J and K) and frees them at the end.
+    `j_in`/`k_ins` are input tensor dicts; `j_out`/`k_outs` are output tensor dicts (mutated).
     """
     naux = dims["naux"]
     natm = dims["natm"]
-    llcd_eri_aux = ctx["llcd_eri_aux"]
-    llcd_eri_occ = ctx["llcd_eri_occ"]
-    j2c_ip1 = ctx["j2c_ip1"]
-    lcd_j2c_ip1 = ctx["lcd_j2c_ip1"]
-    llcd_j2c_ip1 = ctx["llcd_j2c_ip1"]
-    j2c_inv = ctx["j2c_inv"]
+    j2c_ip1 = shared["j2c_ip1"]
+    lcd_j2c_ip1 = shared["lcd_j2c_ip1"]
+    llcd_j2c_ip1 = shared["llcd_j2c_ip1"]
+    j2c_inv = shared["j2c_inv"]
 
     j2c_ipip1 = aux.intor("int2c2e_ipip1").reshape([3, 3, naux, naux])
     j2c_ip1ip2 = aux.intor("int2c2e_ip1ip2").reshape([3, 3, naux, naux])
     j2c_ipip1 = np.ascontiguousarray(einsum("tsPQ -> tsQP", j2c_ipip1))
     j2c_ip1ip2 = np.ascontiguousarray(einsum("tsPQ -> tsQP", j2c_ip1ip2))
-    fold_eri_aux = llcd_eri_occ.reshape(naux, -1) @ llcd_eri_occ.reshape(naux, -1).T
 
-    # --- J02-2 --- #
-    dbas_J02_2 = (j2c_ipip1 * llcd_eri_aux).sum(axis=-1) * llcd_eri_aux
-    dbas_J02_2 *= -1
+    # --- J02-2/3a/3b/6/8 --- #
+    if j_in is not None:
+        llcd_eri_aux = j_in["llcd_eri_aux"]
+        dbas_J02_2 = (j2c_ipip1 * llcd_eri_aux).sum(axis=-1) * llcd_eri_aux
+        dbas_J02_2 *= -1
+        dbas_J02_3a = j2c_ip1ip2 * llcd_eri_aux[:, None] * llcd_eri_aux[None, :]
+        dbas_J02_3a *= -0.5
+        tmp1 = lcd_j2c_ip1 * llcd_eri_aux
+        dbas_J02_3b = tmp1[:, None].swapaxes(-1, -2) @ tmp1[None, :]
+        dbas_J02_3b *= 0.5
+        tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+        dbas_J02_6 = tmp1[:, None, :, None] * j2c_inv * tmp1[None, :, None, :]
+        dbas_J02_6 *= 0.5
+        tmp2 = llcd_j2c_ip1 * llcd_eri_aux
+        dbas_J02_8 = tmp1[:, None, :, None] * tmp2
+        dbas_J02_8 *= -1
+        de_J02_2 = np.zeros((natm, natm, 3, 3))
+        de_J02_3a = np.zeros((natm, natm, 3, 3))
+        de_J02_3b = np.zeros((natm, natm, 3, 3))
+        de_J02_6 = np.zeros((natm, natm, 3, 3))
+        de_J02_8 = np.zeros((natm, natm, 3, 3))
+        for A, (_, _, p0A, p1A) in enumerate(auxslices):
+            de_J02_2[A, A] = dbas_J02_2[..., p0A:p1A].sum(axis=-1)
+            for B, (_, _, p0B, p1B) in enumerate(auxslices):
+                de_J02_3a[A, B] = dbas_J02_3a[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_J02_3b[A, B] = dbas_J02_3b[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_J02_6[A, B] = dbas_J02_6[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_J02_8[A, B] = dbas_J02_8[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        de_J02_3a += de_J02_3a.transpose(1, 0, 3, 2)
+        de_J02_3b += de_J02_3b.transpose(1, 0, 3, 2)
+        de_J02_6 += de_J02_6.transpose(1, 0, 3, 2)
+        de_J02_8 += de_J02_8.transpose(1, 0, 3, 2)
+        j_out["de_J02_2"] = de_J02_2
+        j_out["de_J02_3a"] = de_J02_3a
+        j_out["de_J02_3b"] = de_J02_3b
+        j_out["de_J02_6"] = de_J02_6
+        j_out["de_J02_8"] = de_J02_8
 
-    # --- J02-3a --- #
-    dbas_J02_3a = j2c_ip1ip2 * llcd_eri_aux[:, None] * llcd_eri_aux[None, :]
-    dbas_J02_3a *= -0.5
+    # --- K02-2/3a/3b/6/8 (per spin) --- #
+    for k_in, k_out in zip(k_ins, k_outs):
+        llcd_eri_occ = k_in["llcd_eri_occ"]
+        fold_eri_aux = llcd_eri_occ.reshape(naux, -1) @ llcd_eri_occ.reshape(naux, -1).T
+        dbas_K02_2 = (j2c_ipip1 * fold_eri_aux).sum(axis=-1)
+        dbas_K02_2 *= -1
+        dbas_K02_3a = j2c_ip1ip2 * fold_eri_aux
+        dbas_K02_3a *= -0.5
+        dbas_K02_3b = lcd_j2c_ip1[:, None].swapaxes(-1, -2) @ lcd_j2c_ip1[None, :] * fold_eri_aux
+        dbas_K02_3b *= 0.5
+        dbas_K02_6 = j2c_ip1[:, None] @ fold_eri_aux @ j2c_ip1[None, :] * j2c_inv
+        dbas_K02_6 *= -0.5
+        dbas_K02_8 = fold_eri_aux @ j2c_ip1[None, :].swapaxes(-1, -2) * llcd_j2c_ip1[:, None].swapaxes(-1, -2)
+        dbas_K02_8 *= -1
+        de_K02_2 = np.zeros((natm, natm, 3, 3))
+        de_K02_3a = np.zeros((natm, natm, 3, 3))
+        de_K02_3b = np.zeros((natm, natm, 3, 3))
+        de_K02_6 = np.zeros((natm, natm, 3, 3))
+        de_K02_8 = np.zeros((natm, natm, 3, 3))
+        for A, (_, _, p0A, p1A) in enumerate(auxslices):
+            de_K02_2[A, A] = dbas_K02_2[..., p0A:p1A].sum(axis=-1)
+            for B, (_, _, p0B, p1B) in enumerate(auxslices):
+                de_K02_3a[A, B] = dbas_K02_3a[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_K02_3b[A, B] = dbas_K02_3b[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_K02_6[A, B] = dbas_K02_6[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_K02_8[A, B] = dbas_K02_8[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        de_K02_3a += de_K02_3a.transpose(1, 0, 3, 2)
+        de_K02_3b += de_K02_3b.transpose(1, 0, 3, 2)
+        de_K02_6 += de_K02_6.transpose(1, 0, 3, 2)
+        de_K02_8 += de_K02_8.transpose(1, 0, 3, 2)
+        k_out["de_K02_2"] = de_K02_2
+        k_out["de_K02_3a"] = de_K02_3a
+        k_out["de_K02_3b"] = de_K02_3b
+        k_out["de_K02_6"] = de_K02_6
+        k_out["de_K02_8"] = de_K02_8
 
-    # --- J02-3b --- #
-    tmp1 = lcd_j2c_ip1 * llcd_eri_aux
-    dbas_J02_3b = tmp1[:, None].swapaxes(-1, -2) @ tmp1[None, :]
-    dbas_J02_3b *= 0.5
-
-    # --- J02-6 --- #
-    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
-    dbas_J02_6 = tmp1[:, None, :, None] * j2c_inv * tmp1[None, :, None, :]
-    dbas_J02_6 *= 0.5
-
-    # --- J02-8 --- #
-    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
-    tmp2 = llcd_j2c_ip1 * llcd_eri_aux
-    dbas_J02_8 = tmp1[:, None, :, None] * tmp2
-    dbas_J02_8 *= -1
-
-    result = {}
-    de_J02_2 = np.zeros((natm, natm, 3, 3))
-    de_J02_3a = np.zeros((natm, natm, 3, 3))
-    de_J02_3b = np.zeros((natm, natm, 3, 3))
-    de_J02_6 = np.zeros((natm, natm, 3, 3))
-    de_J02_8 = np.zeros((natm, natm, 3, 3))
-    for A, (_, _, p0A, p1A) in enumerate(auxslices):
-        de_J02_2[A, A] = dbas_J02_2[..., p0A:p1A].sum(axis=-1)
-        for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_3a[A, B] = dbas_J02_3a[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_J02_3b[A, B] = dbas_J02_3b[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_J02_6[A, B] = dbas_J02_6[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_J02_8[A, B] = dbas_J02_8[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-    de_J02_3a += de_J02_3a.transpose(1, 0, 3, 2)
-    de_J02_3b += de_J02_3b.transpose(1, 0, 3, 2)
-    de_J02_6 += de_J02_6.transpose(1, 0, 3, 2)
-    de_J02_8 += de_J02_8.transpose(1, 0, 3, 2)
-    result["de_J02_2"] = de_J02_2
-    result["de_J02_3a"] = de_J02_3a
-    result["de_J02_3b"] = de_J02_3b
-    result["de_J02_6"] = de_J02_6
-    result["de_J02_8"] = de_J02_8
-    del dbas_J02_2, dbas_J02_3a, dbas_J02_3b, dbas_J02_6, dbas_J02_8
-
-    # --- K02-2 --- #
-    dbas_K02_2 = (j2c_ipip1 * fold_eri_aux).sum(axis=-1)
-    dbas_K02_2 *= -1
-
-    # --- K02-3a --- #
-    dbas_K02_3a = j2c_ip1ip2 * fold_eri_aux
-    dbas_K02_3a *= -0.5
-
-    # --- K02-3b --- #
-    dbas_K02_3b = lcd_j2c_ip1[:, None].swapaxes(-1, -2) @ lcd_j2c_ip1[None, :] * fold_eri_aux
-    dbas_K02_3b *= 0.5
-
-    # --- K02-6 --- #
-    dbas_K02_6 = j2c_ip1[:, None] @ fold_eri_aux @ j2c_ip1[None, :] * j2c_inv
-    dbas_K02_6 *= -0.5
-
-    # --- K02-8 --- #
-    dbas_K02_8 = fold_eri_aux @ j2c_ip1[None, :].swapaxes(-1, -2) * llcd_j2c_ip1[:, None].swapaxes(-1, -2)
-    dbas_K02_8 *= -1
-
-    de_K02_2 = np.zeros((natm, natm, 3, 3))
-    de_K02_3a = np.zeros((natm, natm, 3, 3))
-    de_K02_3b = np.zeros((natm, natm, 3, 3))
-    de_K02_6 = np.zeros((natm, natm, 3, 3))
-    de_K02_8 = np.zeros((natm, natm, 3, 3))
-    for A, (_, _, p0A, p1A) in enumerate(auxslices):
-        de_K02_2[A, A] = dbas_K02_2[..., p0A:p1A].sum(axis=-1)
-        for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_K02_3a[A, B] = dbas_K02_3a[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K02_3b[A, B] = dbas_K02_3b[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K02_6[A, B] = dbas_K02_6[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K02_8[A, B] = dbas_K02_8[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-    de_K02_3a += de_K02_3a.transpose(1, 0, 3, 2)
-    de_K02_3b += de_K02_3b.transpose(1, 0, 3, 2)
-    de_K02_6 += de_K02_6.transpose(1, 0, 3, 2)
-    de_K02_8 += de_K02_8.transpose(1, 0, 3, 2)
-    result["de_K02_2"] = de_K02_2
-    result["de_K02_3a"] = de_K02_3a
-    result["de_K02_3b"] = de_K02_3b
-    result["de_K02_6"] = de_K02_6
-    result["de_K02_8"] = de_K02_8
-    del dbas_K02_2, dbas_K02_3a, dbas_K02_3b, dbas_K02_6, dbas_K02_8
-    del j2c_ipip1, j2c_ip1ip2, fold_eri_aux
-    return result
+    del j2c_ipip1, j2c_ip1ip2
 
 
-def _evaluate_aux1(ctx, dims, auxslices, solve_by_j2c):
-    """Regions 3j1 + 3k1: j1ao/k1bra aux1-3/4 (j2c_ip1 only, no 3c integrals).
-
-    Last consumer of lcd_j2c_ip1 (j1ao aux1-4) -> pop from ctx.
-    """
+def _evaluate_aux1(dims, auxslices, solve_by_j2c, shared, j_in, k_ins, j_out, k_outs):
+    """Regions 3j1 + 3k1: j1ao/k1bra aux1-3/4 (j2c_ip1 only, no 3c integrals)."""
     nao = dims["nao"]
     naux = dims["naux"]
-    nocc = dims["nocc"]
     natm = dims["natm"]
-    cderi = ctx["cderi"]
-    occ_invsqrt = ctx["occ_invsqrt"]
-    llcd_eri_aux = ctx["llcd_eri_aux"]
-    llcd_eri_occ = ctx["llcd_eri_occ"]
-    llcd_eri_bra = ctx["llcd_eri_bra"]
-    j2c_ip1 = ctx["j2c_ip1"]
-    lcd_j2c_ip1 = ctx.pop("lcd_j2c_ip1")  # last consumer is j1ao aux1-4 below
+    cderi = shared["cderi"]
+    j2c_ip1 = shared["j2c_ip1"]
+    lcd_j2c_ip1 = shared["lcd_j2c_ip1"]
 
-    # --- j1ao aux1-3 --- #
-    tmp1 = -(j2c_ip1 * llcd_eri_aux).sum(axis=-1)
-    tmp2 = np.zeros((natm, 3, naux))
-    for A in range(natm):
-        _, _, p0, p1 = auxslices[A]
-        slcA = slice(p0, p1)
-        tmp2[A, :, slcA] = tmp1[:, slcA]
-    tmp3 = solve_by_j2c(tmp2, left=False, flip=True)
-    j1ao_aux1_3_tp = tmp3.reshape(natm * 3, naux) @ cderi
-    j1ao_aux1_3 = lib.unpack_tril(j1ao_aux1_3_tp).reshape(natm, 3, nao, nao)
-
-    # --- j1ao aux1-4 --- #
-    tmp1 = lcd_j2c_ip1 * llcd_eri_aux
-    tmp2 = np.zeros((natm, 3, naux))
-    for A in range(natm):
-        _, _, p0, p1 = auxslices[A]
-        slcA = slice(p0, p1)
-        tmp2[A] = tmp1[:, :, slcA].sum(axis=-1)
-    j1ao_aux1_4_tp = tmp2.reshape(natm * 3, naux) @ cderi
-    j1ao_aux1_4 = lib.unpack_tril(j1ao_aux1_4_tp).reshape(natm, 3, nao, nao)
-    del lcd_j2c_ip1
-
-    # --- k1bra aux1-3 --- #
-    k1bra_aux1_3 = np.zeros([natm, 3, nocc, nao])
-    for t in range(3):
-        tmp1 = j2c_ip1[t].T @ llcd_eri_bra.reshape(naux, nocc * nao)
-        tmp1 = tmp1.reshape(naux, nocc, nao)
+    # --- j1ao aux1-3 / aux1-4 (J) --- #
+    if j_in is not None:
+        llcd_eri_aux = j_in["llcd_eri_aux"]
+        tmp1 = -(j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+        tmp2 = np.zeros((natm, 3, naux))
         for A in range(natm):
             _, _, p0, p1 = auxslices[A]
             slcA = slice(p0, p1)
-            k1bra_aux1_3[A, t] = llcd_eri_occ[slcA].reshape(-1, nocc).T @ tmp1[slcA].reshape(-1, nao)
-    k1bra_aux1_3 *= occ_invsqrt[None, None, :, None]
+            tmp2[A, :, slcA] = tmp1[:, slcA]
+        tmp3 = solve_by_j2c(tmp2, left=False, flip=True)
+        j1ao_aux1_3_tp = tmp3.reshape(natm * 3, naux) @ cderi
+        j1ao_aux1_3 = lib.unpack_tril(j1ao_aux1_3_tp).reshape(natm, 3, nao, nao)
 
-    # --- k1bra aux1-4 --- #
-    k1bra_aux1_4 = np.zeros([natm, 3, nocc, nao])
-    for t in range(3):
-        tmp1 = (j2c_ip1[t].T @ llcd_eri_occ.reshape(naux, nocc * nocc)).reshape(naux, nocc, nocc)
+        tmp1 = lcd_j2c_ip1 * llcd_eri_aux
+        tmp2 = np.zeros((natm, 3, naux))
         for A in range(natm):
             _, _, p0, p1 = auxslices[A]
             slcA = slice(p0, p1)
-            k1bra_aux1_4[A, t] = tmp1[slcA].reshape(-1, nocc).T @ llcd_eri_bra[slcA].reshape(-1, nao)
-    k1bra_aux1_4 *= occ_invsqrt[None, None, :, None]
+            tmp2[A] = tmp1[:, :, slcA].sum(axis=-1)
+        j1ao_aux1_4_tp = tmp2.reshape(natm * 3, naux) @ cderi
+        j1ao_aux1_4 = lib.unpack_tril(j1ao_aux1_4_tp).reshape(natm, 3, nao, nao)
+        j_out["j1ao_aux1_3"] = j1ao_aux1_3
+        j_out["j1ao_aux1_4"] = j1ao_aux1_4
 
-    return {
-        "j1ao_aux1_3": j1ao_aux1_3,
-        "j1ao_aux1_4": j1ao_aux1_4,
-        "k1bra_aux1_3": k1bra_aux1_3,
-        "k1bra_aux1_4": k1bra_aux1_4,
-    }
+    # --- k1bra aux1-3 / aux1-4 (per spin) --- #
+    for k_in, k_out in zip(k_ins, k_outs):
+        nocc = k_in["mocc_2"].shape[1]
+        llcd_eri_occ = k_in["llcd_eri_occ"]
+        llcd_eri_bra = k_in["llcd_eri_bra"]
+        occ_invsqrt = k_in["occ_invsqrt"]
+        k1bra_aux1_3 = np.zeros([natm, 3, nocc, nao])
+        for t in range(3):
+            tmp1 = j2c_ip1[t].T @ llcd_eri_bra.reshape(naux, nocc * nao)
+            tmp1 = tmp1.reshape(naux, nocc, nao)
+            for A in range(natm):
+                _, _, p0, p1 = auxslices[A]
+                slcA = slice(p0, p1)
+                k1bra_aux1_3[A, t] = llcd_eri_occ[slcA].reshape(-1, nocc).T @ tmp1[slcA].reshape(-1, nao)
+        k1bra_aux1_3 *= occ_invsqrt[None, None, :, None]
+
+        k1bra_aux1_4 = np.zeros([natm, 3, nocc, nao])
+        for t in range(3):
+            tmp1 = (j2c_ip1[t].T @ llcd_eri_occ.reshape(naux, nocc * nocc)).reshape(naux, nocc, nocc)
+            for A in range(natm):
+                _, _, p0, p1 = auxslices[A]
+                slcA = slice(p0, p1)
+                k1bra_aux1_4[A, t] = tmp1[slcA].reshape(-1, nocc).T @ llcd_eri_bra[slcA].reshape(-1, nao)
+        k1bra_aux1_4 *= occ_invsqrt[None, None, :, None]
+        k_out["k1bra_aux1_3"] = k1bra_aux1_3
+        k_out["k1bra_aux1_4"] = k1bra_aux1_4
 
 
-def _evaluate_oneshot(ctx, dims, mol, aux, aoslices, auxslices, aux_ranges):
+def _evaluate_oneshot(dims, mol, aux, aoslices, auxslices, aux_ranges, shared, j_in, k_ins, j_out, k_outs):
     """Region 4: one-shot derivative terms.
 
-    Generates its own FULL3c 2nd-deriv integrals (ipvip1/ipip1/ip1ip2/ipip2) and frees them
-    at the end -- the only consumer.
+    Generates the 4 FULL3c 2nd-deriv integrals once; each batch consumed by J (if present) and
+    every K spin. Frees them at the end -- the only consumer.
     """
     nao = dims["nao"]
     naux = dims["naux"]
     natm = dims["natm"]
-    dm0 = ctx["dm0"]
-    mocc_2 = ctx["mocc_2"]
-    llcd_eri_aux = ctx["llcd_eri_aux"]
-    llcd_eri_occ = ctx["llcd_eri_occ"]
 
     FULL3c_ipvip1 = _int3c_wrapper(mol, aux, "int3c2e_ipvip1", "s1")().reshape([3, 3, nao, nao, naux])
     FULL3c_ipip1 = _int3c_wrapper(mol, aux, "int3c2e_ipip1", "s1")().reshape([3, 3, nao, nao, naux])
@@ -1291,128 +1290,137 @@ def _evaluate_oneshot(ctx, dims, mol, aux, aoslices, auxslices, aux_ranges):
     FULL3c_ip1ip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ip1ip2))
     FULL3c_ipip2 = np.ascontiguousarray(einsum("tsuvP -> tsPvu", FULL3c_ipip2))
 
-    dbas_J20_2 = np.zeros((3, 3, nao, nao))
-    dbas_J20_3 = np.zeros((3, 3, nao, nao))
-    dbas_J11_1 = np.zeros((3, 3, nao, naux))
-    dbas_J02_1 = np.zeros((3, 3, naux))
-    dbas_K20_2 = np.zeros((3, 3, nao, nao))
-    dbas_K20_3 = np.zeros((3, 3, nao, nao))
-    dbas_K11_1 = np.zeros((3, 3, nao, naux))
-    dbas_K02_1 = np.zeros((3, 3, naux))
+    if j_in is not None:
+        dbas_J20_2 = np.zeros((3, 3, nao, nao))
+        dbas_J20_3 = np.zeros((3, 3, nao, nao))
+        dbas_J11_1 = np.zeros((3, 3, nao, naux))
+        dbas_J02_1 = np.zeros((3, 3, naux))
+    k_dbas = []
+    for k_in in k_ins:
+        k_dbas.append({
+            "K20_2": np.zeros((3, 3, nao, nao)),
+            "K20_3": np.zeros((3, 3, nao, nao)),
+            "K11_1": np.zeros((3, 3, nao, naux)),
+            "K02_1": np.zeros((3, 3, naux)),
+        })
 
     for _sh0, _sh1, p0, p1 in aux_ranges:
-        # --- J20-2 --- #
         j3c_ipvip1_batch = FULL3c_ipvip1[:, :, p0:p1]
-        tmp1 = (j3c_ipvip1_batch * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
-        dbas_J20_2 += tmp1.swapaxes(-1, -2) * dm0
-
-        # --- J20-3 --- #
         j3c_ipip1_batch = FULL3c_ipip1[:, :, p0:p1]
-        tmp1 = (j3c_ipip1_batch * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
-        dbas_J20_3 += tmp1.swapaxes(-1, -2) * dm0
-
-        # --- J11-1 --- #
         j3c_ip1ip2_batch = FULL3c_ip1ip2[:, :, p0:p1]
-        tmp1 = (j3c_ip1ip2_batch * dm0).sum(axis=-2).swapaxes(-1, -2)
-        dbas_J11_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
-
-        # --- J02-1 --- #
         j3c_ipip2_batch = FULL3c_ipip2[:, :, p0:p1]
-        tmp1 = (j3c_ipip2_batch * dm0).sum(axis=(-1, -2))
-        dbas_J02_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
-        # --- K preparation --- #
-        tmp_k_ao = mocc_2 @ llcd_eri_occ[p0:p1] @ mocc_2.T
+        if j_in is not None:
+            dm0 = j_in["dm0"]
+            llcd_eri_aux = j_in["llcd_eri_aux"]
+            tmp1 = (j3c_ipvip1_batch * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+            dbas_J20_2 += tmp1.swapaxes(-1, -2) * dm0
+            tmp1 = (j3c_ipip1_batch * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+            dbas_J20_3 += tmp1.swapaxes(-1, -2) * dm0
+            tmp1 = (j3c_ip1ip2_batch * dm0).sum(axis=-2).swapaxes(-1, -2)
+            dbas_J11_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
+            tmp1 = (j3c_ipip2_batch * dm0).sum(axis=(-1, -2))
+            dbas_J02_1[..., p0:p1] = tmp1 * llcd_eri_aux[p0:p1]
 
-        # --- K20-2 --- #
-        dbas_K20_2 += (j3c_ipvip1_batch * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
+        for k_in, kdb in zip(k_ins, k_dbas):
+            mocc_2 = k_in["mocc_2"]
+            llcd_eri_occ = k_in["llcd_eri_occ"]
+            tmp_k_ao = mocc_2 @ llcd_eri_occ[p0:p1] @ mocc_2.T
+            kdb["K20_2"] += (j3c_ipvip1_batch * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
+            kdb["K20_3"] += (j3c_ipip1_batch * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
+            tmp1 = (j3c_ip1ip2_batch * tmp_k_ao).sum(axis=-2).swapaxes(-1, -2)
+            kdb["K11_1"][..., p0:p1] = tmp1
+            kdb["K02_1"][..., p0:p1] = (j3c_ipip2_batch * tmp_k_ao).sum(axis=(-1, -2))
 
-        # --- K20-3 --- #
-        dbas_K20_3 += (j3c_ipip1_batch * tmp_k_ao).sum(axis=-3).swapaxes(-1, -2)
-
-        # --- K11-1 --- #
-        tmp1 = (j3c_ip1ip2_batch * tmp_k_ao).sum(axis=-2).swapaxes(-1, -2)
-        dbas_K11_1[..., p0:p1] = tmp1
-
-        # --- K02-1 --- #
-        dbas_K02_1[..., p0:p1] = (j3c_ipip2_batch * tmp_k_ao).sum(axis=(-1, -2))
-
-    de_J20_2 = np.zeros((natm, natm, 3, 3))
-    de_J20_3 = np.zeros((natm, natm, 3, 3))
-    de_J11_1 = np.zeros((natm, natm, 3, 3))
-    de_J02_1 = np.zeros((natm, natm, 3, 3))
-    de_K20_2 = np.zeros((natm, natm, 3, 3))
-    de_K20_3 = np.zeros((natm, natm, 3, 3))
-    de_K11_1 = np.zeros((natm, natm, 3, 3))
-    de_K02_1 = np.zeros((natm, natm, 3, 3))
-    for A, (_, _, p0A, p1A) in enumerate(aoslices):
-        de_J20_3[A, A] = 2 * dbas_J20_3[..., p0A:p1A, :].sum(axis=(-1, -2))
-        de_K20_3[A, A] = 2 * dbas_K20_3[..., p0A:p1A, :].sum(axis=(-1, -2))
-        for B, (_, _, p0B, p1B) in enumerate(aoslices):
-            de_J20_2[A, B] = 2 * dbas_J20_2[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K20_2[A, B] = 2 * dbas_K20_2[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-    for A, (_, _, p0A, p1A) in enumerate(aoslices):
-        for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J11_1[A, B] = 2 * dbas_J11_1[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K11_1[A, B] = 2 * dbas_K11_1[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-    de_J11_1 += de_J11_1.transpose(1, 0, 3, 2)
-    de_K11_1 += de_K11_1.transpose(1, 0, 3, 2)
-    for A, (_, _, p0A, p1A) in enumerate(auxslices):
-        de_J02_1[A, A] = dbas_J02_1[..., p0A:p1A].sum(axis=-1)
-        de_K02_1[A, A] = dbas_K02_1[..., p0A:p1A].sum(axis=-1)
     del FULL3c_ipvip1, FULL3c_ipip1, FULL3c_ip1ip2, FULL3c_ipip2
-    return {
-        "de_J20_2": de_J20_2,
-        "de_J20_3": de_J20_3,
-        "de_J11_1": de_J11_1,
-        "de_J02_1": de_J02_1,
-        "de_K20_2": de_K20_2,
-        "de_K20_3": de_K20_3,
-        "de_K11_1": de_K11_1,
-        "de_K02_1": de_K02_1,
-    }
+
+    if j_in is not None:
+        de_J20_2 = np.zeros((natm, natm, 3, 3))
+        de_J20_3 = np.zeros((natm, natm, 3, 3))
+        de_J11_1 = np.zeros((natm, natm, 3, 3))
+        de_J02_1 = np.zeros((natm, natm, 3, 3))
+        for A, (_, _, p0A, p1A) in enumerate(aoslices):
+            de_J20_3[A, A] = 2 * dbas_J20_3[..., p0A:p1A, :].sum(axis=(-1, -2))
+            for B, (_, _, p0B, p1B) in enumerate(aoslices):
+                de_J20_2[A, B] = 2 * dbas_J20_2[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        for A, (_, _, p0A, p1A) in enumerate(aoslices):
+            for B, (_, _, p0B, p1B) in enumerate(auxslices):
+                de_J11_1[A, B] = 2 * dbas_J11_1[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        de_J11_1 += de_J11_1.transpose(1, 0, 3, 2)
+        for A, (_, _, p0A, p1A) in enumerate(auxslices):
+            de_J02_1[A, A] = dbas_J02_1[..., p0A:p1A].sum(axis=-1)
+        j_out["de_J20_2"] = de_J20_2
+        j_out["de_J20_3"] = de_J20_3
+        j_out["de_J11_1"] = de_J11_1
+        j_out["de_J02_1"] = de_J02_1
+
+    for k_in, kdb, k_out in zip(k_ins, k_dbas, k_outs):
+        de_K20_2 = np.zeros((natm, natm, 3, 3))
+        de_K20_3 = np.zeros((natm, natm, 3, 3))
+        de_K11_1 = np.zeros((natm, natm, 3, 3))
+        de_K02_1 = np.zeros((natm, natm, 3, 3))
+        for A, (_, _, p0A, p1A) in enumerate(aoslices):
+            de_K20_3[A, A] = 2 * kdb["K20_3"][..., p0A:p1A, :].sum(axis=(-1, -2))
+            for B, (_, _, p0B, p1B) in enumerate(aoslices):
+                de_K20_2[A, B] = 2 * kdb["K20_2"][..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        for A, (_, _, p0A, p1A) in enumerate(aoslices):
+            for B, (_, _, p0B, p1B) in enumerate(auxslices):
+                de_K11_1[A, B] = 2 * kdb["K11_1"][..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        de_K11_1 += de_K11_1.transpose(1, 0, 3, 2)
+        for A, (_, _, p0A, p1A) in enumerate(auxslices):
+            de_K02_1[A, A] = kdb["K02_1"][..., p0A:p1A].sum(axis=-1)
+        k_out["de_K20_2"] = de_K20_2
+        k_out["de_K20_3"] = de_K20_3
+        k_out["de_K11_1"] = de_K11_1
+        k_out["de_K02_1"] = de_K02_1
 
 
-def _evaluate_ip2(ctx, dims, mol, aux, auxslices, aux_ranges, solve_by_j2c):
+def _evaluate_ip2(dims, mol, aux, auxslices, aux_ranges, solve_by_j2c, shared, j_in, k_ins, j_out, k_outs):
     """Region 5: ip2-only derivative terms.
 
-    Generates its own FULL3c_ip2 (only consumer) and frees it at the end. Builds the shared
-    ip2 intermediates j3c_ip2_aux / j3c_ip2_occ / fold_eri_bra, which are returned as the
-    `seam` dict for _evaluate_ip1 (J11-4 / K11-4 / K11-2,3); those are large (naux*nocc*nao
-    class) so they are NOT stored in ctx -- their lifetime is explicit via the return value.
-    Last consumer of llcd_j2c_ip1 and j2c_inv -> pop from ctx.
+    Generates FULL3c_ip2 once; each batch consumed by J (j3c_ip2_aux, j1ao_aux1_1) and every K
+    spin (j3c_ip2_occ, k1bra_aux1_2). Returns the region-5 -> region-6 seam:
+    (j_seam, k_seams) where j_seam = {"j3c_ip2_aux"} (or {}) and k_seams[sigma] =
+    {"j3c_ip2_occ", "fold_eri_bra"} (or {}). All seam dicts are tensors-only.
     """
     nao = dims["nao"]
     naux = dims["naux"]
-    nocc = dims["nocc"]
     natm = dims["natm"]
-    dm0 = ctx["dm0"]
-    mocc_2 = ctx["mocc_2"]
-    occ_invsqrt = ctx["occ_invsqrt"]
-    cderi = ctx["cderi"]
-    llcd_eri_aux = ctx["llcd_eri_aux"]
-    llcd_eri_occ = ctx["llcd_eri_occ"]
-    llcd_eri_bra = ctx["llcd_eri_bra"]
-    j2c_ip1 = ctx["j2c_ip1"]
-    llcd_j2c_ip1 = ctx.pop("llcd_j2c_ip1")  # last consumers: J02-7 / K02-7 below
-    j2c_inv = ctx.pop("j2c_inv")  # last consumers: J02-4/5 / K02-4/5 below
+    cderi = shared["cderi"]
+    j2c_ip1 = shared["j2c_ip1"]
+    llcd_j2c_ip1 = shared["llcd_j2c_ip1"]
+    j2c_inv = shared["j2c_inv"]
 
     FULL3c_ip2 = _int3c_wrapper(mol, aux, "int3c2e_ip2", "s1")().reshape([3, nao, nao, naux])
     FULL3c_ip2 = np.ascontiguousarray(einsum("tuvP -> tPvu", FULL3c_ip2))
 
-    # --- shared ip2 intermediate --- #
-    j3c_ip2_aux = np.zeros((3, naux))
-    j3c_ip2_occ = np.zeros((3, naux, nocc, nocc))
-    j1ao_aux1_1 = np.zeros((natm, 3, nao, nao))
-    k1bra_aux1_2 = np.zeros((natm, 3, nocc, nao))
-    fold_eri_bra = llcd_eri_occ @ mocc_2.T  # [naux, nocc, nao]  (l = u AO index)
+    # J intermediates (output tensors, held only if J present)
+    j3c_ip2_aux = np.zeros((3, naux)) if j_in is not None else None
+    j1ao_aux1_1 = np.zeros((natm, 3, nao, nao)) if j_in is not None else None
+    # K per-spin intermediate tensor dicts (all-tensor)
+    k_int = []
+    for k_in in k_ins:
+        nocc = k_in["mocc_2"].shape[1]
+        mocc_2 = k_in["mocc_2"]
+        k_int.append({
+            "j3c_ip2_occ": np.zeros((3, naux, nocc, nocc)),
+            "k1bra_aux1_2": np.zeros((natm, 3, nocc, nao)),
+            "fold_eri_bra": k_in["llcd_eri_occ"] @ mocc_2.T,  # [naux, nocc, nao]
+        })
+
+    llcd_eri_aux = j_in["llcd_eri_aux"] if j_in is not None else None
+    dm0 = j_in["dm0"] if j_in is not None else None
+
     for _sh0, _sh1, p0, p1 in aux_ranges:
         j3c_ip2_batch = FULL3c_ip2[:, p0:p1]
-        j3c_ip2_aux[:, p0:p1] = (j3c_ip2_batch * dm0).sum(axis=(-1, -2))
-        for t in range(3):
-            j3c_ip2_occ[t, p0:p1] = mocc_2.T @ j3c_ip2_batch[t] @ mocc_2  # [P, i, j]
+        if j_in is not None:
+            j3c_ip2_aux[:, p0:p1] = (j3c_ip2_batch * dm0).sum(axis=(-1, -2))
+        for ki, k_in in zip(k_int, k_ins):
+            mocc_2 = k_in["mocc_2"]
+            for t in range(3):
+                ki["j3c_ip2_occ"][t, p0:p1] = mocc_2.T @ j3c_ip2_batch[t] @ mocc_2
 
-        # --- j1ao_aux1_1 / k1bra_aux1_2 --- #
+        # j1ao_aux1_1 (J) + k1bra_aux1_2 (K): share the atom-slice overlap on the same batch.
         for A in range(natm):
             _, _, p0A, p1A = auxslices[A]
             start = max(p0, p0A)
@@ -1421,339 +1429,337 @@ def _evaluate_ip2(ctx, dims, mol, aux, auxslices, aux_ranges, solve_by_j2c):
                 continue
             slc_batch = slice(start - p0, end - p0)
             slc_full = slice(start, end)
-            j1ao_aux1_1[A] += -(j3c_ip2_batch[:, slc_batch] * llcd_eri_aux[slc_full, None, None]).sum(axis=1)
-            for t in range(3):
-                k1bra_aux1_2[A, t] += (
-                    -(fold_eri_bra[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0) * occ_invsqrt[:, None]
-                )
-
-    # --- J02-4 --- #
-    tmp1 = -(j2c_ip1 * llcd_eri_aux).sum(axis=-1)
-    dbas_J02_4 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, None, :] * j2c_inv
-    dbas_J02_4 *= -1
-
-    # --- J02-5 --- #
-    dbas_J02_5 = j3c_ip2_aux[:, None, :, None] * j3c_ip2_aux[None, :, None, :] * j2c_inv
-    dbas_J02_5 *= 0.5
-
-    # --- J02-7 --- #
-    tmp1 = llcd_j2c_ip1 * llcd_eri_aux[None, None, :]
-    dbas_J02_7 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, :, :]
-    dbas_J02_7 *= -1
-
-    # --- K02-4 --- #
-    tmp1 = (j2c_ip1 @ llcd_eri_occ.reshape(naux, -1)).reshape(3, naux, nocc, nocc)  # [s, Q, i, j]
-    dbas_K02_4 = np.empty((3, 3, naux, naux))
-    j3c_ip2_occ_2d = j3c_ip2_occ.reshape(3, naux, nocc * nocc)  # [t, P, ij]
-    for s in range(3):
-        tmp1_s = tmp1[s].reshape(naux, nocc * nocc).T  # [ij, Q]
-        dbas_K02_4[:, s] = (j3c_ip2_occ_2d @ tmp1_s) * j2c_inv  # [t, P, Q]
-    dbas_K02_4 *= 1
-
-    # --- K02-5 --- #
-    dbas_K02_5 = np.empty((3, 3, naux, naux))
-    for s in range(3):
-        tmp1_s = j3c_ip2_occ[s].reshape(naux, nocc * nocc).T  # [ij, Q]
-        dbas_K02_5[:, s] = (j3c_ip2_occ_2d @ tmp1_s) * j2c_inv  # [t, P, Q]
-    dbas_K02_5 *= 0.5
-
-    # --- K02-7 --- #
-    llcd_eri_occ_2d = llcd_eri_occ.reshape(naux, nocc * nocc).T  # [ij, R]
-    tmp1 = np.empty((3, naux, naux))  # [t, P, R]
-    for t in range(3):
-        tmp1[t] = j3c_ip2_occ_2d[t] @ llcd_eri_occ_2d  # [P, ij] @ [ij, R] -> [P, R]
-    dbas_K02_7 = tmp1[:, None, :, :] * llcd_j2c_ip1[None, :, :, :]  # [t, s, P, R]
-    dbas_K02_7 *= -1
-    del llcd_j2c_ip1, j2c_inv
-
-    # --- skeleton j2/k2 (ip2-only) sum --- #
-    de_J02_4 = np.zeros((natm, natm, 3, 3))
-    de_J02_5 = np.zeros((natm, natm, 3, 3))
-    de_J02_7 = np.zeros((natm, natm, 3, 3))
-    de_K02_4 = np.zeros((natm, natm, 3, 3))
-    de_K02_5 = np.zeros((natm, natm, 3, 3))
-    de_K02_7 = np.zeros((natm, natm, 3, 3))
-    for A, (_, _, p0A, p1A) in enumerate(auxslices):
-        for B, (_, _, p0B, p1B) in enumerate(auxslices):
-            de_J02_4[A, B] = dbas_J02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_J02_5[A, B] = dbas_J02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_J02_7[A, B] = dbas_J02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K02_4[A, B] = dbas_K02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K02_5[A, B] = dbas_K02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-            de_K02_7[A, B] = dbas_K02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
-    de_J02_4 += de_J02_4.transpose(1, 0, 3, 2)
-    de_J02_5 += de_J02_5.transpose(1, 0, 3, 2)
-    de_J02_7 += de_J02_7.transpose(1, 0, 3, 2)
-    de_K02_4 += de_K02_4.transpose(1, 0, 3, 2)
-    de_K02_5 += de_K02_5.transpose(1, 0, 3, 2)
-    de_K02_7 += de_K02_7.transpose(1, 0, 3, 2)
-    del dbas_J02_4, dbas_J02_5, dbas_J02_7, dbas_K02_4, dbas_K02_5, dbas_K02_7
-
-    # --- j1ao aux1-2 --- #
-    tmp1 = np.zeros((natm, 3, naux))
-    for A in range(natm):
-        _, _, p0, p1 = auxslices[A]
-        slcA = slice(p0, p1)
-        tmp1[A, :, slcA] = j3c_ip2_aux[:, slcA]
-    tmp2 = solve_by_j2c(tmp1, left=False, flip=True)
-    j1ao_aux1_2_tp = tmp2.reshape(natm * 3, naux) @ cderi
-    j1ao_aux1_2 = -lib.unpack_tril(j1ao_aux1_2_tp).reshape(natm, 3, nao, nao)
-
-    # --- k1bra aux1-1 --- #
-    k1bra_aux1_1 = np.zeros((natm, 3, nocc, nao))
-    for A in range(natm):
-        _, _, p0, p1 = auxslices[A]
-        slcA = slice(p0, p1)
-        for t in range(3):
-            k1bra_aux1_1[A, t] = -(j3c_ip2_occ[t, slcA] @ llcd_eri_bra[slcA]).sum(axis=0)
-    k1bra_aux1_1 *= occ_invsqrt[None, None, :, None]
+            if j_in is not None:
+                j1ao_aux1_1[A] += -(j3c_ip2_batch[:, slc_batch] * llcd_eri_aux[slc_full, None, None]).sum(axis=1)
+            for ki, k_in in zip(k_int, k_ins):
+                fold_eri_bra = ki["fold_eri_bra"]
+                occ_invsqrt = k_in["occ_invsqrt"]
+                for t in range(3):
+                    ki["k1bra_aux1_2"][A, t] += (
+                        -(fold_eri_bra[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0) * occ_invsqrt[:, None]
+                    )
 
     del FULL3c_ip2
-    result = {
-        "j1ao_aux1_1": j1ao_aux1_1,
-        "k1bra_aux1_2": k1bra_aux1_2,
-        "de_J02_4": de_J02_4,
-        "de_J02_5": de_J02_5,
-        "de_J02_7": de_J02_7,
-        "de_K02_4": de_K02_4,
-        "de_K02_5": de_K02_5,
-        "de_K02_7": de_K02_7,
-        "j1ao_aux1_2": j1ao_aux1_2,
-        "k1bra_aux1_1": k1bra_aux1_1,
-    }
-    # region-5 -> region-6 seam: large bra-class tensors, handed to _evaluate_ip1 explicitly.
-    seam = {
-        "j3c_ip2_aux": j3c_ip2_aux,
-        "j3c_ip2_occ": j3c_ip2_occ,
-        "fold_eri_bra": fold_eri_bra,
-    }
-    return result, seam
+
+    # --- J02-4/5/7 + j1ao_aux1_2 (J) --- #
+    if j_in is not None:
+        tmp1 = -(j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+        dbas_J02_4 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, None, :] * j2c_inv
+        dbas_J02_4 *= -1
+        dbas_J02_5 = j3c_ip2_aux[:, None, :, None] * j3c_ip2_aux[None, :, None, :] * j2c_inv
+        dbas_J02_5 *= 0.5
+        tmp1 = llcd_j2c_ip1 * llcd_eri_aux[None, None, :]
+        dbas_J02_7 = j3c_ip2_aux[:, None, :, None] * tmp1[None, :, :, :]
+        dbas_J02_7 *= -1
+        de_J02_4 = np.zeros((natm, natm, 3, 3))
+        de_J02_5 = np.zeros((natm, natm, 3, 3))
+        de_J02_7 = np.zeros((natm, natm, 3, 3))
+        for A, (_, _, p0A, p1A) in enumerate(auxslices):
+            for B, (_, _, p0B, p1B) in enumerate(auxslices):
+                de_J02_4[A, B] = dbas_J02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_J02_5[A, B] = dbas_J02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_J02_7[A, B] = dbas_J02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        de_J02_4 += de_J02_4.transpose(1, 0, 3, 2)
+        de_J02_5 += de_J02_5.transpose(1, 0, 3, 2)
+        de_J02_7 += de_J02_7.transpose(1, 0, 3, 2)
+        tmp1 = np.zeros((natm, 3, naux))
+        for A in range(natm):
+            _, _, p0, p1 = auxslices[A]
+            slcA = slice(p0, p1)
+            tmp1[A, :, slcA] = j3c_ip2_aux[:, slcA]
+        tmp2 = solve_by_j2c(tmp1, left=False, flip=True)
+        j1ao_aux1_2_tp = tmp2.reshape(natm * 3, naux) @ cderi
+        j1ao_aux1_2 = -lib.unpack_tril(j1ao_aux1_2_tp).reshape(natm, 3, nao, nao)
+        j_out["j1ao_aux1_1"] = j1ao_aux1_1
+        j_out["de_J02_4"] = de_J02_4
+        j_out["de_J02_5"] = de_J02_5
+        j_out["de_J02_7"] = de_J02_7
+        j_out["j1ao_aux1_2"] = j1ao_aux1_2
+
+    # --- K02-4/5/7 + k1bra_aux1_1 (per spin) --- #
+    for k_in, ki, k_out in zip(k_ins, k_int, k_outs):
+        nocc = k_in["mocc_2"].shape[1]
+        llcd_eri_occ = k_in["llcd_eri_occ"]
+        llcd_eri_bra = k_in["llcd_eri_bra"]
+        occ_invsqrt = k_in["occ_invsqrt"]
+        j3c_ip2_occ = ki["j3c_ip2_occ"]
+        tmp1 = (j2c_ip1 @ llcd_eri_occ.reshape(naux, -1)).reshape(3, naux, nocc, nocc)
+        dbas_K02_4 = np.empty((3, 3, naux, naux))
+        j3c_ip2_occ_2d = j3c_ip2_occ.reshape(3, naux, nocc * nocc)
+        for s in range(3):
+            tmp1_s = tmp1[s].reshape(naux, nocc * nocc).T
+            dbas_K02_4[:, s] = (j3c_ip2_occ_2d @ tmp1_s) * j2c_inv
+        dbas_K02_4 *= 1
+        dbas_K02_5 = np.empty((3, 3, naux, naux))
+        for s in range(3):
+            tmp1_s = j3c_ip2_occ[s].reshape(naux, nocc * nocc).T
+            dbas_K02_5[:, s] = (j3c_ip2_occ_2d @ tmp1_s) * j2c_inv
+        dbas_K02_5 *= 0.5
+        llcd_eri_occ_2d = llcd_eri_occ.reshape(naux, nocc * nocc).T
+        tmp1 = np.empty((3, naux, naux))
+        for t in range(3):
+            tmp1[t] = j3c_ip2_occ_2d[t] @ llcd_eri_occ_2d
+        dbas_K02_7 = tmp1[:, None, :, :] * llcd_j2c_ip1[None, :, :, :]
+        dbas_K02_7 *= -1
+        de_K02_4 = np.zeros((natm, natm, 3, 3))
+        de_K02_5 = np.zeros((natm, natm, 3, 3))
+        de_K02_7 = np.zeros((natm, natm, 3, 3))
+        for A, (_, _, p0A, p1A) in enumerate(auxslices):
+            for B, (_, _, p0B, p1B) in enumerate(auxslices):
+                de_K02_4[A, B] = dbas_K02_4[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_K02_5[A, B] = dbas_K02_5[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+                de_K02_7[A, B] = dbas_K02_7[..., p0A:p1A, p0B:p1B].sum(axis=(-1, -2))
+        de_K02_4 += de_K02_4.transpose(1, 0, 3, 2)
+        de_K02_5 += de_K02_5.transpose(1, 0, 3, 2)
+        de_K02_7 += de_K02_7.transpose(1, 0, 3, 2)
+        k1bra_aux1_1 = np.zeros((natm, 3, nocc, nao))
+        for A in range(natm):
+            _, _, p0, p1 = auxslices[A]
+            slcA = slice(p0, p1)
+            for t in range(3):
+                k1bra_aux1_1[A, t] = -(j3c_ip2_occ[t, slcA] @ llcd_eri_bra[slcA]).sum(axis=0)
+        k1bra_aux1_1 *= occ_invsqrt[None, None, :, None]
+        k_out["k1bra_aux1_2"] = ki["k1bra_aux1_2"]
+        k_out["de_K02_4"] = de_K02_4
+        k_out["de_K02_5"] = de_K02_5
+        k_out["de_K02_7"] = de_K02_7
+        k_out["k1bra_aux1_1"] = k1bra_aux1_1
+
+    j_seam = {"j3c_ip2_aux": j3c_ip2_aux} if j_in is not None else {}
+    k_seams = [{"j3c_ip2_occ": ki["j3c_ip2_occ"], "fold_eri_bra": ki["fold_eri_bra"]} for ki in k_int]
+    return j_seam, k_seams
 
 
-def _evaluate_ip1(ctx, dims, mol, aux, aoslices, auxslices, aux_ranges, solve_by_j2c, seam):
+def _evaluate_ip1(dims, mol, aux, aoslices, auxslices, aux_ranges, solve_by_j2c, shared,
+                  j_in, k_ins, j_out, k_outs, j_seam, k_seams):
     """Region 6: ip1 derivative terms.
 
-    Generates its own FULL3c_ip1 (only consumer) and frees it after the batched loop. The
-    j3c_ip1 bra chain (j3c_ip1_bra -> lcd_j3c_ip1_bra -> llcd_j3c_ip1_bra, the naux*nocc*nao
-    class with a 3x derivative factor) is built and freed *locally* -- each member freed once
-    its lcd_/llcd_ successor is built, so at most ~2 bra tensors are alive at once.
-
-    `seam` is a dict with keys {j3c_ip2_aux, j3c_ip2_occ, fold_eri_bra} from _evaluate_ip2;
-    each freed at its last consumer (j3c_ip2_aux after J11-4, fold_eri_bra after K11-3,
-    j3c_ip2_occ after K11-4). Last consumer of j2c_ip1 -> pop from ctx.
+    Generates FULL3c_ip1 once; each batch consumed by J (j3c_ip1_aux, j1ao_aux0 prep) and every
+    K spin (j3c_ip1_bra, k1ao_aux0 prep, k1bra_aux0_4). The per-spin bra chain
+    (j3c_ip1_bra -> lcd_j3c_ip1_bra -> llcd_j3c_ip1_bra) is then processed one spin at a time so
+    only one lcd/llcd bra chain is alive at once. K20-1a uses `mocc_2 @ mocc_2.T` (per-spin
+    occupation product), NOT dm0.
     """
     nao = dims["nao"]
     naux = dims["naux"]
-    nocc = dims["nocc"]
     natm = dims["natm"]
-    dm0 = ctx["dm0"]
-    mocc = ctx["mocc"]
-    mocc_2 = ctx["mocc_2"]
-    occ_invsqrt = ctx["occ_invsqrt"]
-    cderi = ctx["cderi"]
-    llcd_eri_aux = ctx["llcd_eri_aux"]
-    llcd_eri_bra = ctx["llcd_eri_bra"]
-    j2c_ip1 = ctx.pop("j2c_ip1")  # last consumers: J11-2/3 / K11-2/3 below
-    j3c_ip2_aux = seam.pop("j3c_ip2_aux")
-    j3c_ip2_occ = seam.pop("j3c_ip2_occ")
-    fold_eri_bra = seam.pop("fold_eri_bra")
+    cderi = shared["cderi"]
+    j2c_ip1 = shared["j2c_ip1"]
 
     FULL3c_ip1 = _int3c_wrapper(mol, aux, "int3c2e_ip1", "s1")().reshape([3, nao, nao, naux])
     FULL3c_ip1 = np.ascontiguousarray(einsum("tuvP -> tPvu", FULL3c_ip1))
 
-    j3c_ip1_aux = np.zeros((3, naux, nao))
-    j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
-    j3c_ip1_j1ao_tmp1 = np.zeros((3, nao, nao))
-    j3c_ip1_k1ao_tmp1 = np.zeros((3, nao, nao))
-    k1bra_aux0_4 = np.zeros((natm, 3, nocc, nao))
+    # per-spin batch-loop intermediates (held simultaneously)
+    k_bra = [None] * len(k_ins)          # j3c_ip1_bra[sigma]
+    k_k1ao_tmp = [None] * len(k_ins)     # j3c_ip1_k1ao_tmp1[sigma]
+    k1bra_aux0_4 = [np.zeros((natm, 3, k_in["mocc_2"].shape[1], nao)) for k_in in k_ins]
+    # J batch-loop intermediates
+    j3c_ip1_aux = np.zeros((3, naux, nao)) if j_in is not None else None
+    j3c_ip1_j1ao_tmp1 = np.zeros((3, nao, nao)) if j_in is not None else None
+
+    llcd_eri_aux = j_in["llcd_eri_aux"] if j_in is not None else None
+    dm0 = j_in["dm0"] if j_in is not None else None
+
     for _sh0, _sh1, p0, p1 in aux_ranges:
         j3c_ip1_batch = FULL3c_ip1[:, p0:p1]
-        j3c_ip1_aux[:, p0:p1] = (j3c_ip1_batch * dm0).sum(axis=-2)
-        j3c_ip1_bra[:, p0:p1] = mocc_2.T @ j3c_ip1_batch
-        j3c_ip1_j1ao_tmp1 += (FULL3c_ip1[:, p0:p1] * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
-        for t in range(3):
-            j3c_ip1_k1ao_tmp1[t] += j3c_ip1_bra[t, p0:p1].reshape(-1, nao).T @ llcd_eri_bra[p0:p1].reshape(-1, nao)
-        for A in range(natm):
-            _, _, p0A, p1A = aoslices[A]
-            slcA = slice(p0A, p1A)
-            tmp1 = fold_eri_bra[p0:p1, :, slcA].swapaxes(-1, -2).reshape(-1, nocc)
+        if j_in is not None:
+            j3c_ip1_aux[:, p0:p1] = (j3c_ip1_batch * dm0).sum(axis=-2)
+            j3c_ip1_j1ao_tmp1 += (FULL3c_ip1[:, p0:p1] * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+        for s, k_in in enumerate(k_ins):
+            nocc = k_in["mocc_2"].shape[1]
+            if k_bra[s] is None:
+                k_bra[s] = np.zeros((3, naux, nocc, nao))
+                k_k1ao_tmp[s] = np.zeros((3, nao, nao))
+            mocc_2 = k_in["mocc_2"]
+            llcd_eri_bra = k_in["llcd_eri_bra"]
+            fold_eri_bra = k_seams[s]["fold_eri_bra"]
+            k_bra[s][:, p0:p1] = mocc_2.T @ j3c_ip1_batch
             for t in range(3):
-                tmp2 = j3c_ip1_batch[t, :, :, slcA].swapaxes(-1, -2).reshape(-1, nao)
-                k1bra_aux0_4[A, t] -= tmp1.T @ tmp2
-    k1bra_aux0_4 *= occ_invsqrt[None, None, :, None]
+                k_k1ao_tmp[s][t] += k_bra[s][t, p0:p1].reshape(-1, nao).T @ llcd_eri_bra[p0:p1].reshape(-1, nao)
+            for A in range(natm):
+                _, _, p0A, p1A = aoslices[A]
+                slcA = slice(p0A, p1A)
+                tmp1 = fold_eri_bra[p0:p1, :, slcA].swapaxes(-1, -2).reshape(-1, nocc)
+                for t in range(3):
+                    tmp2 = j3c_ip1_batch[t, :, :, slcA].swapaxes(-1, -2).reshape(-1, nao)
+                    k1bra_aux0_4[s][A, t] -= tmp1.T @ tmp2
     del FULL3c_ip1
 
-    lcd_j3c_ip1_aux = np.zeros((3, naux, nao))
-    for t in range(3):
-        lcd_j3c_ip1_aux[t] = solve_by_j2c(j3c_ip1_aux[t], left=True, flip=False)
-    del j3c_ip1_aux
-
-    # --- j1ao aux0 --- #
-    j1ao_aux0 = np.zeros([natm, 3, nao, nao])
-    for A in range(natm):
-        sh0, sh1, p0, p1 = aoslices[A]
-        slcA = slice(p0, p1)
-        j1ao_aux0[A, :, slcA, :] -= j3c_ip1_j1ao_tmp1[:, :, slcA].swapaxes(-1, -2)
-        j1ao_aux0[A, :, :, slcA] -= j3c_ip1_j1ao_tmp1[:, :, slcA]
-        tmp1 = lcd_j3c_ip1_aux[:, :, slcA].sum(axis=-1)
-        tmp2 = np.einsum("tP, PU -> tU", tmp1, cderi)
-        j1ao_aux0[A] -= 2 * lib.unpack_tril(tmp2)
-    del j3c_ip1_j1ao_tmp1
-
-    # --- k1ao aux0 --- #
-    k1ao_aux0_1 = np.zeros([natm, 3, nao, nao])
-    k1ao_aux0_2 = np.zeros([natm, 3, nao, nao])
-    for A in range(natm):
-        sh0, sh1, p0, p1 = aoslices[A]
-        slcA = slice(p0, p1)
-        k1ao_aux0_1[A, :, slcA, :] -= j3c_ip1_k1ao_tmp1[:, slcA, :]
-        k1ao_aux0_2[A, :, :, slcA] -= j3c_ip1_k1ao_tmp1[:, slcA, :].swapaxes(-1, -2)
-    del j3c_ip1_k1ao_tmp1
-
-    k1bra_aux0_1 = mocc.T @ k1ao_aux0_1
-    k1bra_aux0_2 = mocc.T @ k1ao_aux0_2
-
-    # --- k1bra aux0-3 --- #
-    k1bra_aux0_3 = np.zeros([natm, 3, nocc, nao])
-    for A in range(natm):
-        sh0, sh1, p0, p1 = aoslices[A]
-        slcA = slice(p0, p1)
+    # --- J post-loop --- #
+    if j_in is not None:
+        lcd_j3c_ip1_aux = np.zeros((3, naux, nao))
         for t in range(3):
-            tmp1 = mocc_2[slcA].T @ j3c_ip1_bra[t, ..., slcA].swapaxes(-1, -2)  # [P, j, i]
-            tmp2 = tmp1.reshape(-1, nocc).T @ llcd_eri_bra.reshape(-1, nao)  # [i, u]
-            k1bra_aux0_3[A, t] -= tmp2 * occ_invsqrt[:, None]
+            lcd_j3c_ip1_aux[t] = solve_by_j2c(j3c_ip1_aux[t], left=True, flip=False)
+        del j3c_ip1_aux
 
-    lcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
-    for t in range(3):
-        lcd_j3c_ip1_bra[t] = solve_by_j2c(j3c_ip1_bra[t], left=True, flip=False)
-    del j3c_ip1_bra
+        j1ao_aux0 = np.zeros([natm, 3, nao, nao])
+        for A in range(natm):
+            sh0, sh1, p0, p1 = aoslices[A]
+            slcA = slice(p0, p1)
+            j1ao_aux0[A, :, slcA, :] -= j3c_ip1_j1ao_tmp1[:, :, slcA].swapaxes(-1, -2)
+            j1ao_aux0[A, :, :, slcA] -= j3c_ip1_j1ao_tmp1[:, :, slcA]
+            tmp1 = lcd_j3c_ip1_aux[:, :, slcA].sum(axis=-1)
+            tmp2 = np.einsum("tP, PU -> tU", tmp1, cderi)
+            j1ao_aux0[A] -= 2 * lib.unpack_tril(tmp2)
+        del j3c_ip1_j1ao_tmp1
 
-    # --- J20-1 --- #
-    dbas_J20_1 = np.zeros((3, 3, nao, nao))
-    for t in range(3):
-        for s in range(3):
-            dbas_J20_1[t, s] = lcd_j3c_ip1_aux[s].T @ lcd_j3c_ip1_aux[t]
-    dbas_J20_1 *= 2
-
-    # --- J11 preparation --- #
-    llcd_j3c_ip1_aux = np.zeros((3, naux, nao))
-    for t in range(3):
-        llcd_j3c_ip1_aux[t] = solve_by_j2c(lcd_j3c_ip1_aux[t], left=True, flip=True)
-    del lcd_j3c_ip1_aux
-
-    # --- J11-2 --- #
-    dbas_J11_2 = np.zeros([3, 3, naux, nao])
-    for t in range(3):
-        for s in range(3):
-            dbas_J11_2[t, s] = (j2c_ip1[s] * llcd_eri_aux).T @ llcd_j3c_ip1_aux[t]
-    dbas_J11_2 *= -2
-
-    # --- J11-3 --- #
-    tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
-    dbas_J11_3 = llcd_j3c_ip1_aux[:, None, :, :] * tmp1[None, :, :, None]
-    dbas_J11_3 *= 2
-
-    # --- J11-4 --- #
-    dbas_J11_4 = llcd_j3c_ip1_aux[:, None, :, :] * j3c_ip2_aux[None, :, :, None]
-    dbas_J11_4 *= 2
-    del llcd_j3c_ip1_aux, j3c_ip2_aux
-
-    # --- K20-1a --- #
-    dbas_K20_1a = np.zeros((3, 3, nao, nao))
-    lcd_j3c_ip1_bra_view = lcd_j3c_ip1_bra.reshape(3, naux * nocc, nao)
-    for t in range(3):
-        for s in range(3):
-            dbas_K20_1a[t, s] = (lcd_j3c_ip1_bra_view[s].T @ lcd_j3c_ip1_bra_view[t]) * dm0
-
-    # --- K20-1b --- #
-    dbas_K20_1b = np.zeros((3, 3, nao, nao))
-    for p in range(naux):  # PAR-ITER, use buffer for reduction
-        tmp1 = mocc_2 @ lcd_j3c_ip1_bra[:, p]  # [t, v, u]
-        dbas_K20_1b += tmp1[:, None, :, :] * tmp1[None, :, :, :].swapaxes(-1, -2)
-
-    # --- K11 preparation --- #
-    llcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
-    for t in range(3):
-        llcd_j3c_ip1_bra[t] = solve_by_j2c(lcd_j3c_ip1_bra[t], left=True, flip=True)
-    del lcd_j3c_ip1_bra
-
-    # --- K11-2 --- #
-    dbas_K11_2 = np.zeros((3, 3, naux, nao))
-    for t in range(3):
-        for s in range(3):
-            tmp1 = (j2c_ip1[s] @ llcd_j3c_ip1_bra[t].reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
-            dbas_K11_2[t, s] = (fold_eri_bra * tmp1).sum(axis=-2)
-    dbas_K11_2 *= 2
-
-    # --- K11-3 --- #
-    dbas_K11_3 = np.zeros((3, 3, naux, nao))
-    for s in range(3):
-        tmp1 = (j2c_ip1[s] @ fold_eri_bra.reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
+        dbas_J20_1 = np.zeros((3, 3, nao, nao))
         for t in range(3):
-            dbas_K11_3[t, s] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
-    dbas_K11_3 *= 2
-    del fold_eri_bra, j2c_ip1
+            for s in range(3):
+                dbas_J20_1[t, s] = lcd_j3c_ip1_aux[s].T @ lcd_j3c_ip1_aux[t]
+        dbas_J20_1 *= 2
 
-    # --- K11-4 --- #
-    dbas_K11_4 = np.zeros((3, 3, naux, nao))
-    for s in range(3):
-        tmp1 = j3c_ip2_occ[s] @ mocc_2.T
+        llcd_j3c_ip1_aux = np.zeros((3, naux, nao))
         for t in range(3):
-            dbas_K11_4[t, s] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
-    dbas_K11_4 *= 2
-    del llcd_j3c_ip1_bra, j3c_ip2_occ
+            llcd_j3c_ip1_aux[t] = solve_by_j2c(lcd_j3c_ip1_aux[t], left=True, flip=True)
+        del lcd_j3c_ip1_aux
 
-    de_J11_2 = np.zeros((natm, natm, 3, 3))
-    de_J11_3 = np.zeros((natm, natm, 3, 3))
-    de_J11_4 = np.zeros((natm, natm, 3, 3))
-    de_K11_2 = np.zeros((natm, natm, 3, 3))
-    de_K11_3 = np.zeros((natm, natm, 3, 3))
-    de_K11_4 = np.zeros((natm, natm, 3, 3))
-    for B, (_, _, p0B, p1B) in enumerate(auxslices):
-        for A, (_, _, p0A, p1A) in enumerate(aoslices):
-            de_J11_2[A, B] = dbas_J11_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_J11_3[A, B] = dbas_J11_3[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_J11_4[A, B] = dbas_J11_4[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_K11_2[A, B] = dbas_K11_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_K11_3[A, B] = dbas_K11_3[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_K11_4[A, B] = dbas_K11_4[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-    de_J11_2 += de_J11_2.transpose(1, 0, 3, 2)
-    de_J11_3 += de_J11_3.transpose(1, 0, 3, 2)
-    de_J11_4 += de_J11_4.transpose(1, 0, 3, 2)
-    de_K11_2 += de_K11_2.transpose(1, 0, 3, 2)
-    de_K11_3 += de_K11_3.transpose(1, 0, 3, 2)
-    de_K11_4 += de_K11_4.transpose(1, 0, 3, 2)
+        dbas_J11_2 = np.zeros([3, 3, naux, nao])
+        for t in range(3):
+            for s in range(3):
+                dbas_J11_2[t, s] = (j2c_ip1[s] * llcd_eri_aux).T @ llcd_j3c_ip1_aux[t]
+        dbas_J11_2 *= -2
+        tmp1 = (j2c_ip1 * llcd_eri_aux).sum(axis=-1)
+        dbas_J11_3 = llcd_j3c_ip1_aux[:, None, :, :] * tmp1[None, :, :, None]
+        dbas_J11_3 *= 2
+        j3c_ip2_aux = j_seam.pop("j3c_ip2_aux")
+        dbas_J11_4 = llcd_j3c_ip1_aux[:, None, :, :] * j3c_ip2_aux[None, :, :, None]
+        dbas_J11_4 *= 2
+        del llcd_j3c_ip1_aux, j3c_ip2_aux
 
-    de_J20_1 = np.zeros((natm, natm, 3, 3))
-    de_K20_1a = np.zeros((natm, natm, 3, 3))
-    de_K20_1b = np.zeros((natm, natm, 3, 3))
-    for B, (_, _, p0B, p1B) in enumerate(aoslices):
-        for A, (_, _, p0A, p1A) in enumerate(aoslices):
-            de_J20_1[A, B] = dbas_J20_1[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_K20_1a[A, B] = dbas_K20_1a[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-            de_K20_1b[A, B] = dbas_K20_1b[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
-    de_J20_1 += de_J20_1.transpose(1, 0, 3, 2)
-    de_K20_1a += de_K20_1a.transpose(1, 0, 3, 2)
-    de_K20_1b += de_K20_1b.transpose(1, 0, 3, 2)
+        de_J11_2 = np.zeros((natm, natm, 3, 3))
+        de_J11_3 = np.zeros((natm, natm, 3, 3))
+        de_J11_4 = np.zeros((natm, natm, 3, 3))
+        for B, (_, _, p0B, p1B) in enumerate(auxslices):
+            for A, (_, _, p0A, p1A) in enumerate(aoslices):
+                de_J11_2[A, B] = dbas_J11_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+                de_J11_3[A, B] = dbas_J11_3[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+                de_J11_4[A, B] = dbas_J11_4[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+        de_J11_2 += de_J11_2.transpose(1, 0, 3, 2)
+        de_J11_3 += de_J11_3.transpose(1, 0, 3, 2)
+        de_J11_4 += de_J11_4.transpose(1, 0, 3, 2)
+        de_J20_1 = np.zeros((natm, natm, 3, 3))
+        for B, (_, _, p0B, p1B) in enumerate(aoslices):
+            for A, (_, _, p0A, p1A) in enumerate(aoslices):
+                de_J20_1[A, B] = dbas_J20_1[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+        de_J20_1 += de_J20_1.transpose(1, 0, 3, 2)
+        j_out["j1ao_aux0"] = j1ao_aux0
+        j_out["de_J11_2"] = de_J11_2
+        j_out["de_J11_3"] = de_J11_3
+        j_out["de_J11_4"] = de_J11_4
+        j_out["de_J20_1"] = de_J20_1
 
-    return {
-        "k1bra_aux0_4": k1bra_aux0_4,
-        "j1ao_aux0": j1ao_aux0,
-        "k1ao_aux0_1": k1ao_aux0_1,
-        "k1ao_aux0_2": k1ao_aux0_2,
-        "k1bra_aux0_1": k1bra_aux0_1,
-        "k1bra_aux0_2": k1bra_aux0_2,
-        "k1bra_aux0_3": k1bra_aux0_3,
-        "de_J11_2": de_J11_2,
-        "de_J11_3": de_J11_3,
-        "de_J11_4": de_J11_4,
-        "de_K11_2": de_K11_2,
-        "de_K11_3": de_K11_3,
-        "de_K11_4": de_K11_4,
-        "de_J20_1": de_J20_1,
-        "de_K20_1a": de_K20_1a,
-        "de_K20_1b": de_K20_1b,
-    }
+    # --- K post-loop, per spin (sequential: one bra chain alive at a time) --- #
+    for s, k_in in enumerate(k_ins):
+        nocc = k_in["mocc_2"].shape[1]
+        mocc = k_in["mocc"]
+        mocc_2 = k_in["mocc_2"]
+        occ_invsqrt = k_in["occ_invsqrt"]
+        llcd_eri_bra = k_in["llcd_eri_bra"]
+        j3c_ip2_occ = k_seams[s]["j3c_ip2_occ"]
+        fold_eri_bra = k_seams[s]["fold_eri_bra"]
+        bra = k_bra[s]
+        k1ao_tmp = k_k1ao_tmp[s]
+
+        k1ao_aux0_1 = np.zeros([natm, 3, nao, nao])
+        k1ao_aux0_2 = np.zeros([natm, 3, nao, nao])
+        for A in range(natm):
+            sh0, sh1, p0, p1 = aoslices[A]
+            slcA = slice(p0, p1)
+            k1ao_aux0_1[A, :, slcA, :] -= k1ao_tmp[:, slcA, :]
+            k1ao_aux0_2[A, :, :, slcA] -= k1ao_tmp[:, slcA, :].swapaxes(-1, -2)
+        del k1ao_tmp
+        k_bra4 = k1bra_aux0_4[s]
+        k_bra4 *= occ_invsqrt[None, None, :, None]
+
+        k1bra_aux0_1 = mocc.T @ k1ao_aux0_1
+        k1bra_aux0_2 = mocc.T @ k1ao_aux0_2
+
+        k1bra_aux0_3 = np.zeros([natm, 3, nocc, nao])
+        for A in range(natm):
+            sh0, sh1, p0, p1 = aoslices[A]
+            slcA = slice(p0, p1)
+            for t in range(3):
+                tmp1 = mocc_2[slcA].T @ bra[t, ..., slcA].swapaxes(-1, -2)
+                tmp2 = tmp1.reshape(-1, nocc).T @ llcd_eri_bra.reshape(-1, nao)
+                k1bra_aux0_3[A, t] -= tmp2 * occ_invsqrt[:, None]
+
+        lcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
+        for t in range(3):
+            lcd_j3c_ip1_bra[t] = solve_by_j2c(bra[t], left=True, flip=False)
+        del bra
+
+        # K20-1a: factor is mocc_2 @ mocc_2.T (per-spin occupation product), NOT dm0.
+        k20_1a_factor = mocc_2 @ mocc_2.T
+        dbas_K20_1a = np.zeros((3, 3, nao, nao))
+        lcd_view = lcd_j3c_ip1_bra.reshape(3, naux * nocc, nao)
+        for t in range(3):
+            for ss in range(3):
+                dbas_K20_1a[t, ss] = (lcd_view[ss].T @ lcd_view[t]) * k20_1a_factor
+        del k20_1a_factor
+
+        dbas_K20_1b = np.zeros((3, 3, nao, nao))
+        for p in range(naux):  # PAR-ITER
+            tmp1 = mocc_2 @ lcd_j3c_ip1_bra[:, p]
+            dbas_K20_1b += tmp1[:, None, :, :] * tmp1[None, :, :, :].swapaxes(-1, -2)
+
+        llcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
+        for t in range(3):
+            llcd_j3c_ip1_bra[t] = solve_by_j2c(lcd_j3c_ip1_bra[t], left=True, flip=True)
+        del lcd_j3c_ip1_bra
+
+        dbas_K11_2 = np.zeros((3, 3, naux, nao))
+        for t in range(3):
+            for ss in range(3):
+                tmp1 = (j2c_ip1[ss] @ llcd_j3c_ip1_bra[t].reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
+                dbas_K11_2[t, ss] = (fold_eri_bra * tmp1).sum(axis=-2)
+        dbas_K11_2 *= 2
+        dbas_K11_3 = np.zeros((3, 3, naux, nao))
+        for ss in range(3):
+            tmp1 = (j2c_ip1[ss] @ fold_eri_bra.reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
+            for t in range(3):
+                dbas_K11_3[t, ss] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
+        dbas_K11_3 *= 2
+        del fold_eri_bra
+        dbas_K11_4 = np.zeros((3, 3, naux, nao))
+        for ss in range(3):
+            tmp1 = j3c_ip2_occ[ss] @ mocc_2.T
+            for t in range(3):
+                dbas_K11_4[t, ss] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
+        dbas_K11_4 *= 2
+        del llcd_j3c_ip1_bra, j3c_ip2_occ
+
+        de_K11_2 = np.zeros((natm, natm, 3, 3))
+        de_K11_3 = np.zeros((natm, natm, 3, 3))
+        de_K11_4 = np.zeros((natm, natm, 3, 3))
+        for B, (_, _, p0B, p1B) in enumerate(auxslices):
+            for A, (_, _, p0A, p1A) in enumerate(aoslices):
+                de_K11_2[A, B] = dbas_K11_2[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+                de_K11_3[A, B] = dbas_K11_3[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+                de_K11_4[A, B] = dbas_K11_4[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+        de_K11_2 += de_K11_2.transpose(1, 0, 3, 2)
+        de_K11_3 += de_K11_3.transpose(1, 0, 3, 2)
+        de_K11_4 += de_K11_4.transpose(1, 0, 3, 2)
+        de_K20_1a = np.zeros((natm, natm, 3, 3))
+        de_K20_1b = np.zeros((natm, natm, 3, 3))
+        for B, (_, _, p0B, p1B) in enumerate(aoslices):
+            for A, (_, _, p0A, p1A) in enumerate(aoslices):
+                de_K20_1a[A, B] = dbas_K20_1a[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+                de_K20_1b[A, B] = dbas_K20_1b[..., p0B:p1B, p0A:p1A].sum(axis=(-1, -2))
+        de_K20_1a += de_K20_1a.transpose(1, 0, 3, 2)
+        de_K20_1b += de_K20_1b.transpose(1, 0, 3, 2)
+        k_out = k_outs[s]
+        k_out["k1bra_aux0_4"] = k_bra4
+        k_out["k1ao_aux0_1"] = k1ao_aux0_1
+        k_out["k1ao_aux0_2"] = k1ao_aux0_2
+        k_out["k1bra_aux0_1"] = k1bra_aux0_1
+        k_out["k1bra_aux0_2"] = k1bra_aux0_2
+        k_out["k1bra_aux0_3"] = k1bra_aux0_3
+        k_out["de_K11_2"] = de_K11_2
+        k_out["de_K11_3"] = de_K11_3
+        k_out["de_K11_4"] = de_K11_4
+        k_out["de_K20_1a"] = de_K20_1a
+        k_out["de_K20_1b"] = de_K20_1b
 
 
 def get_decomposed_skeleton_separated(
@@ -1764,50 +1770,92 @@ def get_decomposed_skeleton_separated(
     cderi: np.ndarray,
     nbatch_aux: int,
     atm_list: list[int] | None = None,
-) -> dict[str, np.ndarray]:
-    """Separated counterpart of `get_decomposed_skeleton`.
+    do_j: bool = True,
+    do_k: bool = True,
+    dm0: np.ndarray | None = None,
+) -> tuple[dict[str, np.ndarray] | None, list[dict[str, np.ndarray]]]:
+    """J/K-separated counterpart of `get_decomposed_skeleton`.
 
-    Decomposes the monolithic function into per-region private helpers. Tensors kept through
-    the program live in `ctx` (essentials + llcd_eri_* + j2c terms); integer sizes in `dims`;
-    mol/aux/slices/solve_by_j2c passed as usual args. The large j3c-k `*bra*` chain is local
-    to `_evaluate_ip1`; the region-5 -> region-6 seam (j3c_ip2_aux/occ, fold_eri_bra) is
-    returned by `_evaluate_ip2` and passed into `_evaluate_ip1`. The six FULL3c_* integrals
-    are generated lazily inside their consuming helper. Call order matches the baseline.
+    Splits Coulomb (J) and exchange (K) evaluation. J is dm-only (uses `dm0`, the total density);
+    K is occupation-only (per spin, from `mo_coeff`/`mo_occ`). The j2c terms are shared.
+
+    Data flow uses homogeneous dicts: `dims` (numbers only), `shared` (shared input tensors
+    only), `j_in`/`k_in[sigma]` (per-side input tensors only), `j_out`/`k_out[sigma]` (per-side
+    output tensors only, kept separate from inputs). Special-typed objects (mol, aux, aoslices,
+    auxslices, aux_ranges, solve_by_j2c) are passed as direct arguments, not stored in dicts --
+    this mirrors a strong-typed translation target.
+
+    Parameters
+    ----------
+    mo_coeff, mo_occ
+        2D ``[nao,nmo]`` / 1D ``[nmo]`` -> RHF (1 K spin channel, unsqueezed internally);
+        3D ``[2,nao,nmo]`` / 2D ``[2,nmo]`` -> UHF (2 K spin channels).
+    do_j, do_k : bool
+        Skip the unused half entirely (no tensors, no work). Default both True.
+    dm0 : [nao,nao] or None
+        Total density for J. If None, built from `mo_coeff`/`mo_occ`.
+
+    Returns
+    -------
+    (j_result, k_results) : (dict | None, list[dict])
+        `j_result` is None if `do_j=False`; `k_results` is a list of per-spin dicts (empty if
+        `do_k=False`), spin distinguished by position. K keys are unsuffixed.
     """
-    ctx, dims, aoslices, auxslices, aux_ranges, solve_by_j2c = _prepare_common(
-        mol, aux, mo_coeff, mo_occ, cderi, nbatch_aux, atm_list
+    dims, aoslices, auxslices, aux_ranges, solve_by_j2c, shared = _prepare_shared(
+        mol, aux, cderi, nbatch_aux, atm_list
     )
 
-    result = {}
-    result.update(_evaluate_jk02_ipip1(ctx, dims, aux, auxslices))
-    result.update(_evaluate_aux1(ctx, dims, auxslices, solve_by_j2c))
-    result.update(_evaluate_oneshot(ctx, dims, mol, aux, aoslices, auxslices, aux_ranges))
-    res_ip2, seam = _evaluate_ip2(ctx, dims, mol, aux, auxslices, aux_ranges, solve_by_j2c)
-    result.update(res_ip2)
-    result.update(_evaluate_ip1(ctx, dims, mol, aux, aoslices, auxslices, aux_ranges, solve_by_j2c, seam))
-    return result
+    need_mo = do_k or (do_j and dm0 is None)
+    if need_mo:
+        if mo_coeff.ndim == 2:
+            mo_coeff_list = [mo_coeff]
+            mo_occ_list = [mo_occ]
+        else:
+            mo_coeff_list = [mo_coeff[s] for s in range(mo_coeff.shape[0])]
+            mo_occ_list = [mo_occ[s] for s in range(mo_occ.shape[0])]
 
+    # J input + output (separated)
+    if do_j:
+        if dm0 is None:
+            if mo_coeff.ndim == 2:
+                dm0 = get_dm0_restricted(mo_coeff, mo_occ)
+            else:
+                dm0 = get_dm0_unrestricted(mo_coeff, mo_occ).sum(axis=0)
+        j_in = _prepare_j(shared, solve_by_j2c, dims, dm0)
+        j_out = {}
+    else:
+        j_in = None
+        j_out = None
 
+    # K per-spin input + output (separated)
+    k_ins = []
+    k_outs = []
+    if do_k:
+        for s in range(len(mo_coeff_list)):
+            k_ins.append(_prepare_k(shared, solve_by_j2c, mo_coeff_list[s], mo_occ_list[s]))
+            k_outs.append({})
+
+    _evaluate_jk02_ipip1(dims, aux, auxslices, shared, j_in, k_ins, j_out, k_outs)
+    _evaluate_aux1(dims, auxslices, solve_by_j2c, shared, j_in, k_ins, j_out, k_outs)
+    _evaluate_oneshot(dims, mol, aux, aoslices, auxslices, aux_ranges, shared, j_in, k_ins, j_out, k_outs)
+    j_seam, k_seams = _evaluate_ip2(
+        dims, mol, aux, auxslices, aux_ranges, solve_by_j2c, shared, j_in, k_ins, j_out, k_outs
+    )
+    _evaluate_ip1(
+        dims, mol, aux, aoslices, auxslices, aux_ranges, solve_by_j2c, shared,
+        j_in, k_ins, j_out, k_outs, j_seam, k_seams
+    )
+
+    j_result = j_out if j_out is not None else None
+    k_results = list(k_outs)
+    return j_result, k_results
 class RHessRIJKOptPrototype(RHessElecInteractAPI):
     """Optimized-prototype RI-JK Hessian for restricted HF, implementing `RHessElecInteractAPI`.
 
-    Mirrors `RHessRIJKNaive` but backs the skeleton / first-derivative terms with the optimized
-    `get_decomposed_skeleton_separated` (batched, matmul-based, symmetry-exploiting).
-
-    Note on `get_deriv1_bra` vs `get_deriv1_ao`: the optimized prototype evaluates the exchange
-    first-derivative K1 directly in the half-transformed bra form `k1bra = mocc.T @ k1ao`
-    (shape [natm, 3, nocc, nao]) and never materializes the full [nao, nao] `k1ao`. Accordingly
-    this class implements `get_deriv1_bra` for real and leaves `get_deriv1_ao` as a dummy
-    (the full AO form is intentionally not produced). `RHessSCF` only consumes `get_deriv1_bra`.
-
-    The bra form returned by the API is the *right* half-transform `deriv_ao @ mocc`
-    ([natm, 3, nao, nocc]). For the J part this is `j1ao @ mocc` directly (j1ao is held in AO).
-    For the K part, the total `k1ao` is symmetric (each aux pair 1+2 / 3+4 sums to symmetric), so
-    `k1ao @ mocc = (mocc.T @ k1ao).swapaxes(-1, -2) = k1bra.swapaxes(-1, -2)` -- no full `k1ao`
-    is ever built.
-
-    The response (`get_response_bra`) reuses the naive RI-JK response; the optimization work here
-    covers skeleton + first derivative, not the CPHF response.
+    Backed by the J/K-separated `get_decomposed_skeleton_separated` (RHF: 1 K spin channel).
+    `get_deriv1_bra` is the real first-derivative implementation (K1 evaluated directly in the
+    half-transformed bra form, `[nocc,nao]`); `get_deriv1_ao` is a dummy. See the module-level
+    docstring for the J/K split and the K20-1a note.
     """
 
     def __init__(self, mol: gto.Mole, aux: gto.Mole, cderi: np.ndarray, nbatch_aux: int = 72,
@@ -1821,64 +1869,47 @@ class RHessRIJKOptPrototype(RHessElecInteractAPI):
         self.mo_coeff = None
         self.mo_occ = None
         self.result = dict()
-        # cache for the (expensive) skeleton computation, keyed by mo_coeff identity; both
-        # make_skeleton_hess and get_deriv1_bra consume it, so compute at most once per mo_coeff.
-        self._skel = None
-        self._skel_coeff = None
+        self._j_res = None
+        self._k_res = None
+        self._skel_key = None
 
-    # --- skeleton keys summed into the J/K totals --- #
-    _J20_KEYS = ("de_J20_1", "de_J20_2", "de_J20_3")
-    _J11_KEYS = ("de_J11_1", "de_J11_2", "de_J11_3", "de_J11_4")
-    _J02_KEYS = ("de_J02_1", "de_J02_2", "de_J02_3a", "de_J02_3b", "de_J02_4",
-                 "de_J02_5", "de_J02_6", "de_J02_7", "de_J02_8")
-    _K20_KEYS = ("de_K20_1a", "de_K20_1b", "de_K20_2", "de_K20_3")
-    _K11_KEYS = ("de_K11_1", "de_K11_2", "de_K11_3", "de_K11_4")
-    _K02_KEYS = ("de_K02_1", "de_K02_2", "de_K02_3a", "de_K02_3b", "de_K02_4",
-                 "de_K02_5", "de_K02_6", "de_K02_7", "de_K02_8")
-    _K1BRA_KEYS = ("k1bra_aux0_1", "k1bra_aux0_2", "k1bra_aux0_3", "k1bra_aux0_4",
-                   "k1bra_aux1_1", "k1bra_aux1_2", "k1bra_aux1_3", "k1bra_aux1_4")
-    _J1AO_KEYS = ("j1ao_aux0", "j1ao_aux1_1", "j1ao_aux1_2", "j1ao_aux1_3", "j1ao_aux1_4")
-
-    def _ensure_skeleton(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
-        if self._skel is not None and self._skel_coeff is mo_coeff:
-            return self._skel
-        self._skel = get_decomposed_skeleton_separated(
-            self.mol, self.aux, mo_coeff, mo_occ, self.cderi, self.nbatch_aux
+    def _ensure_skeleton(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+        key = id(mo_coeff)
+        if self._j_res is not None and self._skel_key == key:
+            return
+        j_res, k_res = get_decomposed_skeleton_separated(
+            self.mol, self.aux, mo_coeff, mo_occ, self.cderi, self.nbatch_aux,
+            do_j=True, do_k=True,
         )
-        self._skel_coeff = mo_coeff
-        self.result.update(self._skel)
-        return self._skel
+        self._j_res = j_res
+        self._k_res = k_res  # list of 1 dict (RHF)
+        self._skel_key = key
+        self.result.update(j_res)
+        self.result.update(k_res[0])
 
     def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
-        res = self._ensure_skeleton(mo_coeff, mo_occ)
-        de_J = sum(res[k] for k in self._J20_KEYS) + sum(res[k] for k in self._J11_KEYS) + sum(res[k] for k in self._J02_KEYS)
-        de_K = sum(res[k] for k in self._K20_KEYS) + sum(res[k] for k in self._K11_KEYS) + sum(res[k] for k in self._K02_KEYS)
-        de_JK = self.scale_j * de_J - 0.5 * self.scale_k * de_K
-        return de_JK
+        self._ensure_skeleton(mo_coeff, mo_occ)
+        j_res, k_res = self._j_res, self._k_res
+        de_J = sum(j_res[k] for k in _J20_KEYS) + sum(j_res[k] for k in _J11_KEYS) + sum(j_res[k] for k in _J02_KEYS)
+        de_K = sum(k_res[0][k] for k in _K20_KEYS) + sum(k_res[0][k] for k in _K11_KEYS) + sum(k_res[0][k] for k in _K02_KEYS)
+        return self.scale_j * de_J - 0.5 * self.scale_k * de_K
 
     def get_deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
-        """Dummy -- not implemented.
-
-        The optimized prototype evaluates K1 only in the half-transformed bra form
-        ([nocc, nao]); the full AO form ([nao, nao]) is intentionally never produced. Use
-        `get_deriv1_bra` instead (which `RHessSCF` consumes directly).
-        """
         raise NotImplementedError(
             "RHessRIJKOptPrototype does not produce the full AO first-derivative; "
             "use get_deriv1_bra instead."
         )
 
     def get_deriv1_bra(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
-        res = self._ensure_skeleton(mo_coeff, mo_occ)
+        self._ensure_skeleton(mo_coeff, mo_occ)
+        j_res, k_res = self._j_res, self._k_res
         occidx = mo_occ > 1e-15
         mocc = mo_coeff[:, occidx]
-        # J: held in AO form ([nao, nao]), right half-transform directly.
-        j1ao = sum(res[k] for k in self._J1AO_KEYS)
-        # K: held as left half-transform k1bra = mocc.T @ k1ao ([nocc, nao]); the total k1ao is
-        # symmetric, so the right half-transform k1ao @ mocc = k1bra.swapaxes(-1, -2).
-        k1bra = sum(res[k] for k in self._K1BRA_KEYS)
-        deriv_bra = self.scale_j * (j1ao @ mocc) - 0.5 * self.scale_k * k1bra.swapaxes(-1, -2)
-        return deriv_bra
+        j1ao = sum(j_res[k] for k in _J1AO_KEYS)
+        # K stored as left half-transform k1bra = mocc.T @ k1ao ([nocc,nao]); total k1ao is
+        # symmetric, so the right transform k1ao @ mocc = k1bra.swapaxes(-1, -2).
+        k1bra = sum(k_res[0][k] for k in _K1BRA_KEYS)
+        return self.scale_j * (j1ao @ mocc) - 0.5 * self.scale_k * k1bra.swapaxes(-1, -2)
 
     def make_response_preparation(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
         self.mo_coeff = mo_coeff

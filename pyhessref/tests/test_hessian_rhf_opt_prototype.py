@@ -65,9 +65,14 @@ class TestHessianRHFOptPrototype(unittest.TestCase):
         )
 
         cderi = mf.with_df._cderi
-        result = get_decomposed_skeleton_separated(
+        j_res, k_res = get_decomposed_skeleton_separated(
             mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72, atm_list=None
         )
+        # structured return: J dict + list of 1 K-spin dict (RHF)
+        self.assertIsInstance(j_res, dict)
+        self.assertEqual(len(k_res), 1)
+        result = {**j_res, **k_res[0]}
+
         ref_j1ao = get_rij_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         ref_k1ao = get_rik_deriv1_ao_naive(mol, aux, mf.mo_coeff, mf.mo_occ)
         ref_dict = dict(ref_value).copy()
@@ -79,6 +84,36 @@ class TestHessianRHFOptPrototype(unittest.TestCase):
         for key in sorted(result.keys()):
             print(f"{key:<20}, val {lib.fp(result[key]):>20.12f}, ref {lib.fp(ref_dict[key]):>20.12f}")
             self.assertTrue(np.allclose(result[key], ref_dict[key], rtol=1e-4, atol=1e-6))
+
+    def test_get_decomposed_skeleton_separated_dojk(self):
+        """do_j / do_k flags skip the unused half's tensors and work entirely."""
+        from pyhessref.rijk.hess_restricted_opt_prototype import (
+            get_decomposed_skeleton_separated,
+        )
+
+        cderi = mf.with_df._cderi
+        # J-only
+        j_only, k_only = get_decomposed_skeleton_separated(
+            mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72, do_j=True, do_k=False
+        )
+        self.assertIsInstance(j_only, dict)
+        self.assertEqual(k_only, [])
+        self.assertTrue(all(k.startswith("de_J") or k.startswith("j1ao") for k in j_only))
+        # K-only
+        j_none, k_only2 = get_decomposed_skeleton_separated(
+            mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72, do_j=False, do_k=True
+        )
+        self.assertIsNone(j_none)
+        self.assertEqual(len(k_only2), 1)
+        self.assertTrue(all(k.startswith("de_K") or k.startswith("k1") for k in k_only2[0]))
+        # J-only with user-supplied dm0 must match J of the full call
+        from pyhessref.util import get_dm0_restricted
+        dm0 = get_dm0_restricted(mf.mo_coeff, mf.mo_occ)
+        j_dm0, _ = get_decomposed_skeleton_separated(
+            mol, aux, mf.mo_coeff, mf.mo_occ, cderi, nbatch_aux=72, do_j=True, do_k=False, dm0=dm0
+        )
+        for k in j_only:
+            self.assertTrue(np.allclose(j_only[k], j_dm0[k], atol=1e-12), msg=k)
 
     def test_rhess_rijk_opt_api(self):
         """The optimized-prototype class matches RHessRIJKNaive on skeleton + deriv1_bra."""
