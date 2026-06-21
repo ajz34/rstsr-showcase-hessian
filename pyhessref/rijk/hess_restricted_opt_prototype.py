@@ -712,23 +712,40 @@ def get_decomposed_skeleton(
 
     # region 6. evaluation: ip1
 
+    # this term is K only
+    # fold_j3c_bra = np.einsum("Pji, ui -> Pju", llcd_eri_occ, mocc_2)
+    fold_j3c_bra = llcd_eri_occ @ mocc_2.T  # in production code, use reshape
+
     j3c_ip1_aux = np.zeros((3, naux, nao))
     j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
-    j3c_ip1_j1ao_tmp = np.zeros((3, nao, nao))
+    j3c_ip1_j1ao_tmp1 = np.zeros((3, nao, nao))
+    j3c_ip1_k1ao_tmp1 = np.zeros((3, nao, nao))
+    k1bra_aux0_4 = np.zeros((natm, 3, nocc, nao))
     # j3c_ip1_j1ao_tmp = np.einsum("tPvu, P -> tvu", FULL3c_ip1, llcd_eri_aux)
+    # j3c_ip1_j1ao_tmp = np.einsum("tPiu, Pik -> tuk", j3c_ip1_bra, llcd_eri_bra)
     for _sh0, _sh1, p0, p1 in aux_ranges:
         j3c_ip1_batch = FULL3c_ip1[:, p0:p1]
         # j3c_ip1_aux[:, p0:p1] = np.einsum("tPvu, vu -> tPu", j3c_ip1_batch, dm0)
         j3c_ip1_aux[:, p0:p1] = (j3c_ip1_batch * dm0).sum(axis=-2)
         # j3c_ip1_bra[:, p0:p1] = np.einsum("tPvu, vj -> tPju", j3c_ip1_batch, mocc_2)
         j3c_ip1_bra[:, p0:p1] = mocc_2.T @ j3c_ip1_batch
-        j3c_ip1_j1ao_tmp += (FULL3c_ip1[:, p0:p1] * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+        j3c_ip1_j1ao_tmp1 += (FULL3c_ip1[:, p0:p1] * llcd_eri_aux[p0:p1, None, None]).sum(axis=-3)
+        for t in range(3):
+            j3c_ip1_k1ao_tmp1[t] += j3c_ip1_bra[t, p0:p1].reshape(-1, nao).T @ llcd_eri_bra[p0:p1].reshape(-1, nao)
+        for A in range(natm):
+            _, _, p0A, p1A = aoslices[A]
+            slcA = slice(p0A, p1A)
+            tmp1 = fold_j3c_bra[p0:p1, :, slcA].swapaxes(-1, -2).reshape(-1, nocc)
+            for t in range(3):
+                tmp2 = j3c_ip1_batch[t, :, :, slcA].swapaxes(-1, -2).reshape(-1, nao)
+                k1bra_aux0_4[A, t] -= tmp1.T @ tmp2
+    k1bra_aux0_4 *= occ_invsqrt[None, None, :, None]
+    result["k1bra_aux0_4"] = k1bra_aux0_4
 
     lcd_j3c_ip1_aux = np.zeros((3, naux, nao))
-    lcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
     for t in range(3):
         lcd_j3c_ip1_aux[t] = solve_by_j2c(j3c_ip1_aux[t], left=True, flip=False)
-        lcd_j3c_ip1_bra[t] = solve_by_j2c(j3c_ip1_bra[t], left=True, flip=False)
+    del j3c_ip1_aux
 
     # --- j1ao aux0 --- #
 
@@ -737,13 +754,50 @@ def get_decomposed_skeleton(
         sh0, sh1, p0, p1 = aoslices[A]
         slcA = slice(p0, p1)
         # j1ao aux0-1/2
-        j1ao_aux0[A, :, slcA, :] -= j3c_ip1_j1ao_tmp[:, :, slcA].swapaxes(-1, -2)
-        j1ao_aux0[A, :, :, slcA] -= j3c_ip1_j1ao_tmp[:, :, slcA]
+        j1ao_aux0[A, :, slcA, :] -= j3c_ip1_j1ao_tmp1[:, :, slcA].swapaxes(-1, -2)
+        j1ao_aux0[A, :, :, slcA] -= j3c_ip1_j1ao_tmp1[:, :, slcA]
         # j1ao aux0-3/4
-        tmp2 = lcd_j3c_ip1_aux[:, :, slcA].sum(axis=-1)
-        scr2 = np.einsum("tP, PU -> tU", tmp2, cderi)
-        j1ao_aux0[A] -= 2 * lib.unpack_tril(scr2)
+        tmp1 = lcd_j3c_ip1_aux[:, :, slcA].sum(axis=-1)
+        tmp2 = np.einsum("tP, PU -> tU", tmp1, cderi)
+        j1ao_aux0[A] -= 2 * lib.unpack_tril(tmp2)
     result["j1ao_aux0"] = j1ao_aux0
+
+    # --- k1ao aux0 --- #
+
+    k1ao_aux0_1 = np.zeros([natm, 3, nao, nao])
+    k1ao_aux0_2 = np.zeros([natm, 3, nao, nao])
+    for A in range(mol.natm):
+        sh0, sh1, p0, p1 = aoslices[A]
+        slcA = slice(p0, p1)
+        k1ao_aux0_1[A, :, slcA, :] -= j3c_ip1_k1ao_tmp1[:, slcA, :]
+        k1ao_aux0_2[A, :, :, slcA] -= j3c_ip1_k1ao_tmp1[:, slcA, :].swapaxes(-1, -2)
+
+    result["k1ao_aux0_1"] = k1ao_aux0_1
+    result["k1ao_aux0_2"] = k1ao_aux0_2
+
+    k1bra_aux0_1 = mocc.T @ k1ao_aux0_1
+    k1bra_aux0_2 = mocc.T @ k1ao_aux0_2
+    result["k1bra_aux0_1"] = k1bra_aux0_1
+    result["k1bra_aux0_2"] = k1bra_aux0_2
+
+    k1bra_aux0_3 = np.zeros([natm, 3, nocc, nao])
+    # k1bra_aux0_4 = np.zeros([natm, 3, nocc, nao])
+    for A in range(mol.natm):
+        sh0, sh1, p0, p1 = aoslices[A]
+        slcA = slice(p0, p1)
+        # k1bra_aux0_3[A] -= np.einsum("tPil, Pju, lj, i -> tiu", j3c_ip1_bra[..., slcA], llcd_eri_bra, mocc_2[slcA], occ_invsqrt)
+        for t in range(3):
+            tmp1 = mocc_2[slcA].T @ j3c_ip1_bra[t, ..., slcA].swapaxes(-1, -2)  # [P, j, i]
+            tmp2 = tmp1.reshape(-1, nocc).T @ llcd_eri_bra.reshape(-1, nao)  # [i, u]
+            k1bra_aux0_3[A, t] -= tmp2 * occ_invsqrt[:, None]
+        # k1bra_aux0_4[A] -= np.einsum("tPkl, Pil, i -> tik", FULL3c_ip1[..., slcA], fold_j3c_bra[..., slcA], occ_invsqrt)
+    result["k1bra_aux0_3"] = k1bra_aux0_3
+    # result["k1bra_aux0_4"] = k1bra_aux0_4
+
+    lcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
+    for t in range(3):
+        lcd_j3c_ip1_bra[t] = solve_by_j2c(j3c_ip1_bra[t], left=True, flip=False)
+    del j3c_ip1_bra
 
     # --- J20-1 --- #
     # dbas_J20_1 = np.einsum("tPu, sPv -> tsuv", lcd_j3c_ip1_aux, lcd_j3c_ip1_aux)
@@ -797,12 +851,10 @@ def get_decomposed_skeleton(
 
     # --- K11 preparation --- #
 
-    # fold_j3c_bra = np.einsum("Pji, ui -> Pju", llcd_eri_occ, mocc_2)
-    fold_j3c_bra = llcd_eri_occ @ mocc_2.T  # in production code, use reshape
-
     llcd_j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
     for t in range(3):
         llcd_j3c_ip1_bra[t] = solve_by_j2c(lcd_j3c_ip1_bra[t], left=True, flip=True)
+    del lcd_j3c_ip1_bra
 
     # --- K11-2 --- #
     # dbas_K11_2 = np.einsum("tPju, sRP, Rju -> tsRu", llcd_j3c_ip1_bra, j2c_ip1, fold_j3c_bra)
