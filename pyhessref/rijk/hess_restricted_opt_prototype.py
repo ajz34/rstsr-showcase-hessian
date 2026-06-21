@@ -68,8 +68,8 @@ def get_decomposed_skeleton(
     | 02-6        | x | x |
     | 02-7        | x | x |
     | 02-8        | x | x |
-    | f1-aux0-1/2 |   |   |
-    | f1-aux0-3/4 |   |   |
+    | f1-aux0-1/2 | x | x |
+    | f1-aux0-3/4 | x | x |
     | f1-aux1-1/2 | x | x |
     | f1-aux1-3/4 | x | x |
     """
@@ -707,10 +707,29 @@ def get_decomposed_skeleton(
             k1bra_aux1_1[A, t] = -(j3c_ip2_occ[t, slcA] @ llcd_eri_bra[slcA]).sum(axis=0)
     k1bra_aux1_1 *= occ_invsqrt[None, None, :, None]
     result["k1bra_aux1_1"] = k1bra_aux1_1
+    del FULL3c_ip2, tmp_k1  # region-5-only; free before entering region 6
 
     # endregion 5
 
     # region 6. evaluation: ip1
+    #
+    # Memory (units: #floats; naux ~ 3*nao, nocc ~ 6*natm, nao > nocc):
+    #   The only 3c-2e derivative integral here is int3c2e_ip1, consumed per aux batch; only the
+    #   batch slice lives in memory in production.
+    #   per-batch slice j3c_ip1_batch [3, nbatch_aux, nao, nao] ~ 3 * nbatch_aux * nao^2
+    #   j3c_ip1_aux / lcd_j3c_ip1_aux / llcd_j3c_ip1_aux  [3, naux, nao]   ~ 3*naux*nao each
+    #   j3c_ip1_bra / lcd_j3c_ip1_bra / llcd_j3c_ip1_bra [3, naux, nocc, nao] ~ 3*naux*nocc*nao each
+    #     (the bra tensors are the dominant intermediates; only one of j3c_/lcd_/llcd_ is alive at
+    #      a time -- each is freed once its lcd_/llcd_ successor is built)
+    #   fold_j3c_bra            [naux, nocc, nao]        ~ naux*nocc*nao   (kept through K11-3)
+    #   j3c_ip1_j1ao_tmp1 / j3c_ip1_k1ao_tmp1 [3, nao, nao] ~ 3*nao^2 each (freed after aux0 sums)
+    #   dbas_J11_2/3/4, dbas_K11_2/3/4 [3,3,naux,nao]    ~ 9*naux*nao each (6 of them)
+    #   dbas_J20_1, dbas_K20_1a/1b     [3,3,nao,nao]     ~ 9*nao^2 each
+    #   j1ao_aux0 / k1ao_aux0_1/2      [natm,3,nao,nao]  ~ natm*nao^2 each
+    #   k1bra_aux0_*                   [natm,3,nocc,nao] ~ natm*nocc*nao each
+    #   region-6 production peak ~ 3*nbatch_aux*nao^2 (slice) + 3*naux*nocc*nao (one bra tensor)
+    #     + 6*9*naux*nao (dbas_J/K11, dominates) + natm*nao^2 (aux0 outputs)
+    #   FULL3c_ip1 is freed right after the batched loop (no later region consumes it).
 
     # this term is K only
     # fold_j3c_bra = np.einsum("Pji, ui -> Pju", llcd_eri_occ, mocc_2)
@@ -741,6 +760,7 @@ def get_decomposed_skeleton(
                 k1bra_aux0_4[A, t] -= tmp1.T @ tmp2
     k1bra_aux0_4 *= occ_invsqrt[None, None, :, None]
     result["k1bra_aux0_4"] = k1bra_aux0_4
+    del FULL3c_ip1  # only the batched loop above consumes it; free before the aux0/J11/K11 work
 
     lcd_j3c_ip1_aux = np.zeros((3, naux, nao))
     for t in range(3):
@@ -761,6 +781,7 @@ def get_decomposed_skeleton(
         tmp2 = np.einsum("tP, PU -> tU", tmp1, cderi)
         j1ao_aux0[A] -= 2 * lib.unpack_tril(tmp2)
     result["j1ao_aux0"] = j1ao_aux0
+    del j3c_ip1_j1ao_tmp1
 
     # --- k1ao aux0 --- #
 
@@ -774,6 +795,7 @@ def get_decomposed_skeleton(
 
     result["k1ao_aux0_1"] = k1ao_aux0_1
     result["k1ao_aux0_2"] = k1ao_aux0_2
+    del j3c_ip1_k1ao_tmp1
 
     k1bra_aux0_1 = mocc.T @ k1ao_aux0_1
     k1bra_aux0_2 = mocc.T @ k1ao_aux0_2
@@ -832,6 +854,7 @@ def get_decomposed_skeleton(
     # dbas_J11_4 = np.einsum("tQu, sQ -> tsQu", llcd_j3c_ip1_aux, j3c_ip2_aux)
     dbas_J11_4 = llcd_j3c_ip1_aux[:, None, :, :] * j3c_ip2_aux[None, :, :, None]
     dbas_J11_4 *= 2
+    del llcd_j3c_ip1_aux, j3c_ip2_aux  # last consumers; both freed after J11-4
 
     # --- K20-1a --- #
     # dbas_K20_1a = np.zeros((3, 3, nao, nao))
@@ -873,6 +896,7 @@ def get_decomposed_skeleton(
         for t in range(3):
             dbas_K11_3[t, s] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
     dbas_K11_3 *= 2
+    del fold_j3c_bra  # last consumer is K11-3 (K11-4 uses j3c_ip2_occ instead)
 
     # --- K11-4 --- #
     # dbas_K11_4 = np.einsum("tPju, sPji, ui -> tsPu", llcd_j3c_ip1_bra, j3c_ip2_occ, mocc_2)
@@ -882,6 +906,7 @@ def get_decomposed_skeleton(
         for t in range(3):
             dbas_K11_4[t, s] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
     dbas_K11_4 *= 2
+    del llcd_j3c_ip1_bra, j3c_ip2_occ  # last consumers; both freed after K11-4
 
     de_J11_2 = np.zeros((natm, natm, 3, 3))
     de_J11_3 = np.zeros((natm, natm, 3, 3))
@@ -928,6 +953,8 @@ def get_decomposed_skeleton(
     # endregion 6
 
     # all remaining carried inputs are now consumed; free them before returning.
+    # (FULL3c_ip1/2, tmp_k1, j3c_ip2_aux/occ, fold_j3c_bra, lcd/llcd_j3c_ip1_* were freed at
+    #  their last consumer above.)
     del (
         cderi,
         dm0,
@@ -938,10 +965,6 @@ def get_decomposed_skeleton(
         llcd_eri_aux,
         llcd_eri_occ,
         llcd_eri_bra,
-        FULL3c_ip2,
-        j3c_ip2_aux,
-        j3c_ip2_occ,
-        tmp_k1,
     )
 
     return result
