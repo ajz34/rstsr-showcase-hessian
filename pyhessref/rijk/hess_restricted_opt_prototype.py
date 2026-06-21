@@ -561,7 +561,7 @@ def get_decomposed_skeleton(
     # P-shared factor A[P, i, l] once:
     #   tmp_k1 = np.einsum("Pij, lj -> Pil", llcd_eri_occ, mocc_2)   (l = u AO index)
     k1bra_aux1_2 = np.zeros((natm, 3, nocc, nao))
-    tmp_k1 = llcd_eri_occ @ mocc_2.T  # [naux, nocc, nao]  (l = u AO index)
+    fold_eri_bra = llcd_eri_occ @ mocc_2.T  # [naux, nocc, nao]  (l = u AO index)
     for _sh0, _sh1, p0, p1 in aux_ranges:
         j3c_ip2_batch = FULL3c_ip2[:, p0:p1]  # use generator in real application
         # j3c_ip2_aux[:, p0:p1] = np.einsum("tPvu, vu -> tP", j3c_ip2_batch, dm0)
@@ -590,7 +590,7 @@ def get_decomposed_skeleton(
             for t in range(3):
                 # np.einsum("Pil, Pkl -> ik", tmp_k1[slc_full], j3c_ip2_batch[t, slc_batch]) == (tmp_k1[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0)
                 k1bra_aux1_2[A, t] += (
-                    -(tmp_k1[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0) * occ_invsqrt[:, None]
+                    -(fold_eri_bra[slc_full] @ j3c_ip2_batch[t, slc_batch]).sum(axis=0) * occ_invsqrt[:, None]
                 )
     result["j1ao_aux1_1"] = j1ao_aux1_1
     result["k1bra_aux1_2"] = k1bra_aux1_2
@@ -707,7 +707,7 @@ def get_decomposed_skeleton(
             k1bra_aux1_1[A, t] = -(j3c_ip2_occ[t, slcA] @ llcd_eri_bra[slcA]).sum(axis=0)
     k1bra_aux1_1 *= occ_invsqrt[None, None, :, None]
     result["k1bra_aux1_1"] = k1bra_aux1_1
-    del FULL3c_ip2, tmp_k1  # region-5-only; free before entering region 6
+    del FULL3c_ip2  # region-5-only; free before entering region 6
 
     # endregion 5
 
@@ -721,7 +721,7 @@ def get_decomposed_skeleton(
     #   j3c_ip1_bra / lcd_j3c_ip1_bra / llcd_j3c_ip1_bra [3, naux, nocc, nao] ~ 3*naux*nocc*nao each
     #     (the bra tensors are the dominant intermediates; only one of j3c_/lcd_/llcd_ is alive at
     #      a time -- each is freed once its lcd_/llcd_ successor is built)
-    #   fold_j3c_bra            [naux, nocc, nao]        ~ naux*nocc*nao   (kept through K11-3)
+    #   fold_eri_bra            [naux, nocc, nao]        ~ naux*nocc*nao   (kept through K11-3)
     #   j3c_ip1_j1ao_tmp1 / j3c_ip1_k1ao_tmp1 [3, nao, nao] ~ 3*nao^2 each (freed after aux0 sums)
     #   dbas_J11_2/3/4, dbas_K11_2/3/4 [3,3,naux,nao]    ~ 9*naux*nao each (6 of them)
     #   dbas_J20_1, dbas_K20_1a/1b     [3,3,nao,nao]     ~ 9*nao^2 each
@@ -730,10 +730,6 @@ def get_decomposed_skeleton(
     #   region-6 production peak ~ 3*nbatch_aux*nao^2 (slice) + 3*naux*nocc*nao (one bra tensor)
     #     + 6*9*naux*nao (dbas_J/K11, dominates) + natm*nao^2 (aux0 outputs)
     #   FULL3c_ip1 is freed right after the batched loop (no later region consumes it).
-
-    # this term is K only
-    # fold_j3c_bra = np.einsum("Pji, ui -> Pju", llcd_eri_occ, mocc_2)
-    fold_j3c_bra = llcd_eri_occ @ mocc_2.T  # in production code, use reshape
 
     j3c_ip1_aux = np.zeros((3, naux, nao))
     j3c_ip1_bra = np.zeros((3, naux, nocc, nao))
@@ -754,7 +750,7 @@ def get_decomposed_skeleton(
         for A in range(natm):
             _, _, p0A, p1A = aoslices[A]
             slcA = slice(p0A, p1A)
-            tmp1 = fold_j3c_bra[p0:p1, :, slcA].swapaxes(-1, -2).reshape(-1, nocc)
+            tmp1 = fold_eri_bra[p0:p1, :, slcA].swapaxes(-1, -2).reshape(-1, nocc)
             for t in range(3):
                 tmp2 = j3c_ip1_batch[t, :, :, slcA].swapaxes(-1, -2).reshape(-1, nao)
                 k1bra_aux0_4[A, t] -= tmp1.T @ tmp2
@@ -812,7 +808,7 @@ def get_decomposed_skeleton(
             tmp1 = mocc_2[slcA].T @ j3c_ip1_bra[t, ..., slcA].swapaxes(-1, -2)  # [P, j, i]
             tmp2 = tmp1.reshape(-1, nocc).T @ llcd_eri_bra.reshape(-1, nao)  # [i, u]
             k1bra_aux0_3[A, t] -= tmp2 * occ_invsqrt[:, None]
-        # k1bra_aux0_4[A] -= np.einsum("tPkl, Pil, i -> tik", FULL3c_ip1[..., slcA], fold_j3c_bra[..., slcA], occ_invsqrt)
+        # k1bra_aux0_4[A] -= np.einsum("tPkl, Pil, i -> tik", FULL3c_ip1[..., slcA], fold_eri_bra[..., slcA], occ_invsqrt)
     result["k1bra_aux0_3"] = k1bra_aux0_3
     # result["k1bra_aux0_4"] = k1bra_aux0_4
 
@@ -880,23 +876,23 @@ def get_decomposed_skeleton(
     del lcd_j3c_ip1_bra
 
     # --- K11-2 --- #
-    # dbas_K11_2 = np.einsum("tPju, sRP, Rju -> tsRu", llcd_j3c_ip1_bra, j2c_ip1, fold_j3c_bra)
+    # dbas_K11_2 = np.einsum("tPju, sRP, Rju -> tsRu", llcd_j3c_ip1_bra, j2c_ip1, fold_eri_bra)
     dbas_K11_2 = np.zeros((3, 3, naux, nao))
     for t in range(3):
         for s in range(3):
             tmp1 = (j2c_ip1[s] @ llcd_j3c_ip1_bra[t].reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
-            dbas_K11_2[t, s] = (fold_j3c_bra * tmp1).sum(axis=-2)
+            dbas_K11_2[t, s] = (fold_eri_bra * tmp1).sum(axis=-2)
     dbas_K11_2 *= 2
 
     # --- K11-3 --- #
-    # dbas_K11_3 = np.einsum("tQju, sQR, Rju -> tsQu", llcd_j3c_ip1_bra, j2c_ip1, fold_j3c_bra)
+    # dbas_K11_3 = np.einsum("tQju, sQR, Rju -> tsQu", llcd_j3c_ip1_bra, j2c_ip1, fold_eri_bra)
     dbas_K11_3 = np.zeros((3, 3, naux, nao))
     for s in range(3):
-        tmp1 = (j2c_ip1[s] @ fold_j3c_bra.reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
+        tmp1 = (j2c_ip1[s] @ fold_eri_bra.reshape(naux, nocc * nao)).reshape(naux, nocc, nao)
         for t in range(3):
             dbas_K11_3[t, s] = (llcd_j3c_ip1_bra[t] * tmp1).sum(axis=-2)
     dbas_K11_3 *= 2
-    del fold_j3c_bra  # last consumer is K11-3 (K11-4 uses j3c_ip2_occ instead)
+    del fold_eri_bra  # last consumer is K11-3 (K11-4 uses j3c_ip2_occ instead)
 
     # --- K11-4 --- #
     # dbas_K11_4 = np.einsum("tPju, sPji, ui -> tsPu", llcd_j3c_ip1_bra, j3c_ip2_occ, mocc_2)
@@ -953,7 +949,7 @@ def get_decomposed_skeleton(
     # endregion 6
 
     # all remaining carried inputs are now consumed; free them before returning.
-    # (FULL3c_ip1/2, tmp_k1, j3c_ip2_aux/occ, fold_j3c_bra, lcd/llcd_j3c_ip1_* were freed at
+    # (FULL3c_ip1/2, tmp_k1, j3c_ip2_aux/occ, fold_eri_bra, lcd/llcd_j3c_ip1_* were freed at
     #  their last consumer above.)
     del (
         cderi,
