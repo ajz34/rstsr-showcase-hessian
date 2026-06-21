@@ -9,6 +9,8 @@ from functools import partial
 from pyscf.df.grad.rhf import _int3c_wrapper
 
 from pyhessref.util import get_dm0_restricted
+from pyhessref.hess_trait_restricted import RHessElecInteractAPI
+from pyhessref.rijk.hess_restricted_naive import get_rijk_response_bra_naive
 
 # override einsum for some efficiency
 einsum = partial(np.einsum, optimize=True)
@@ -1782,3 +1784,106 @@ def get_decomposed_skeleton_separated(
     result.update(res_ip2)
     result.update(_evaluate_ip1(ctx, dims, mol, aux, aoslices, auxslices, aux_ranges, solve_by_j2c, seam))
     return result
+
+
+class RHessRIJKOptPrototype(RHessElecInteractAPI):
+    """Optimized-prototype RI-JK Hessian for restricted HF, implementing `RHessElecInteractAPI`.
+
+    Mirrors `RHessRIJKNaive` but backs the skeleton / first-derivative terms with the optimized
+    `get_decomposed_skeleton_separated` (batched, matmul-based, symmetry-exploiting).
+
+    Note on `get_deriv1_bra` vs `get_deriv1_ao`: the optimized prototype evaluates the exchange
+    first-derivative K1 directly in the half-transformed bra form `k1bra = mocc.T @ k1ao`
+    (shape [natm, 3, nocc, nao]) and never materializes the full [nao, nao] `k1ao`. Accordingly
+    this class implements `get_deriv1_bra` for real and leaves `get_deriv1_ao` as a dummy
+    (the full AO form is intentionally not produced). `RHessSCF` only consumes `get_deriv1_bra`.
+
+    The bra form returned by the API is the *right* half-transform `deriv_ao @ mocc`
+    ([natm, 3, nao, nocc]). For the J part this is `j1ao @ mocc` directly (j1ao is held in AO).
+    For the K part, the total `k1ao` is symmetric (each aux pair 1+2 / 3+4 sums to symmetric), so
+    `k1ao @ mocc = (mocc.T @ k1ao).swapaxes(-1, -2) = k1bra.swapaxes(-1, -2)` -- no full `k1ao`
+    is ever built.
+
+    The response (`get_response_bra`) reuses the naive RI-JK response; the optimization work here
+    covers skeleton + first derivative, not the CPHF response.
+    """
+
+    def __init__(self, mol: gto.Mole, aux: gto.Mole, cderi: np.ndarray, nbatch_aux: int = 72,
+                 scale_j: float = 1.0, scale_k: float = 1.0):
+        self.mol = mol
+        self.aux = aux
+        self.cderi = cderi
+        self.nbatch_aux = nbatch_aux
+        self.scale_j = scale_j
+        self.scale_k = scale_k
+        self.mo_coeff = None
+        self.mo_occ = None
+        self.result = dict()
+        # cache for the (expensive) skeleton computation, keyed by mo_coeff identity; both
+        # make_skeleton_hess and get_deriv1_bra consume it, so compute at most once per mo_coeff.
+        self._skel = None
+        self._skel_coeff = None
+
+    # --- skeleton keys summed into the J/K totals --- #
+    _J20_KEYS = ("de_J20_1", "de_J20_2", "de_J20_3")
+    _J11_KEYS = ("de_J11_1", "de_J11_2", "de_J11_3", "de_J11_4")
+    _J02_KEYS = ("de_J02_1", "de_J02_2", "de_J02_3a", "de_J02_3b", "de_J02_4",
+                 "de_J02_5", "de_J02_6", "de_J02_7", "de_J02_8")
+    _K20_KEYS = ("de_K20_1a", "de_K20_1b", "de_K20_2", "de_K20_3")
+    _K11_KEYS = ("de_K11_1", "de_K11_2", "de_K11_3", "de_K11_4")
+    _K02_KEYS = ("de_K02_1", "de_K02_2", "de_K02_3a", "de_K02_3b", "de_K02_4",
+                 "de_K02_5", "de_K02_6", "de_K02_7", "de_K02_8")
+    _K1BRA_KEYS = ("k1bra_aux0_1", "k1bra_aux0_2", "k1bra_aux0_3", "k1bra_aux0_4",
+                   "k1bra_aux1_1", "k1bra_aux1_2", "k1bra_aux1_3", "k1bra_aux1_4")
+    _J1AO_KEYS = ("j1ao_aux0", "j1ao_aux1_1", "j1ao_aux1_2", "j1ao_aux1_3", "j1ao_aux1_4")
+
+    def _ensure_skeleton(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> dict[str, np.ndarray]:
+        if self._skel is not None and self._skel_coeff is mo_coeff:
+            return self._skel
+        self._skel = get_decomposed_skeleton_separated(
+            self.mol, self.aux, mo_coeff, mo_occ, self.cderi, self.nbatch_aux
+        )
+        self._skel_coeff = mo_coeff
+        self.result.update(self._skel)
+        return self._skel
+
+    def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        res = self._ensure_skeleton(mo_coeff, mo_occ)
+        de_J = sum(res[k] for k in self._J20_KEYS) + sum(res[k] for k in self._J11_KEYS) + sum(res[k] for k in self._J02_KEYS)
+        de_K = sum(res[k] for k in self._K20_KEYS) + sum(res[k] for k in self._K11_KEYS) + sum(res[k] for k in self._K02_KEYS)
+        de_JK = self.scale_j * de_J - 0.5 * self.scale_k * de_K
+        return de_JK
+
+    def get_deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        """Dummy -- not implemented.
+
+        The optimized prototype evaluates K1 only in the half-transformed bra form
+        ([nocc, nao]); the full AO form ([nao, nao]) is intentionally never produced. Use
+        `get_deriv1_bra` instead (which `RHessSCF` consumes directly).
+        """
+        raise NotImplementedError(
+            "RHessRIJKOptPrototype does not produce the full AO first-derivative; "
+            "use get_deriv1_bra instead."
+        )
+
+    def get_deriv1_bra(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        res = self._ensure_skeleton(mo_coeff, mo_occ)
+        occidx = mo_occ > 1e-15
+        mocc = mo_coeff[:, occidx]
+        # J: held in AO form ([nao, nao]), right half-transform directly.
+        j1ao = sum(res[k] for k in self._J1AO_KEYS)
+        # K: held as left half-transform k1bra = mocc.T @ k1ao ([nocc, nao]); the total k1ao is
+        # symmetric, so the right half-transform k1ao @ mocc = k1bra.swapaxes(-1, -2).
+        k1bra = sum(res[k] for k in self._K1BRA_KEYS)
+        deriv_bra = self.scale_j * (j1ao @ mocc) - 0.5 * self.scale_k * k1bra.swapaxes(-1, -2)
+        return deriv_bra
+
+    def make_response_preparation(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+        self.mo_coeff = mo_coeff
+        self.mo_occ = mo_occ
+
+    def get_response_bra(self, bra: np.ndarray) -> np.ndarray:
+        return get_rijk_response_bra_naive(
+            self.mol, self.aux, self.mo_coeff, self.mo_occ, bra,
+            scale_j=self.scale_j, scale_k=self.scale_k,
+        )

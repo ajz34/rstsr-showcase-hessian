@@ -15,6 +15,7 @@ from pyhessref.rijk.hess_restricted_naive import (
     get_rij_deriv1_ao_naive,
     get_rik_deriv1_ao_naive,
 )
+from pyhessref.hess_scf_restricted import RHessSCF
 
 
 def setUpModule():
@@ -78,3 +79,49 @@ class TestHessianRHFOptPrototype(unittest.TestCase):
         for key in sorted(result.keys()):
             print(f"{key:<20}, val {lib.fp(result[key]):>20.12f}, ref {lib.fp(ref_dict[key]):>20.12f}")
             self.assertTrue(np.allclose(result[key], ref_dict[key], rtol=1e-4, atol=1e-6))
+
+    def test_rhess_rijk_opt_api(self):
+        """The optimized-prototype class matches RHessRIJKNaive on skeleton + deriv1_bra."""
+        from pyhessref.rijk.hess_restricted_opt_prototype import RHessRIJKOptPrototype
+
+        cderi = mf.with_df._cderi
+        obj_naive = RHessRIJKNaive(mol, aux)
+        obj_opt = RHessRIJKOptPrototype(mol, aux, cderi, nbatch_aux=72)
+
+        # skeleton hessian
+        sk_naive = obj_naive.make_skeleton_hess(mf.mo_coeff, mf.mo_occ)
+        sk_opt = obj_opt.make_skeleton_hess(mf.mo_coeff, mf.mo_occ)
+        self.assertTrue(np.allclose(sk_opt, sk_naive, atol=1e-6, rtol=1e-5))
+
+        # first-derivative bra form (the API method RHessSCF consumes)
+        bra_naive = obj_naive.get_deriv1_bra(mf.mo_coeff, mf.mo_occ)
+        bra_opt = obj_opt.get_deriv1_bra(mf.mo_coeff, mf.mo_occ)
+        self.assertTrue(np.allclose(bra_opt, bra_naive, atol=1e-6, rtol=1e-5))
+
+        # the optimized class deliberately does not produce the full AO first-derivative
+        with self.assertRaises(NotImplementedError):
+            obj_opt.get_deriv1_ao(mf.mo_coeff, mf.mo_occ)
+
+    def test_make_hess(self):
+        """End-to-end Hessian through RHessSCF using the optimized-prototype RI-JK object.
+
+        Mirrors test_hessian_rhf_naive.test_make_hess, but swaps the electronic-interaction
+        provider from RHessRIJKNaive to the optimized RHessRIJKOptPrototype (which evaluates
+        K1 in the half-transformed bra form via get_deriv1_bra). The assembled Hessian must
+        reproduce the stored reference.
+        """
+        from pyhessref.rijk.hess_restricted_opt_prototype import RHessRIJKOptPrototype
+
+        cderi = mf.with_df._cderi
+        hess_impl = RHessSCF(
+            mol,
+            mf.mo_coeff,
+            mf.mo_occ,
+            mf.mo_energy,
+            ovlp_obj=RHessOvlp(mol),
+            core_list=[HessNucRepl(mol), RHessHcore(mol)],
+            el_list=[RHessRIJKOptPrototype(mol, aux, cderi, nbatch_aux=72)],
+        )
+        de_hess = hess_impl.make_hess()
+        self.assertTrue(np.allclose(de_hess, ref_value["de_ref"], atol=1e-6, rtol=1e-4))
+        self.assertAlmostEqual(lib.fp(de_hess), 1.4704252379360374, places=5)
