@@ -276,6 +276,30 @@ pub fn get_rijk_skeleton_decomposed_separated(
     timing.extend(timing_j3c_ip2);
     tic!(timing, t0, "evaluate_j3c_ip2");
 
+    // --- evaluate j3c-ip1 related terms --- //
+
+    let t0 = std::time::Instant::now();
+    let timing_j3c_ip1 = evaluate_j3c_ip1(
+        &dims,
+        &shared,
+        cderi.view(),
+        mol,
+        aux,
+        &aoslices,
+        &auxslices,
+        &aux_ranges,
+        &device,
+        &solve_aux,
+        j_in.as_ref(),
+        &mut k_ins,
+        j_out.as_mut(),
+        &mut k_outs,
+        j_intmd.as_mut(),
+        &mut k_intmds,
+    );
+    timing.extend(timing_j3c_ip1);
+    tic!(timing, t0, "evaluate_j3c_ip1");
+
     tic!(timing, time_full, "get_rijk_skeleton_decomposed_separated");
     (j_out, k_outs, timing)
 }
@@ -1210,6 +1234,106 @@ pub fn evaluate_j3c_ip2(
         let mut k1bra_aux1_2 = k_intmd.remove("k1bra_aux1_2").unwrap();
         *&mut k1bra_aux1_2 *= occ_invsqrt.i((None, ..));
         k_out.insert("k1bra_aux1_2", k1bra_aux1_2);
+    }
+
+    timing
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_j3c_ip1(
+    dims: &HashMap<&'static str, usize>,
+    shared: &HashMap<&'static str, Tsr>,
+    cderi: TsrView,
+    mol: &CInt,
+    aux: &CInt,
+    aoslices: &[[usize; 4]],
+    auxslices: &[[usize; 4]],
+    aux_ranges: &[[usize; 4]],
+    device: &DeviceTsr,
+    solve_aux: &FnSolveAux,
+    j_in: Option<&HashMap<&'static str, Tsr>>,
+    k_ins: &mut [HashMap<&'static str, Tsr>],
+    mut j_out: Option<&mut HashMap<&'static str, Tsr>>,
+    k_outs: &mut [HashMap<&'static str, Tsr>],
+    mut j_intmd: Option<&mut HashMap<&'static str, Tsr>>,
+    k_intmds: &mut [HashMap<&'static str, Tsr>],
+) -> Vec<(String, f64)> {
+    let mut timing = vec![];
+
+    let nao = dims["nao"];
+    let naux = dims["naux"];
+    let natm = dims["natm"];
+    let do_j = j_in.is_some();
+    let nset_k = k_outs.len();
+    let j2c_ip1 = shared["j2c_ip1"].view();
+
+    // --- integral contract --- //
+
+    // this part will also handle intermediates, as before in evaluate_j3c_ip2.
+
+    if let Some(j_intmd) = j_intmd.as_mut() {
+        j_intmd.insert("j3c_ip1_aux", rt::zeros(([nao, naux, 3], device)));
+        j_intmd.insert("j3c_ip1_j1ao_tmp", rt::zeros(([nao, nao, 3], device)));
+    }
+    for (k_in, k_intmd) in k_ins.iter_mut().zip(k_intmds.iter_mut()) {
+        let nocc = k_in["occ_invsqrt"].shape()[0];
+        k_intmd.insert("j3c_ip1_bra", rt::zeros(([nao, nocc, naux, 3], device)));
+        k_intmd.insert("j3c_ip1_k1bra_tmp", rt::zeros(([nao, nao, 3], device)));
+        k_intmd.insert("k1bra_aux0_4", rt::zeros(([nao, nocc, 3, natm], device)));
+    }
+
+    for &[sh0, sh1, p0, p1] in aux_ranges.iter() {
+        let t0 = std::time::Instant::now();
+        let j3c_ip1_batch = generator_hess_intor_j3c_by_aux(mol, aux, "int3c2e_ip1", "s1", device)([sh0, sh1]);
+        tic!(timing, t0, &format!("evaluate_j3c_ip1, j3c_ip1 aux({p0}:{p1})"));
+
+        let t0 = std::time::Instant::now();
+        if do_j {
+            let dm0 = j_in.as_ref().unwrap()["dm0"].view();
+            let rrcd_eri_aux = j_in.as_ref().unwrap()["rrcd_eri_aux"].i(p0..p1);
+
+            // --- j3c_ip1_aux --- //
+
+            let mut j3c_ip1_aux = j_intmd.as_mut().unwrap().get_mut("j3c_ip1_aux").unwrap().view_mut();
+            let tmp = rt::vecdot(&j3c_ip1_batch, &dm0, 1);
+            j3c_ip1_aux.i_mut((.., p0..p1)).assign(tmp);
+
+            // --- j3c_ip1_j1ao_tmp --- //
+
+            let mut j3c_ip1_j1ao_tmp = j_intmd.as_mut().unwrap().get_mut("j3c_ip1_j1ao_tmp").unwrap().view_mut();
+            j3c_ip1_j1ao_tmp += rt::vecdot(&j3c_ip1_batch, rrcd_eri_aux.i((None, None, ..)), 2);
+        }
+        tic!(timing, t0, &format!("evaluate_j3c_ip1, intor contract j-part aux({p0}:{p1})"));
+    }
+
+    // --- evaluation j-part --- //
+
+    if do_j {
+        let t0 = std::time::Instant::now();
+
+        let j_out = j_out.as_mut().unwrap();
+        let j3c_ip1_j1ao_tmp = j_intmd.as_mut().unwrap().remove("j3c_ip1_j1ao_tmp").unwrap();
+        let j3c_ip1_aux = j_intmd.as_mut().unwrap().remove("j3c_ip1_aux").unwrap();
+
+        let mut rcd_j3c_ip1_aux = j3c_ip1_aux;
+        for t in 0..3 {
+            solve_aux(rcd_j3c_ip1_aux.i_mut((.., .., t)), Right, false);
+        }
+
+        // --- j1ao aux0 --- //
+
+        let mut j1ao_aux0 = rt::zeros(([nao, nao, 3, natm], device));
+        for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            *&mut j1ao_aux0.i_mut((.., slcA, .., A)) -= j3c_ip1_j1ao_tmp.i(slcA).swapaxes(0, 1);
+            *&mut j1ao_aux0.i_mut((slcA, .., .., A)) -= j3c_ip1_j1ao_tmp.i(slcA);
+            let tmp1 = rcd_j3c_ip1_aux.i(slcA).sum_axes(0);
+            let tmp2 = &cderi % &tmp1;
+            *&mut j1ao_aux0.i_mut((Ellipsis, A)) -= 2 * tmp2.unpack_tri(Upper, FlagSymm::Sy);
+        }
+
+        j_out.insert("j1ao_aux0", j1ao_aux0);
+        tic!(timing, t0, "evaluate_j3c_ip1, evaluation j-part");
     }
 
     timing

@@ -248,6 +248,7 @@ mod test_rhf_optimized {
             }
         }
         // special terms check
+        assert_abs_diff_eq!(fp(j_out["j1ao_aux0"].view()), 35.385559919002, epsilon = 1e-6);
         assert_abs_diff_eq!(fp(j_out["j1ao_aux1_1"].view()), -4.623388594699, epsilon = 1e-6);
         assert_abs_diff_eq!(fp(j_out["j1ao_aux1_2"].view()), 2.521062525444, epsilon = 1e-6);
         assert_abs_diff_eq!(fp(j_out["j1ao_aux1_3"].view()), -2.522442283815, epsilon = 1e-6);
