@@ -121,6 +121,14 @@ pub fn get_rijk_response_bra(
 
 /* #region skeleton */
 
+macro_rules! tic {
+    ($timing:expr, $t0:expr, $msg:expr) => {
+        let t1 = std::time::Instant::now();
+        let dt = t1.duration_since($t0).as_secs_f64();
+        $timing.push(($msg.to_string(), dt));
+    };
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 pub fn get_rijk_skeleton_decomposed_separated(
@@ -139,12 +147,6 @@ pub fn get_rijk_skeleton_decomposed_separated(
     let device = cderi.device().clone();
     let mut timing = vec![];
 
-    let mut tic = |msg: &str, t0| {
-        let t1 = std::time::Instant::now();
-        let dt = t1.duration_since(t0).as_secs_f64();
-        timing.push((msg.to_string(), dt));
-    };
-
     // --- basic checks --- //
     if mo_coeff.is_empty() || mo_occ.is_empty() {
         panic!("mo_coeff and mo_occ must be non-empty");
@@ -158,7 +160,7 @@ pub fn get_rijk_skeleton_decomposed_separated(
     let t0 = std::time::Instant::now();
     let (dims, aoslices, auxslices, aux_ranges, shared, solve_aux) =
         prepare_shared(mol, aux, j2c_decomp, nbatch_aux, atm_list, &device);
-    tic("prepare_shared", t0);
+    tic!(timing, t0, "prepare_shared");
 
     // --- prepare j --- //
     let j_in = do_j.then(|| {
@@ -176,7 +178,7 @@ pub fn get_rijk_skeleton_decomposed_separated(
             |dm0| dm0.to_owned(),
         );
         let j_in = prepare_j(&solve_aux, &dims, dm0.view(), cderi.view());
-        tic("prepare_j", t0);
+        tic!(timing, t0, "prepare_j");
         j_in
     });
     let mut j_out = do_j.then(HashMap::new);
@@ -189,7 +191,7 @@ pub fn get_rijk_skeleton_decomposed_separated(
             let t0 = std::time::Instant::now();
             let k_in = prepare_k(&solve_aux, &dims, mo_coeff[iset].view(), mo_occ[iset].view(), cderi.view());
             k_ins.push(k_in);
-            tic(&format!("prepare_k iset_{iset}"), t0);
+            tic!(timing, t0, &format!("prepare_k iset_{iset}"));
         }
     }
     let mut k_outs = (0..k_ins.len()).map(|_| HashMap::new()).collect_vec();
@@ -197,7 +199,7 @@ pub fn get_rijk_skeleton_decomposed_separated(
     // --- evaluate oneshot --- //
 
     let t0 = std::time::Instant::now();
-    evaluate_oneshot(
+    let timing_oneshot = evaluate_oneshot(
         &dims,
         mol,
         aux,
@@ -210,7 +212,8 @@ pub fn get_rijk_skeleton_decomposed_separated(
         &mut k_outs,
         &device,
     );
-    tic("evaluate_oneshot", t0);
+    timing.extend(timing_oneshot);
+    tic!(timing, t0, "evaluate_oneshot");
 
     (j_out, k_outs, timing)
 }
@@ -364,7 +367,12 @@ pub fn evaluate_oneshot(
     k_outs: &mut [HashMap<&'static str, Tsr>],
     device: &DeviceTsr,
 ) -> Vec<(String, f64)> {
-    let timing = vec![];
+    let mut timing = vec![];
+    let mut tic = |msg: &str, t0| {
+        let t1 = std::time::Instant::now();
+        let dt = t1.duration_since(t0).as_secs_f64();
+        timing.push((msg.to_string(), dt));
+    };
 
     let nao = dims["nao"];
     let naux = dims["naux"];
@@ -402,24 +410,79 @@ pub fn evaluate_oneshot(
     for &[sh0, sh1, p0, p1] in aux_ranges {
         // --- 20-2 (ipvip1) --- //
 
-        // - j3c_ipvip1: [nao, nao, p1-p0, 3, 3]
+        let t0 = std::time::Instant::now();
         let j3c_ipvip1 = gen_j3c_ipvip1([sh0, sh1]);
+        tic!(timing, t0, &format!("gen_j3c_ipvip1 aux_{sh0}_{sh1}"));
+
         if do_j {
+            let t0 = std::time::Instant::now();
             let llcd_eri_aux = j_in.as_ref().unwrap()["llcd_eri_aux"].i(p0..p1);
             let dm0 = j_in.as_ref().unwrap()["dm0"].view();
             let tmp1 = rt::vecdot(&j3c_ipvip1, llcd_eri_aux.i((None, None, ..)), 2);
             *dbas_j.get_mut("J20_2").unwrap() += tmp1 * dm0;
+            tic!(timing, t0, &format!("dbas_j J20_2 aux_{sh0}_{sh1}"));
+        }
+        drop(j3c_ipvip1);
+
+        // --- 20-3 (ipip1) --- //
+
+        let t0 = std::time::Instant::now();
+        let j3c_ipip1 = gen_j3c_ipip1([sh0, sh1]);
+        tic!(timing, t0, &format!("gen_j3c_ipip1 aux_{sh0}_{sh1}"));
+
+        if do_j {
+            let t0 = std::time::Instant::now();
+            let llcd_eri_aux = j_in.as_ref().unwrap()["llcd_eri_aux"].i(p0..p1);
+            let dm0 = j_in.as_ref().unwrap()["dm0"].view();
+            let tmp1 = rt::vecdot(&j3c_ipip1, llcd_eri_aux.i((None, None, ..)), 2);
+            *dbas_j.get_mut("J20_3").unwrap() += tmp1 * dm0;
+            tic!(timing, t0, &format!("dbas_j J20_3 aux_{sh0}_{sh1}"));
+        }
+        drop(j3c_ipip1);
+
+        // --- 11-1 (ip1ip2) --- //
+
+        let t0 = std::time::Instant::now();
+        let j3c_ip1ip2 = gen_j3c_ip1ip2([sh0, sh1]);
+        tic!(timing, t0, &format!("gen_j3c_ip1ip2 aux_{sh0}_{sh1}"));
+
+        if do_j {
+            let t0 = std::time::Instant::now();
+            let llcd_eri_aux = j_in.as_ref().unwrap()["llcd_eri_aux"].i(p0..p1);
+            let dm0 = j_in.as_ref().unwrap()["dm0"].view();
+            let tmp1 = rt::vecdot(&j3c_ip1ip2, &dm0, 1) * llcd_eri_aux.i((None, ..));
+            dbas_j.get_mut("J11_1").unwrap().i_mut((.., p0..p1)).assign(tmp1);
+            tic!(timing, t0, &format!("dbas_j J11_1 aux_{sh0}_{sh1}"));
+        }
+
+        // --- 02-1 (ipip2) --- //
+
+        let t0 = std::time::Instant::now();
+        let j3c_ipip2 = gen_j3c_ipip2([sh0, sh1]);
+        tic!(timing, t0, &format!("gen_j3c_ipip2 aux_{sh0}_{sh1}"));
+
+        if do_j {
+            let t0 = std::time::Instant::now();
+            let llcd_eri_aux = j_in.as_ref().unwrap()["llcd_eri_aux"].i(p0..p1);
+            let dm0 = j_in.as_ref().unwrap()["dm0"].view();
+            let tmp1 = rt::vecdot(&j3c_ipip2, &dm0, ([0, 1], [0, 1])) * llcd_eri_aux;
+            dbas_j.get_mut("J02_1").unwrap().i_mut(p0..p1).assign(tmp1);
+            tic!(timing, t0, &format!("dbas_j J02_1 aux_{sh0}_{sh1}"));
         }
     }
 
     // --- reduce to hessian contribution --- //
 
+    let t0 = std::time::Instant::now();
     if do_j {
         let j_out = j_out.unwrap();
 
         let mut de_J20_2: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_J20_3: Tsr = rt::zeros(([3, 3, natm, natm], device));
         for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
             let slcA = rt::slice!(p0A, p1A);
+            let tmp = dbas_j["J20_3"].i(slcA).sum_axes([0, 1]);
+            de_J20_3.i_mut((.., .., A, A)).assign(&tmp);
             for (B, &[_, _, p0B, p1B]) in aoslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
                 let tmp = dbas_j["J20_2"].i((slcA, slcB)).sum_axes([0, 1]);
@@ -427,9 +490,33 @@ pub fn evaluate_oneshot(
             }
         }
 
+        let mut de_J11_1: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
+                let slcB = rt::slice!(p0B, p1B);
+                let tmp = dbas_j["J11_1"].i((slcA, slcB)).sum_axes([0, 1]);
+                de_J11_1.i_mut((.., .., B, A)).assign(&tmp);
+            }
+        }
+
+        let mut de_J02_1: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            let tmp = dbas_j["J02_1"].i(slcA).sum_axes(0);
+            de_J02_1.i_mut((.., .., A, A)).assign(&tmp);
+        }
+
         let scale_J20_2 = 1.0;
+        let scale_J20_3 = 1.0;
+        let scale_J11_1 = 2.0;
+        let scale_J02_1 = 0.5;
         j_out.insert("de_J20_2", scale_J20_2 * (&de_J20_2 + &de_J20_2.transpose([1, 0, 3, 2])));
+        j_out.insert("de_J20_3", scale_J20_3 * (&de_J20_3 + &de_J20_3.transpose([1, 0, 3, 2])));
+        j_out.insert("de_J11_1", scale_J11_1 * (&de_J11_1 + &de_J11_1.transpose([1, 0, 3, 2])));
+        j_out.insert("de_J02_1", scale_J02_1 * (&de_J02_1 + &de_J02_1.transpose([1, 0, 3, 2])));
     }
+    tic!(timing, t0, "evaluate_oneshot, reduce to hessian");
 
     timing
 }
