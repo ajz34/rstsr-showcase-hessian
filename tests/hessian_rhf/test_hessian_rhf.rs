@@ -233,7 +233,7 @@ mod test_rhf_optimized {
         }
 
         println!("j_out");
-        for &key in j_out.keys() {
+        for &key in j_out.keys().sorted() {
             if key.starts_with("de") {
                 println!(
                     "j_out    {key:<20}, fp {:>16.10}, fp ref {:>16.10}, shape {:?}",
@@ -249,7 +249,7 @@ mod test_rhf_optimized {
         }
 
         println!("k_out");
-        for &key in k_out.keys() {
+        for &key in k_out.keys().sorted() {
             if key.starts_with("de") {
                 println!(
                     "k_out    {key:<20}, fp {:>16.10}, fp ref {:>16.10}, shape {:?}",
