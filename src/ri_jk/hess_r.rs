@@ -1314,6 +1314,8 @@ pub fn evaluate_j3c_ip1(
         let j_out = j_out.as_mut().unwrap();
         let j3c_ip1_j1ao_tmp = j_intmd.as_mut().unwrap().remove("j3c_ip1_j1ao_tmp").unwrap();
         let j3c_ip1_aux = j_intmd.as_mut().unwrap().remove("j3c_ip1_aux").unwrap();
+        let j3c_ip2_aux = j_intmd.as_mut().unwrap().remove("j3c_ip2_aux").unwrap();
+        let rrcd_eri_aux = j_in.as_ref().unwrap()["rrcd_eri_aux"].view();
 
         let mut rcd_j3c_ip1_aux = j3c_ip1_aux;
         for t in 0..3 {
@@ -1333,6 +1335,72 @@ pub fn evaluate_j3c_ip1(
         }
 
         j_out.insert("j1ao_aux0", j1ao_aux0);
+
+        // --- dbas evaluation --- //
+
+        let mut dbas_J20_1: Tsr = rt::zeros(([nao, nao, 3, 3], device));
+        for t in 0..3 {
+            for s in 0..3 {
+                let tmp = rcd_j3c_ip1_aux.i((.., .., t)) % rcd_j3c_ip1_aux.i((.., .., s)).t();
+                dbas_J20_1.i_mut((.., .., s, t)).assign(tmp);
+            }
+        }
+
+        let mut rrcd_j3c_ip1_aux = rcd_j3c_ip1_aux;
+        for t in 0..3 {
+            solve_aux(rrcd_j3c_ip1_aux.i_mut((.., .., t)), Right, true);
+        }
+
+        let mut dbas_J11_2: Tsr = rt::zeros(([nao, naux, 3, 3], device));
+        for t in 0..3 {
+            for s in 0..3 {
+                let tmp = rrcd_j3c_ip1_aux.i((.., .., t)) % j2c_ip1.i((.., .., s)).t() * rrcd_eri_aux.i((None, ..));
+                dbas_J11_2.i_mut((.., .., s, t)).assign(tmp);
+            }
+        }
+
+        let tmp1 = rt::vecdot(&j2c_ip1, &rrcd_eri_aux, 0);
+        let dbas_J11_3: Tsr = rrcd_j3c_ip1_aux.i((.., .., None, ..)) * tmp1.i((None, .., .., None));
+        let dbas_J11_4: Tsr = rrcd_j3c_ip1_aux.i((.., .., None, ..)) * j3c_ip2_aux.i((None, .., .., None));
+
+        // --- reduce to hessian contribution --- //
+
+        let mut de_J20_1: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_J11_2: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_J11_3: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_J11_4: Tsr = rt::zeros(([3, 3, natm, natm], device));
+
+        for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+
+            for (B, &[_, _, p0B, p1B]) in aoslices.iter().enumerate() {
+                let slcB = rt::slice!(p0B, p1B);
+
+                let tmp = dbas_J20_1.i((slcA, slcB)).sum_axes([0, 1]);
+                de_J20_1.i_mut((.., .., B, A)).assign(&tmp);
+            }
+
+            for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
+                let slcB = rt::slice!(p0B, p1B);
+
+                let tmp = dbas_J11_2.i((slcA, slcB)).sum_axes([0, 1]);
+                de_J11_2.i_mut((.., .., B, A)).assign(&tmp);
+                let tmp = dbas_J11_3.i((slcA, slcB)).sum_axes([0, 1]);
+                de_J11_3.i_mut((.., .., B, A)).assign(&tmp);
+                let tmp = dbas_J11_4.i((slcA, slcB)).sum_axes([0, 1]);
+                de_J11_4.i_mut((.., .., B, A)).assign(&tmp);
+            }
+        }
+
+        let scale_J20_1 = 2.0;
+        let scale_J11_2 = -2.0;
+        let scale_J11_3 = 2.0;
+        let scale_J11_4 = 2.0;
+        j_out.insert("de_J20_1", scale_J20_1 * (&de_J20_1 + &de_J20_1.transpose([1, 0, 3, 2])));
+        j_out.insert("de_J11_2", scale_J11_2 * (&de_J11_2 + &de_J11_2.transpose([1, 0, 3, 2])));
+        j_out.insert("de_J11_3", scale_J11_3 * (&de_J11_3 + &de_J11_3.transpose([1, 0, 3, 2])));
+        j_out.insert("de_J11_4", scale_J11_4 * (&de_J11_4 + &de_J11_4.transpose([1, 0, 3, 2])));
+
         tic!(timing, t0, "evaluate_j3c_ip1, evaluation j-part");
     }
 
