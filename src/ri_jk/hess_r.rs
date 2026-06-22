@@ -14,7 +14,6 @@
 //! > Bykov, et al. Mol Phys. 113, 1961 (2015). DOI: 10.1080/00268976.2015.1025114
 
 use crate::prelude::*;
-use rstsr_openblas::prelude_dev::tan;
 #[allow(unused_imports)]
 use FlagSide::L as Left;
 #[allow(unused_imports)]
@@ -233,6 +232,24 @@ pub fn get_rijk_skeleton_decomposed_separated(
     );
     timing.extend(timing_j2c_deriv_only);
     tic!(timing, t0, "evaluate_j2c_deriv_only");
+
+    // --- evaluate jk1 j2c-skeleton terms --- //
+
+    let t0 = std::time::Instant::now();
+    let timing_jk1_j2c_deriv = evaluate_jk1_j2c_deriv(
+        &dims,
+        &shared,
+        cderi,
+        &auxslices,
+        &device,
+        &solve_aux,
+        j_in.as_ref(),
+        &k_ins,
+        j_out.as_mut(),
+        &mut k_outs,
+    );
+    timing.extend(timing_jk1_j2c_deriv);
+    tic!(timing, t0, "evaluate_jk1_j2c_deriv");
 
     tic!(timing, time_full, "get_rijk_skeleton_decomposed_separated");
     (j_out, k_outs, timing)
@@ -773,6 +790,115 @@ pub fn evaluate_j2c_deriv_only(
         k_out.insert("de_K02_8", scale_K02_8 * (&de_K02_8 + &de_K02_8.transpose([1, 0, 3, 2])));
 
         tic!(timing, t0, &format!("evaluate_j2c_deriv_only, evaluate k-part {iset}"));
+    }
+
+    timing
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_jk1_j2c_deriv(
+    dims: &HashMap<&'static str, usize>,
+    shared: &HashMap<&'static str, Tsr>,
+    cderi: TsrView,
+    auxslices: &[[usize; 4]],
+    device: &DeviceTsr,
+    solve_aux: &FnSolveAux,
+    j_in: Option<&HashMap<&'static str, Tsr>>,
+    k_ins: &[HashMap<&'static str, Tsr>],
+    j_out: Option<&mut HashMap<&'static str, Tsr>>,
+    k_outs: &mut [HashMap<&'static str, Tsr>],
+) -> Vec<(String, f64)> {
+    let mut timing = vec![];
+
+    let nao = dims["nao"];
+    let naux = dims["naux"];
+    let natm = dims["natm"];
+    let do_j = j_in.is_some();
+    let nset_k = k_outs.len();
+    let j2c_ip1 = shared["j2c_ip1"].view();
+    let rcd_j2c_ip1 = shared["rcd_j2c_ip1"].view();
+
+    // --- evaluation j-part --- //
+
+    if do_j {
+        let t0 = std::time::Instant::now();
+
+        let j_out = j_out.unwrap();
+        let rrcd_eri_aux = j_in.as_ref().unwrap()["rrcd_eri_aux"].view();
+
+        // --- j1ao_aux1_3 --- //
+
+        let tmp1 = -rt::vecdot(&j2c_ip1, &rrcd_eri_aux, 0);
+        let mut tmp2: Tsr = rt::zeros(([naux, 3, natm], device));
+        for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            tmp2.i_mut((slcA, .., A)).assign(tmp1.i(slcA));
+        }
+        solve_aux(tmp2.view_mut(), Left, true);
+        let j1ao_aux1_3_tp = &cderi % tmp2.reshape((naux, -1));
+        let j1ao_aux1_3 = j1ao_aux1_3_tp.reshape((-1, 3, natm)).unpack_tri(Upper, FlagSymm::Sy);
+        j_out.insert("j1ao_aux1_3", j1ao_aux1_3);
+
+        // --- j1ao_aux1_4 --- //
+
+        let tmp1 = &rcd_j2c_ip1 * &rrcd_eri_aux;
+        let mut tmp2: Tsr = rt::zeros(([naux, 3, natm], device));
+        for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            tmp2.i_mut((.., .., A)).assign(tmp1.i(slcA).sum_axes(0));
+        }
+        let j1ao_aux1_4_tp = &cderi % tmp2.reshape((naux, -1));
+        let j1ao_aux1_4 = j1ao_aux1_4_tp.reshape((-1, 3, natm)).unpack_tri(Upper, FlagSymm::Sy);
+        j_out.insert("j1ao_aux1_4", j1ao_aux1_4);
+
+        tic!(timing, t0, "evaluate_jk1_j2c_deriv, j-part");
+    }
+
+    // --- evaluation k-part --- //
+
+    for iset in 0..nset_k {
+        let t0 = std::time::Instant::now();
+
+        let k_in = &k_ins[iset];
+        let k_out = &mut k_outs[iset];
+        let rrcd_eri_occ = k_in["rrcd_eri_occ"].view();
+        let rrcd_eri_bra = k_in["rrcd_eri_bra"].view();
+        let occ_invsqrt = k_in["occ_invsqrt"].view();
+        let nocc = occ_invsqrt.shape()[0];
+
+        // --- k1bra_aux1_3 --- //
+
+        let mut k1bra_aux1_3 = rt::zeros(([nao, nocc, 3, natm], device));
+        for t in 0..3 {
+            let tmp1 = rrcd_eri_bra.reshape([nao * nocc, naux]) % j2c_ip1.i((.., .., t)).t();
+            let tmp1 = tmp1.into_shape([nao, nocc, naux]);
+            for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
+                let slcA = rt::slice!(p0A, p1A);
+                let tmp =
+                    tmp1.i((.., .., slcA)).reshape((nao, -1)) % rrcd_eri_occ.i((.., .., slcA)).reshape((nocc, -1)).t();
+                k1bra_aux1_3.i_mut((.., .., t, A)).assign(tmp);
+            }
+        }
+        k1bra_aux1_3 *= occ_invsqrt.i((None, ..));
+        k_out.insert("k1bra_aux1_3", k1bra_aux1_3);
+
+        // --- k1bra_aux1_4 --- //
+
+        let mut k1bra_aux1_4 = rt::zeros(([nao, nocc, 3, natm], device));
+        for t in 0..3 {
+            let tmp1 = rrcd_eri_occ.reshape([nocc * nocc, naux]) % j2c_ip1.i((.., .., t)).t();
+            let tmp1 = tmp1.into_shape([nocc, nocc, naux]);
+            for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
+                let slcA = rt::slice!(p0A, p1A);
+                let tmp =
+                    rrcd_eri_bra.i((.., .., slcA)).reshape((nao, -1)) % tmp1.i((.., .., slcA)).reshape((nocc, -1)).t();
+                k1bra_aux1_4.i_mut((.., .., t, A)).assign(tmp);
+            }
+        }
+        k1bra_aux1_4 *= occ_invsqrt.i((None, ..));
+        k_out.insert("k1bra_aux1_4", k1bra_aux1_4);
+
+        tic!(timing, t0, &format!("evaluate_jk1_j2c_deriv, k-part {iset}"));
     }
 
     timing

@@ -247,6 +247,9 @@ mod test_rhf_optimized {
                 println!("j_out    {key:<20}, fp {:>16.10}, shape {:?}", fp(j_out[key].view()), j_out[key].shape());
             }
         }
+        // special terms check
+        assert_abs_diff_eq!(fp(j_out["j1ao_aux1_3"].view()), -2.522442283815, epsilon = 1e-6);
+        assert_abs_diff_eq!(fp(j_out["j1ao_aux1_4"].view()), 4.739420467750, epsilon = 1e-6);
 
         println!("k_out");
         for &key in k_out.keys().sorted() {
@@ -263,5 +266,8 @@ mod test_rhf_optimized {
                 println!("k_out    {key:<20}, fp {:>16.10}, shape {:?}", fp(k_out[key].view()), k_out[key].shape());
             }
         }
+        // special terms check
+        assert_abs_diff_eq!(fp(k_out["k1bra_aux1_3"].view()), -8.749320624840, epsilon = 1e-6);
+        assert_abs_diff_eq!(fp(k_out["k1bra_aux1_4"].view()), 8.635554865181, epsilon = 1e-6);
     }
 }
