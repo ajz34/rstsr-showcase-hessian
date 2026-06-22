@@ -147,6 +147,7 @@ pub fn get_rijk_skeleton_decomposed_separated(
 ) -> (Option<HashMap<&'static str, Tsr>>, Vec<HashMap<&'static str, Tsr>>, Vec<(String, f64)>) {
     let device = cderi.device().clone();
     let mut timing = vec![];
+    let time_full = std::time::Instant::now();
 
     // --- basic checks --- //
     if mo_coeff.is_empty() || mo_occ.is_empty() {
@@ -233,6 +234,7 @@ pub fn get_rijk_skeleton_decomposed_separated(
     timing.extend(timing_j2c_deriv_only);
     tic!(timing, t0, "evaluate_j2c_deriv_only");
 
+    tic!(timing, time_full, "get_rijk_skeleton_decomposed_separated");
     (j_out, k_outs, timing)
 }
 
@@ -344,22 +346,22 @@ pub fn prepare_k(
     let occ_invsqrt = occ.view().pow(-0.5);
 
     // orbital transformation
-    let lcd_eri_bra: Tsr = rt::zeros(([nao, nocc, naux], &device));
-    let lcd_eri_occ: Tsr = rt::zeros(([nocc, nocc, naux], &device));
+    let rcd_eri_bra: Tsr = rt::zeros(([nao, nocc, naux], &device));
+    let rcd_eri_occ: Tsr = rt::zeros(([nocc, nocc, naux], &device));
     (0..naux).into_par_iter().for_each(|p| {
-        let lcd_eri_bra_p = lcd_eri_bra.i((.., .., p));
-        let lcd_eri_occ_p = lcd_eri_occ.i((.., .., p));
-        let mut lcd_eri_bra_p = unsafe { lcd_eri_bra_p.force_mut() };
-        let mut lcd_eri_occ_p = unsafe { lcd_eri_occ_p.force_mut() };
+        let rcd_eri_bra_p = rcd_eri_bra.i((.., .., p));
+        let rcd_eri_occ_p = rcd_eri_occ.i((.., .., p));
+        let mut rcd_eri_bra_p = unsafe { rcd_eri_bra_p.force_mut() };
+        let mut rcd_eri_occ_p = unsafe { rcd_eri_occ_p.force_mut() };
         let cderi_p = cderi.i((.., p)).unpack_tri(Upper, FlagSymm::Sy);
-        lcd_eri_bra_p.matmul_from(&cderi_p, &mocc_2, 1.0, 0.0);
-        lcd_eri_occ_p.matmul_from(&mocc_2.t(), &lcd_eri_bra_p, 1.0, 0.0);
+        rcd_eri_bra_p.matmul_from(&cderi_p, &mocc_2, 1.0, 0.0);
+        rcd_eri_occ_p.matmul_from(&mocc_2.t(), &rcd_eri_bra_p, 1.0, 0.0);
     });
 
     // j2c solve (consumes previous results in-place)
-    let mut rrcd_eri_bra = lcd_eri_bra;
+    let mut rrcd_eri_bra = rcd_eri_bra;
     solve_aux(rrcd_eri_bra.view_mut(), Right, true);
-    let mut rrcd_eri_occ = lcd_eri_occ;
+    let mut rrcd_eri_occ = rcd_eri_occ;
     solve_aux(rrcd_eri_occ.view_mut(), Right, true);
 
     HashMap::from([
@@ -650,8 +652,9 @@ pub fn evaluate_j2c_deriv_only(
     let j2c_ip1ip2 = hess_intor(aux, "int2c2e_ip1ip2", "s1", None, device);
     tic!(timing, t0, "evaluate_j2c_deriv_only, integration");
 
-    // --- evaluation (J) --- //
+    // --- evaluation j-part --- //
 
+    let t0 = std::time::Instant::now();
     if do_j {
         let j_out = j_out.unwrap();
         let rrcd_eri_aux = j_in.as_ref().unwrap()["rrcd_eri_aux"].view();
@@ -686,13 +689,10 @@ pub fn evaluate_j2c_deriv_only(
 
                 let tmp = dbas_J02_3a.i((slcA, slcB)).sum_axes([0, 1]);
                 de_J02_3a.i_mut((.., .., B, A)).assign(tmp);
-
                 let tmp = dbas_J02_3b.i((slcA, slcB)).sum_axes([0, 1]);
                 de_J02_3b.i_mut((.., .., B, A)).assign(tmp);
-
                 let tmp = dbas_J02_6.i((slcA, slcB)).sum_axes([0, 1]);
                 de_J02_6.i_mut((.., .., B, A)).assign(tmp);
-
                 let tmp = dbas_J02_8.i((slcA, slcB)).sum_axes([0, 1]);
                 de_J02_8.i_mut((.., .., B, A)).assign(tmp);
             }
@@ -708,6 +708,71 @@ pub fn evaluate_j2c_deriv_only(
         j_out.insert("de_J02_3b", scale_J02_3b * (&de_J02_3b + &de_J02_3b.transpose([1, 0, 3, 2])));
         j_out.insert("de_J02_6", scale_J02_6 * (&de_J02_6 + &de_J02_6.transpose([1, 0, 3, 2])));
         j_out.insert("de_J02_8", scale_J02_8 * (&de_J02_8 + &de_J02_8.transpose([1, 0, 3, 2])));
+    }
+    tic!(timing, t0, "evaluate_j2c_deriv_only, evaluate j-part");
+
+    // --- evaluation (K) --- //
+
+    for iset in 0..nset_k {
+        let t0 = std::time::Instant::now();
+
+        let k_in = &k_ins[iset];
+        let k_out = &mut k_outs[iset];
+        let rrcd_eri_occ = k_in["rrcd_eri_occ"].view();
+        let fold_eri_aux = rrcd_eri_occ.reshape((-1, naux)).t() % rrcd_eri_occ.reshape((-1, naux));
+
+        // --- dbas evaluation --- //
+
+        let dbas_K02_2 = rt::vecdot(&j2c_ipip1, &fold_eri_aux, 0);
+        let dbas_K02_3a = &j2c_ip1ip2 * &fold_eri_aux;
+        let dbas_K02_3b =
+            rcd_j2c_ip1.i((.., .., None, ..)) % rcd_j2c_ip1.i((.., .., .., None)).swapaxes(0, 1) * &fold_eri_aux;
+        let dbas_K02_6 = j2c_ip1.i((.., .., None, ..)) % &fold_eri_aux % j2c_ip1.i((.., .., .., None)) * &j2c_inv;
+        let dbas_K02_8 = fold_eri_aux % j2c_ip1.i((.., .., .., None)) * rrcd_j2c_ip1.i((.., .., None, ..));
+
+        // --- reduce to hessian contribution --- //
+
+        let mut de_K02_2: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_K02_3a: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_K02_3b: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_K02_6: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_K02_8: Tsr = rt::zeros(([3, 3, natm, natm], device));
+
+        for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+
+            let tmp = dbas_K02_2.i(slcA).sum_axes(0);
+            de_K02_2.i_mut((.., .., A, A)).assign(&tmp);
+
+            for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
+                let slcB = rt::slice!(p0B, p1B);
+
+                let tmp = dbas_K02_3a.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K02_3a.i_mut((.., .., B, A)).assign(tmp);
+
+                let tmp = dbas_K02_3b.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K02_3b.i_mut((.., .., B, A)).assign(tmp);
+
+                let tmp = dbas_K02_6.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K02_6.i_mut((.., .., B, A)).assign(tmp);
+
+                let tmp = dbas_K02_8.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K02_8.i_mut((.., .., B, A)).assign(tmp);
+            }
+        }
+
+        let scale_K02_2 = -0.5;
+        let scale_K02_3a = -0.5;
+        let scale_K02_3b = 0.5;
+        let scale_K02_6 = -0.5;
+        let scale_K02_8 = -1.0;
+        k_out.insert("de_K02_2", scale_K02_2 * (&de_K02_2 + &de_K02_2.transpose([1, 0, 3, 2])));
+        k_out.insert("de_K02_3a", scale_K02_3a * (&de_K02_3a + &de_K02_3a.transpose([1, 0, 3, 2])));
+        k_out.insert("de_K02_3b", scale_K02_3b * (&de_K02_3b + &de_K02_3b.transpose([1, 0, 3, 2])));
+        k_out.insert("de_K02_6", scale_K02_6 * (&de_K02_6 + &de_K02_6.transpose([1, 0, 3, 2])));
+        k_out.insert("de_K02_8", scale_K02_8 * (&de_K02_8 + &de_K02_8.transpose([1, 0, 3, 2])));
+
+        tic!(timing, t0, &format!("evaluate_j2c_deriv_only, evaluate k-part {iset}"));
     }
 
     timing
