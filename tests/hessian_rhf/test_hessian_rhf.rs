@@ -198,4 +198,70 @@ mod test_rhf_optimized {
             println!("k_in     {key:<20}, fp {:>16.10}, shape {:?}", fp(k_in[key].view()), k_in[key].shape());
         }
     }
+
+    #[rstest]
+    fn test_get_rijk_skeleton_decomposed_separated(hess_case: &CaseAmoniaRHF) {
+        use rstsr_showcase_hessian::ri_jk::decompose::*;
+        use rstsr_showcase_hessian::ri_jk::hess_r::*;
+
+        let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, ref_dict, .. } = hess_case;
+        let device = DeviceTsr::default();
+
+        let j2c_decomp_option = J2CDecompOption { policy: J2CDecompPolicy::Cd, threshold: Some(1e-14), uplo: Upper };
+        let (cderi, j2c_decomp) = generate_cderi_with_decomp(mol, aux, j2c_decomp_option, &device);
+
+        let (j_out, k_outs, timing) = get_rijk_skeleton_decomposed_separated(
+            mol,
+            aux,
+            &[mo_coeff.view()],
+            &[mo_occ.view()],
+            cderi.view(),
+            &j2c_decomp,
+            true,
+            true,
+            72,
+            None,
+            None,
+        );
+        // rhf only has one k_out, so we can unwrap it
+        let j_out = j_out.unwrap();
+        let k_out = &k_outs[0];
+
+        println!("get_rijk_skeleton_decomposed_separated timing:");
+        for (key, value) in timing.iter() {
+            println!("    {:60}: {:10.6} seconds", key, value);
+        }
+
+        println!("j_out");
+        for &key in j_out.keys() {
+            if key.starts_with("de") {
+                println!(
+                    "j_out    {key:<20}, fp {:>16.10}, fp ref {:>16.10}, shape {:?}",
+                    fp(j_out[key].view()),
+                    fp(ref_dict[key].t()),
+                    j_out[key].shape()
+                );
+                let ref_val = ref_dict[key].t();
+                assert!(rt::allclose(j_out[key].view(), ref_val.view(), (1e-4, 1e-6)));
+            } else {
+                println!("j_out    {key:<20}, fp {:>16.10}, shape {:?}", fp(j_out[key].view()), j_out[key].shape());
+            }
+        }
+
+        println!("k_out");
+        for &key in k_out.keys() {
+            if key.starts_with("de") {
+                println!(
+                    "k_out    {key:<20}, fp {:>16.10}, fp ref {:>16.10}, shape {:?}",
+                    fp(k_out[key].view()),
+                    fp(ref_dict[key].t()),
+                    k_out[key].shape()
+                );
+                let ref_val = ref_dict[key].t();
+                assert!(rt::allclose(k_out[key].view(), ref_val.view(), (1e-4, 1e-6)));
+            } else {
+                println!("k_out    {key:<20}, fp {:>16.10}, shape {:?}", fp(k_out[key].view()), k_out[key].shape());
+            }
+        }
+    }
 }

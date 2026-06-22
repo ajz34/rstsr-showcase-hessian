@@ -179,7 +179,7 @@ pub fn get_rijk_skeleton_decomposed_separated(
         tic("prepare_j", t0);
         j_in
     });
-    let j_out = do_j.then(HashMap::new);
+    let mut j_out = do_j.then(HashMap::new);
 
     // --- prepare k --- //
 
@@ -192,7 +192,25 @@ pub fn get_rijk_skeleton_decomposed_separated(
             tic(&format!("prepare_k iset_{iset}"), t0);
         }
     }
-    let k_outs = (0..k_ins.len()).map(|_| HashMap::new()).collect_vec();
+    let mut k_outs = (0..k_ins.len()).map(|_| HashMap::new()).collect_vec();
+
+    // --- evaluate oneshot --- //
+
+    let t0 = std::time::Instant::now();
+    evaluate_oneshot(
+        &dims,
+        mol,
+        aux,
+        &aoslices,
+        &auxslices,
+        &aux_ranges,
+        j_in.as_ref(),
+        &k_ins,
+        j_out.as_mut(),
+        &mut k_outs,
+        &device,
+    );
+    tic("evaluate_oneshot", t0);
 
     (j_out, k_outs, timing)
 }
@@ -330,6 +348,90 @@ pub fn prepare_k(
         ("llcd_eri_bra", llcd_eri_bra),
         ("llcd_eri_occ", llcd_eri_occ),
     ])
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_oneshot(
+    dims: &HashMap<&'static str, usize>,
+    mol: &CInt,
+    aux: &CInt,
+    aoslices: &[[usize; 4]],
+    auxslices: &[[usize; 4]],
+    aux_ranges: &[[usize; 4]],
+    j_in: Option<&HashMap<&'static str, Tsr>>,
+    k_ins: &[HashMap<&'static str, Tsr>],
+    j_out: Option<&mut HashMap<&'static str, Tsr>>,
+    k_outs: &mut [HashMap<&'static str, Tsr>],
+    device: &DeviceTsr,
+) -> Vec<(String, f64)> {
+    let timing = vec![];
+
+    let nao = dims["nao"];
+    let naux = dims["naux"];
+    let natm = dims["natm"];
+    let do_j = j_in.is_some();
+    let nset_k = k_outs.len();
+
+    // --- integral generators --- //
+
+    let gen_j3c_ipvip1 = generator_hess_intor_j3c_by_aux(mol, aux, "int3c2e_ipvip1", "s1", device);
+    let gen_j3c_ipip1 = generator_hess_intor_j3c_by_aux(mol, aux, "int3c2e_ipip1", "s1", device);
+    let gen_j3c_ip1ip2 = generator_hess_intor_j3c_by_aux(mol, aux, "int3c2e_ip1ip2", "s1", device);
+    let gen_j3c_ipip2 = generator_hess_intor_j3c_by_aux(mol, aux, "int3c2e_ipip2", "s1", device);
+
+    // --- dbas allocations --- //
+
+    let mut dbas_j: HashMap<&str, Tsr> = HashMap::new();
+    let mut dbas_ks: Vec<HashMap<&str, Tsr>> = (0..nset_k).map(|_| HashMap::new()).collect_vec();
+    if do_j {
+        dbas_j.insert("J20_2", rt::zeros(([nao, nao, 3, 3], device)));
+        dbas_j.insert("J20_3", rt::zeros(([nao, nao, 3, 3], device)));
+        dbas_j.insert("J11_1", rt::zeros(([nao, naux, 3, 3], device)));
+        dbas_j.insert("J02_1", rt::zeros(([naux, 3, 3], device)));
+    }
+    for i in 0..nset_k {
+        let dbas_k = &mut dbas_ks[i];
+        dbas_k.insert("K20_2", rt::zeros(([nao, nao, 3, 3], device)));
+        dbas_k.insert("K20_3", rt::zeros(([nao, nao, 3, 3], device)));
+        dbas_k.insert("K11_1", rt::zeros(([nao, naux, 3, 3], device)));
+        dbas_k.insert("K02_1", rt::zeros(([naux, 3, 3], device)));
+    }
+
+    // --- dbas evaluation --- //
+
+    for &[sh0, sh1, p0, p1] in aux_ranges {
+        // --- 20-2 (ipvip1) --- //
+
+        // - j3c_ipvip1: [nao, nao, p1-p0, 3, 3]
+        let j3c_ipvip1 = gen_j3c_ipvip1([sh0, sh1]);
+        if do_j {
+            let llcd_eri_aux = j_in.as_ref().unwrap()["llcd_eri_aux"].i(p0..p1);
+            let dm0 = j_in.as_ref().unwrap()["dm0"].view();
+            let tmp1 = rt::vecdot(&j3c_ipvip1, llcd_eri_aux.i((None, None, ..)), 2);
+            *dbas_j.get_mut("J20_2").unwrap() += tmp1 * dm0;
+        }
+    }
+
+    // --- reduce to hessian contribution --- //
+
+    if do_j {
+        let j_out = j_out.unwrap();
+
+        let mut de_J20_2: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            for (B, &[_, _, p0B, p1B]) in aoslices.iter().enumerate() {
+                let slcB = rt::slice!(p0B, p1B);
+                let tmp = dbas_j["J20_2"].i((slcA, slcB)).sum_axes([0, 1]);
+                de_J20_2.i_mut((.., .., B, A)).assign(&tmp);
+            }
+        }
+
+        let scale_J20_2 = 1.0;
+        j_out.insert("de_J20_2", scale_J20_2 * (&de_J20_2 + &de_J20_2.transpose([1, 0, 3, 2])));
+    }
+
+    timing
 }
 
 /* #endregion */
