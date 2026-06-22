@@ -975,7 +975,7 @@ pub fn evaluate_j3c_ip2(
     for (k_in, k_intmd) in k_ins.iter_mut().zip(k_intmds.iter_mut()) {
         let nocc = k_in["occ_invsqrt"].shape()[0];
         k_intmd.insert("j3c_ip2_occ", rt::zeros(([nocc, nocc, naux, 3], device)));
-        k_intmd.insert("k1bra_aux1_1", rt::zeros(([nao, nocc, 3, natm], device)));
+        k_intmd.insert("k1bra_aux1_2", rt::zeros(([nao, nocc, 3, natm], device)));
     }
 
     for &[sh0, sh1, p0, p1] in aux_ranges.iter() {
@@ -983,6 +983,7 @@ pub fn evaluate_j3c_ip2(
         let j3c_ip2_batch = gen_j3c_ip2([sh0, sh1]);
         tic!(timing, t0, &format!("evaluate_j3c_ip2, j3c_ip2 aux({p0}:{p1})"));
 
+        let t0 = std::time::Instant::now();
         if do_j {
             let dm0 = j_in.as_ref().unwrap()["dm0"].view();
             let rrcd_eri_aux = j_in.as_ref().unwrap()["rrcd_eri_aux"].view();
@@ -1009,6 +1010,46 @@ pub fn evaluate_j3c_ip2(
                 *&mut j1ao_aux1_1.i_mut((.., .., .., A)) += tmp;
             }
         }
+        tic!(timing, t0, &format!("evaluate_j3c_ip2, contract j-part aux({p0}:{p1})"));
+
+        for iset in 0..nset_k {
+            let t0 = std::time::Instant::now();
+
+            let k_in = &k_ins[iset];
+            let fold_eri_bra = k_in["fold_eri_bra"].view();
+            let mocc_2 = k_in["mocc_2"].view();
+            let occ_invsqrt = k_in["occ_invsqrt"].view();
+            let nocc = occ_invsqrt.shape()[0];
+
+            // --- j3c_ip2_occ --- //
+
+            let mut j3c_ip2_occ = k_intmds[iset].get_mut("j3c_ip2_occ").unwrap().view_mut();
+            let tmp = mocc_2.t() % &j3c_ip2_batch % &mocc_2;
+            j3c_ip2_occ.i_mut((.., .., p0..p1)).assign(tmp);
+
+            // --- k1bra_aux1_2 --- //
+
+            let mut k1bra_aux1_2 = k_intmds[iset].get_mut("k1bra_aux1_2").unwrap().view_mut();
+            for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
+                let start = p0.max(p0A);
+                let end = p1.min(p1A);
+                if start >= end {
+                    continue;
+                }
+                let slc_batch = rt::slice!(start - p0, end - p0);
+                let slc_full = rt::slice!(start, end);
+
+                // NOTE: the following reshape copys the data
+                let m1 = fold_eri_bra.i((.., .., slc_full)).swapaxes(0, 1).into_shape((nocc, -1));
+                for t in 0..3 {
+                    let m2 = j3c_ip2_batch.i((.., .., slc_batch, t));
+                    let m2 = m2.reshape((nao, -1));
+                    *&mut k1bra_aux1_2.i_mut((.., .., t, A)) -= &m2 % m1.t();
+                }
+            }
+
+            tic!(timing, t0, &format!("evaluate_j3c_ip2, contract k-part {iset} aux({p0}:{p1})"));
+        }
     }
 
     // --- move some intermediates to output --- //
@@ -1019,8 +1060,10 @@ pub fn evaluate_j3c_ip2(
     }
     for (iset, k_intmd) in k_intmds.iter_mut().enumerate() {
         let k_out = &mut k_outs[iset];
-        let k1bra_aux1_1 = k_intmd.remove("k1bra_aux1_1").unwrap();
-        k_out.insert("k1bra_aux1_1", k1bra_aux1_1);
+        let occ_invsqrt = k_ins[iset]["occ_invsqrt"].view();
+        let mut k1bra_aux1_2 = k_intmd.remove("k1bra_aux1_2").unwrap();
+        *&mut k1bra_aux1_2 *= occ_invsqrt.i((None, ..));
+        k_out.insert("k1bra_aux1_2", k1bra_aux1_2);
     }
 
     timing
