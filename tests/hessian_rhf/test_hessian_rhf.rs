@@ -139,22 +139,63 @@ mod test_rhf_optimized {
     }
 
     #[rstest]
-    fn print_prepare_shared(hess_case: &CaseAmoniaRHF) {
+    fn print_prepare(hess_case: &CaseAmoniaRHF) {
         use rstsr_showcase_hessian::ri_jk::decompose::*;
         use rstsr_showcase_hessian::ri_jk::hess_r::*;
         use rstsr_showcase_hessian::util::cint_handling::*;
+        use rstsr_showcase_hessian::util::density_matrices::*;
 
-        let CaseAmoniaRHF { mol, aux, .. } = hess_case;
+        let CaseAmoniaRHF { mol, aux, mo_coeff, mo_occ, .. } = hess_case;
         let device = DeviceTsr::default();
 
         let j2c_decomp_option = J2CDecompOption { policy: J2CDecompPolicy::Cd, threshold: Some(1e-14), uplo: Upper };
-        let (_, j2c_decomp) = generate_cderi_with_decomp(mol, aux, j2c_decomp_option, &device);
+        let (cderi, j2c_decomp) = generate_cderi_with_decomp(mol, aux, j2c_decomp_option, &device);
+
+        // --- shared --- //
         let result = prepare_shared(mol, aux, &j2c_decomp, 72, None, &DeviceTsr::default());
-        let (dims, _aoslices, _auxslices, aux_ranges, shared, _solve_aux) = result;
+        let (dims, _aoslices, _auxslices, aux_ranges, shared, solve_aux) = result;
         println!("dims: {:?}", dims);
         println!("aux_ranges: {:?}", aux_ranges);
-        println!("j2c_inv\n{:12.5e}", shared["j2c_inv"].view());
         let j2c = hess_intor(aux, "int2c2e", "s1", None, &device);
         assert!(rt::allclose(shared["j2c_inv"].view(), rt::linalg::inv(&j2c), None));
+        for key in shared.keys() {
+            println!("shared   {key:<20}, fp {:>16.10}, shape {:?}", fp(shared[key].view()), shared[key].shape());
+        }
+
+        // --- check j2c_inv --- //
+        // By the following print, we know that
+        // - j2c is usually not very that well-conditioned, and some value may be large
+        // - using cholesky decomposition is more accurate then direct "exact" inversion (which is also
+        //   based on svd or something else).
+        // - In rust impl, j2c_inv deviation at 1e-10, exact_inv at 1e-9
+        // - In python impl, j2c_inv deviation at 6e-10, exact_inv at 5e-8 (numpy) 1e-9 (scipy), emmm weird.
+        //   Anyway, scipy (directly LAPACK) is probably better than numpy (customized LAPACK) in terms of
+        //   inversion accuracy.
+        let j2c_inv = shared["j2c_inv"].view();
+        let j2c = hess_intor(aux, "int2c2e", "s1", None, &device);
+        let mut recap = &j2c_inv % &j2c;
+        *&mut recap.diagonal_mut(None) -= 1.0;
+        let x_diag = recap.diagonal(None).abs().max();
+        let x = recap.abs().max();
+        println!("j2c_inv deviation: max abs {x:16.10e}, max abs diag {x_diag:16.10e}");
+        let exact_inv = rt::linalg::inv(&j2c);
+        let mut recap_exact = exact_inv % j2c;
+        *&mut recap_exact.diagonal_mut(None) -= 1.0;
+        let x_diag_exact = recap_exact.diagonal(None).abs().max();
+        let x_exact = recap_exact.abs().max();
+        println!("exact_inv deviation: max abs {x_exact:16.10e}, max abs diag {x_diag_exact:16.10e}");
+
+        // --- prepare_j --- //
+        let dm0 = get_dm0_restricted(mo_coeff.view(), mo_occ.view());
+        let j_in = prepare_j(&solve_aux, &dims, dm0.view(), cderi.view());
+        for key in j_in.keys() {
+            println!("j_in     {key:<20}, fp {:>16.10}, shape {:?}", fp(j_in[key].view()), j_in[key].shape());
+        }
+
+        // --- prepare_k --- //
+        let k_in = prepare_k(&solve_aux, &dims, mo_coeff.view(), mo_occ.view(), cderi.view());
+        for key in k_in.keys() {
+            println!("k_in     {key:<20}, fp {:>16.10}, shape {:?}", fp(k_in[key].view()), k_in[key].shape());
+        }
     }
 }

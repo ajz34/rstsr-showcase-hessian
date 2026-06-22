@@ -126,8 +126,8 @@ pub fn get_rijk_response_bra(
 pub fn get_rijk_skeleton_decomposed_separated(
     mol: &CInt,
     aux: &CInt,
-    mo_coeff: TsrView,
-    mo_occ: TsrView,
+    mo_coeff: &[TsrView],
+    mo_occ: &[TsrView],
     cderi: TsrView,
     j2c_decomp: &J2CDecompose,
     do_j: bool,
@@ -135,17 +135,76 @@ pub fn get_rijk_skeleton_decomposed_separated(
     nbatch_aux: usize,
     atm_list: Option<&[usize]>,
     dm0: Option<TsrView>,
-) -> (Option<HashMap<&'static str, Tsr>>, Vec<HashMap<&'static str, Tsr>>) {
-    todo!()
+) -> (Option<HashMap<&'static str, Tsr>>, Vec<HashMap<&'static str, Tsr>>, Vec<(String, f64)>) {
+    let device = cderi.device().clone();
+    let mut timing = vec![];
+
+    let mut tic = |msg: &str, t0| {
+        let t1 = std::time::Instant::now();
+        let dt = t1.duration_since(t0).as_secs_f64();
+        timing.push((msg.to_string(), dt));
+    };
+
+    // --- basic checks --- //
+    if mo_coeff.is_empty() || mo_occ.is_empty() {
+        panic!("mo_coeff and mo_occ must be non-empty");
+    }
+    if mo_coeff.len() != mo_occ.len() {
+        panic!("mo_coeff and mo_occ must have the same length");
+    }
+    let nset = mo_coeff.len();
+
+    // --- prepare shared --- //
+    let t0 = std::time::Instant::now();
+    let (dims, aoslices, auxslices, aux_ranges, shared, solve_aux) =
+        prepare_shared(mol, aux, j2c_decomp, nbatch_aux, atm_list, &device);
+    tic("prepare_shared", t0);
+
+    // --- prepare j --- //
+    let j_in = do_j.then(|| {
+        let t0 = std::time::Instant::now();
+        // - dm0: [nao, nao]; note this density is total density instead of spin-separated density
+        let dm0 = dm0.map_or_else(
+            || {
+                let nao = dims["nao"];
+                let mut dm0 = rt::zeros(([nao, nao], &device));
+                for iset in 0..nset {
+                    dm0 += get_dm0_restricted(mo_coeff[iset].view(), mo_occ[iset].view())
+                }
+                dm0
+            },
+            |dm0| dm0.to_owned(),
+        );
+        let j_in = prepare_j(&solve_aux, &dims, dm0.view(), cderi.view());
+        tic("prepare_j", t0);
+        j_in
+    });
+    let j_out = do_j.then(HashMap::new);
+
+    // --- prepare k --- //
+
+    let mut k_ins = vec![];
+    if do_k {
+        for iset in 0..nset {
+            let t0 = std::time::Instant::now();
+            let k_in = prepare_k(&solve_aux, &dims, mo_coeff[iset].view(), mo_occ[iset].view(), cderi.view());
+            k_ins.push(k_in);
+            tic(&format!("prepare_k iset_{iset}"), t0);
+        }
+    }
+    let k_outs = (0..k_ins.len()).map(|_| HashMap::new()).collect_vec();
+
+    (j_out, k_outs, timing)
 }
 
+pub type FnSolveAux<'a> = Box<dyn Fn(TsrMut, FlagSide, bool) + 'a>;
 type PrepareSharedOutput<'a> = (
-    HashMap<&'static str, usize>,             // dims
-    Vec<[usize; 4]>,                          // aoslices
-    Vec<[usize; 4]>,                          // auxslices
-    Vec<[usize; 4]>,                          // aux_ranges
-    HashMap<&'static str, Tsr>,               // shared (intermediates)
-    Box<dyn Fn(TsrMut, FlagSide, bool) + 'a>, // solve_aux(tsr_mut, left/right, do_flip)
+    HashMap<&'static str, usize>, // dims
+    Vec<[usize; 4]>,              // aoslices
+    Vec<[usize; 4]>,              // auxslices
+    Vec<[usize; 4]>,              // aux_ranges
+    HashMap<&'static str, Tsr>,   // shared (intermediates)
+    FnSolveAux<'a>,               // solve_aux(tsr_mut, left/right, do_flip)
 );
 
 pub fn prepare_shared<'a>(
@@ -203,6 +262,74 @@ pub fn prepare_shared<'a>(
     ]);
 
     (dims, aoslices, auxslices, aux_ranges, shared, Box::new(solve_aux))
+}
+
+pub fn prepare_j(
+    solve_aux: &FnSolveAux,
+    dims: &HashMap<&'static str, usize>,
+    dm0: TsrView,
+    cderi: TsrView,
+) -> HashMap<&'static str, Tsr> {
+    let nao = dims["nao"];
+    check_shape!(dm0.shape(), [nao, nao], "dm0 in prepare_j must be a single square matrix of shape [nao, nao]");
+
+    // pack density matrix with scaled (off-diag, diag)
+    let dm0_tp = pack_triu_tilde(dm0.view());
+    let llcd_eri_aux = {
+        let mut out = dm0_tp.view() % cderi;
+        solve_aux(out.view_mut(), Right, true);
+        out
+    };
+    HashMap::from([("dm0", dm0.to_owned()), ("dm0_tp", dm0_tp), ("llcd_eri_aux", llcd_eri_aux)])
+}
+
+pub fn prepare_k(
+    solve_aux: &FnSolveAux,
+    dims: &HashMap<&'static str, usize>,
+    mo_coeff: TsrView,
+    mo_occ: TsrView,
+    cderi: TsrView,
+) -> HashMap<&'static str, Tsr> {
+    let nao = dims["nao"];
+    let naux = dims["naux"];
+    let nmo = mo_coeff.shape()[1];
+    let device = cderi.device().clone();
+    check_shape!(mo_coeff.shape(), [nao, nmo], "mo_coeff in prepare_k must be of shape [nao, nmo]");
+    check_shape!(mo_occ.shape(), [nmo], "mo_occ in prepare_k must be of shape [nmo]");
+
+    let occidx = mo_occ.view().greater(0).into_vec();
+    let nocc = occidx.iter().filter(|&&x| x).count();
+    let mocc = mo_coeff.bool_select(-1, &occidx);
+    let occ = mo_occ.bool_select(-1, &occidx);
+    let mocc_2 = &mocc * occ.view().sqrt().i((None, ..));
+    let occ_invsqrt = occ.view().pow(-0.5);
+
+    // orbital transformation
+    let lcd_eri_bra: Tsr = rt::zeros(([nao, nocc, naux], &device));
+    let lcd_eri_occ: Tsr = rt::zeros(([nocc, nocc, naux], &device));
+    (0..naux).into_par_iter().for_each(|p| {
+        let lcd_eri_bra_p = lcd_eri_bra.i((.., .., p));
+        let lcd_eri_occ_p = lcd_eri_occ.i((.., .., p));
+        let mut lcd_eri_bra_p = unsafe { lcd_eri_bra_p.force_mut() };
+        let mut lcd_eri_occ_p = unsafe { lcd_eri_occ_p.force_mut() };
+        let cderi_p = cderi.i((.., p)).unpack_tri(Upper, FlagSymm::Sy);
+        lcd_eri_bra_p.matmul_from(&cderi_p, &mocc_2, 1.0, 0.0);
+        lcd_eri_occ_p.matmul_from(&mocc_2.t(), &lcd_eri_bra_p, 1.0, 0.0);
+    });
+
+    // j2c solve (consumes previous results in-place)
+    let mut llcd_eri_bra = lcd_eri_bra;
+    solve_aux(llcd_eri_bra.view_mut(), Right, true);
+    let mut llcd_eri_occ = lcd_eri_occ;
+    solve_aux(llcd_eri_occ.view_mut(), Right, true);
+
+    HashMap::from([
+        ("mocc", mocc),
+        ("mocc_2", mocc_2),
+        ("occ_invsqrt", occ_invsqrt),
+        ("llcd_eri_bra", llcd_eri_bra),
+        ("llcd_eri_occ", llcd_eri_occ),
+    ])
 }
 
 /* #endregion */
