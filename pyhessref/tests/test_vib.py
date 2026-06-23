@@ -772,3 +772,30 @@ class TestEthaneReferenceValues(unittest.TestCase):
                 continue
             self.assertAlmostEqual(float(th[key]), float(ref), places=8,
                                    msg=f'thermo {key}')
+
+
+# ============================================================================
+#  Visual print tests (no value assertions — for human inspection only)
+# ============================================================================
+
+class TestPrintVisual(unittest.TestCase):
+    """Print vibrational analysis tables for visual inspection (no assertions
+    on the printed values; mirrors the rust `test_print_vibs_*` tests)."""
+
+    def test_print_vibs_nh3(self):
+        text_short = print_vibs(vibinfo, atom_lbl=['N', 'H', 'H', 'H'],
+                                normco='x', shortlong=True)
+        text_long = print_vibs(vibinfo, atom_lbl=['N', 'H', 'H', 'H'],
+                               normco='q', shortlong=False)
+        print('\n========== NH3 print_vibs (short, x) ==========')
+        print(text_short)
+        print('\n========== NH3 print_vibs (long, q) ==========')
+        print(text_long)
+
+    def test_print_vibs_acetaldehyde(self):
+        _, mass_et, geom_et, hess_flat_et, vibinfo_et = _et_setup()
+        text = print_vibs(vibinfo_et,
+                          atom_lbl=['C', 'C', 'O', 'H', 'H', 'H', 'H', 'H', 'H'],
+                          normco='x', shortlong=True, groupby=3)
+        print('\n========== CH3CHO print_vibs (short, x, first rows) ==========')
+        print(text)

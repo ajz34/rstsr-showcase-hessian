@@ -582,3 +582,35 @@ fn test_et_thermo() {
     assert!((th.cv_tot - 0.018232060490).abs() < 1e-8);
     assert!((th.cp_tot - 0.021398870982).abs() < 1e-8);
 }
+
+// ============================================================================
+//  print_vibs (visual check only — no value assertions)
+// ============================================================================
+
+#[test]
+fn test_print_vibs_nh3() {
+    let device = DeviceTsr::default();
+    let geom = nh3_geom(&device);
+    let mass = nh3_mass(&device);
+    let hess = build_hess_flat(&device);
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+
+    let lbl = ["N", "H", "H", "H"];
+    println!("\n========== NH3 print_vibs (short, x) ==========");
+    println!("{}", print_vibs(&vib, &lbl, NormCo::X, true, None, 4, None));
+    println!("\n========== NH3 print_vibs (long, q) ==========");
+    println!("{}", print_vibs(&vib, &lbl, NormCo::Q, false, None, 4, None));
+}
+
+#[test]
+fn test_print_vibs_acetaldehyde() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat(&device);
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+
+    let lbl = ["C", "C", "O", "H", "H", "H", "H", "H", "H"];
+    println!("\n========== CH3CHO print_vibs (short, x, first rows) ==========");
+    println!("{}", print_vibs(&vib, &lbl, NormCo::X, true, Some(3), 4, None));
+}

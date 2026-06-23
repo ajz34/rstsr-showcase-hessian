@@ -717,3 +717,221 @@ pub fn thermo(
         g_tot,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pretty-printer (port of pyhessref.vib.print_vibs)
+// ---------------------------------------------------------------------------
+
+/// Which normal-coordinate definition to print.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NormCo {
+    /// mass-weighted (`q`)
+    Q,
+    /// un-mass-weighted (`w`)
+    W,
+    /// normalized un-mass-weighted (`x`, default)
+    X,
+}
+
+impl NormCo {
+    fn select<'a>(&self, vib: &'a VibInfo) -> &'a Tsr {
+        match self {
+            NormCo::Q => &vib.q,
+            NormCo::W => &vib.w,
+            NormCo::X => &vib.x,
+        }
+    }
+}
+
+/// Right-justify `s` to width `w`, padding left with spaces.
+fn rjust(s: &str, w: usize) -> String {
+    let len = s.chars().count();
+    if len >= w {
+        s.to_string()
+    } else {
+        format!("{}{}", " ".repeat(w - len), s)
+    }
+}
+
+/// Left-justify `s` to width `w`, padding right with spaces.
+fn ljust(s: &str, w: usize) -> String {
+    let len = s.chars().count();
+    if len >= w {
+        s.to_string()
+    } else {
+        format!("{}{}", s, " ".repeat(w - len))
+    }
+}
+
+/// Center `s` to width `w`.
+fn center(s: &str, w: usize) -> String {
+    let len = s.chars().count();
+    if len >= w {
+        s.to_string()
+    } else {
+        let total = w - len;
+        let left = total / 2;
+        let right = total - left;
+        format!("{}{}{}", " ".repeat(left), s, " ".repeat(right))
+    }
+}
+
+/// Pretty-print vibrational analysis results. Rust port of
+/// `pyhessref.vib.print_vibs`.
+///
+/// Only vibrational modes (`TRV == "V"`) are printed.
+///
+/// # Parameters
+/// - `vib` : [`VibInfo`] from [`harmonic_analysis`].
+/// - `atom_lbl` : atomic symbols; if empty, integers are used.
+/// - `normco` : which normal coordinate to print ([`NormCo`]).
+/// - `shortlong` : `true` for `(nat, 3)` layout, `false` for `(3*nat, 1)`.
+/// - `groupby` : modes per row (`Some(n)`); `None` ⇒ 3 (short) / 6 (long);
+///   `Some(usize::MAX)` is treated as "all" (clamped to active count).
+/// - `prec` : decimal places for scalar properties.
+/// - `ncprec` : decimal places for normal coordinates (`None` ⇒ 2 short / 4 long).
+pub fn print_vibs(
+    vib: &VibInfo,
+    atom_lbl: &[&str],
+    normco: NormCo,
+    shortlong: bool,
+    groupby: Option<usize>,
+    prec: usize,
+    ncprec: Option<usize>,
+) -> String {
+    let nat = vib.ndof() / 3;
+    let active: Vec<usize> = (0..vib.ndof()).filter(|&i| vib.trv[i] == "V").collect();
+
+    let presp = 2;
+    let prewidth = 24usize;
+    let (groupby, ncprec, width) = if shortlong {
+        let g = groupby.unwrap_or(3);
+        let n = ncprec.unwrap_or(2);
+        (g, n, (n + 4) * 3)
+    } else {
+        let g = groupby.unwrap_or(6);
+        let n = ncprec.unwrap_or(4);
+        (g, n, n + 8)
+    };
+    // "all" sentinel
+    let groupby = if groupby == usize::MAX { active.len().max(1) } else { groupby };
+
+    // scalar_rows use a narrower column than the 3-cell displacement block (short
+    // mode) or the single-value long-mode block.  prec + 8 comfortably fits e.g.
+    // "3729.0115" (9 chars at prec=4) with a few spaces of right-padding.
+    let scalar_width = prec + 8;
+
+    let normco_t = normco.select(vib);
+
+    // omega strings per mode (imaginary → "{imag}i")
+    let omega_str: Vec<String> = (0..vib.ndof())
+        .map(|i| {
+            if vib.imag[i] {
+                format!("{:.*}i", prec, vib.omega[i])
+            } else {
+                format!("{:.*}", prec, vib.omega[i])
+            }
+        })
+        .collect();
+
+    let mut lines: Vec<String> = Vec::new();
+
+    // 1-based running vibrational-mode number for the header (renumbered so the
+    // first vibration prints as 1, regardless of how many TR modes precede it).
+    let mut vib_num = 1usize;
+    // trailing spacing after each per-mode block
+    const TRAIL: usize = 5;
+
+    for chunk in active.chunks(groupby) {
+        // Vibration header — centered in width (wider than scalar_width)
+        let mut line = format!("{}{}", " ".repeat(presp), ljust("Vibration", prewidth));
+        for &_ in chunk {
+            line.push_str(&format!("{}{}", center(&format!("{}", vib_num), width), " ".repeat(TRAIL)));
+            vib_num += 1;
+        }
+        lines.push(line);
+
+        // Freq — right-aligned in scalar_width
+        let mut line = format!("{}{}", " ".repeat(presp), ljust("Freq [cm^-1]", prewidth));
+        for &vib_i in chunk {
+            line.push_str(&format!("{}{}", rjust(&omega_str[vib_i], scalar_width), " ".repeat(TRAIL)));
+        }
+        lines.push(line);
+
+        // scalar property rows: (label, per-mode values for this chunk)
+        let scalar_rows: [(&str, Vec<f64>); 5] = [
+            ("Reduced mass [u]", chunk.iter().map(|&i| vib.mu[i]).collect()),
+            ("Force const [mDyne/A]", chunk.iter().map(|&i| vib.k[i]).collect()),
+            ("Turning point v=0 [a0]", chunk.iter().map(|&i| vib.xtp0[i]).collect()),
+            ("RMS dev v=0 [a0 u^1/2]", chunk.iter().map(|&i| vib.dq0[i]).collect()),
+            ("Char temp [K]", chunk.iter().map(|&i| vib.theta_vib[i]).collect()),
+        ];
+        for (label, vals) in scalar_rows {
+            let mut l = format!("{}{}", " ".repeat(presp), ljust(label, prewidth));
+            for &v in vals.iter() {
+                let s = format!("{:.*}", prec, v);
+                l.push_str(&format!("{}{}", rjust(&s, scalar_width), " ".repeat(TRAIL)));
+            }
+            lines.push(l);
+        }
+
+        // separator: span the label column plus the per-mode (value + TRAIL) blocks,
+        // dropping the final TRAIL so the dashes align with the last value's right edge.
+        let sep_len = prewidth + groupby * (width + TRAIL) - TRAIL;
+        lines.push(format!("{}{}", " ".repeat(presp), "-".repeat(sep_len)));
+
+        // normal coordinate values
+        if shortlong {
+            let cell = width / 3;
+            for at in 0..nat {
+                let lbl = if at < atom_lbl.len() { atom_lbl[at] } else { "" };
+                let mut l = format!(
+                    "{}{:5}   {}",
+                    " ".repeat(presp),
+                    at + 1,
+                    ljust(lbl, prewidth - 8)
+                );
+                for &vib_i in chunk {
+                    // x[at, vib_i], y, z ; normco_t is [ndof, nmodes], col-major
+                    let vx = normco_t[[3 * at, vib_i]];
+                    let vy = normco_t[[3 * at + 1, vib_i]];
+                    let vz = normco_t[[3 * at + 2, vib_i]];
+                    for v in [vx, vy, vz] {
+                        l.push_str(&center(&format!("{:.*}", ncprec, v), cell));
+                    }
+                    l.push_str(&" ".repeat(TRAIL));
+                }
+                lines.push(l);
+            }
+        } else {
+            for at in 0..nat {
+                let lbl = if at < atom_lbl.len() { atom_lbl[at] } else { "" };
+                for xyz in 0..3 {
+                    let axis = match xyz {
+                        0 => 'X',
+                        1 => 'Y',
+                        _ => 'Z',
+                    };
+                    let mut l = format!(
+                        "{}{:5}    {}    {}",
+                        " ".repeat(presp),
+                        at + 1,
+                        axis,
+                        ljust(lbl, prewidth - 14)
+                    );
+                    for &vib_i in chunk {
+                        let v = normco_t[[3 * at + xyz, vib_i]];
+                        l.push_str(&format!(
+                            "{}{}",
+                            center(&format!("{:.*}", ncprec, v), width),
+                            " ".repeat(TRAIL)
+                        ));
+                    }
+                    lines.push(l);
+                }
+            }
+        }
+    }
+
+    lines.join("\n")
+}
