@@ -110,3 +110,43 @@ fn test_make_hess(hess_case: &CaseAmoniaUHF) {
         println!("    {:60}: {:10.6} seconds", key, value);
     }
 }
+
+#[cfg(test)]
+mod test_uhf_optimized {
+    use super::*;
+    #[rstest]
+    fn test_make_hess_faster(hess_case: &CaseAmoniaUHF) {
+        let CaseAmoniaUHF { mol, aux, mo_coeff, mo_occ, mo_energy, ref_dict } = hess_case;
+
+        let ovlp_obj = UHessOvlp::new(mol, &DeviceTsr::default());
+        let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
+        let mut hcore_obj = UHessHcore::new(mol, &DeviceTsr::default());
+        let mut rijk_obj = UHessRIJK::new_without_cderi(mol, aux, 1.0, 1.0);
+        let nuc_list: Vec<&mut dyn HessNucAPI> = vec![&mut nuc_repl_obj];
+        let hcore_list: Vec<&mut dyn UHessCoreAPI> = vec![&mut hcore_obj];
+        let el_list: Vec<&mut dyn UHessElecInteractAPI> = vec![&mut rijk_obj];
+        let config = HessSCFConfig::default();
+        let mut hess_scf = UHessSCF::new(
+            mo_coeff.clone(),
+            mo_occ.clone(),
+            mo_energy.clone(),
+            ovlp_obj,
+            nuc_list,
+            hcore_list,
+            el_list,
+            config,
+            None,
+        );
+
+        let de_hess = hess_scf.make_hess();
+        let de_hess_ref = ref_dict["de_ref"].transpose([2, 3, 0, 1]);
+        // print timing
+        println!("Hessian computation timing:");
+        for (key, value) in hess_scf.timing.iter() {
+            println!("    {:60}: {:10.6} seconds", key, value);
+        }
+        println!("max deviation of Hessian: {:16.10e}", (de_hess.view() - de_hess_ref.view()).abs().max());
+        assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 1e-5)));
+        assert_abs_diff_eq!(fp(de_hess.view()), 0.6241806384454698, epsilon = 1e-4);
+    }
+}
