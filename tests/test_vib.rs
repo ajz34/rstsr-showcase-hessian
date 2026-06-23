@@ -350,3 +350,235 @@ fn test_thermo_gibbs_relation() {
     let g_tot_expected = th.h_tot - t * th.s_tot / 1000.0;
     assert!((th.g_tot - g_tot_expected).abs() < 1e-12);
 }
+
+// ============================================================================
+//  Acetaldehyde (CH3CHO) / HF / def2-TZVP
+//  9 atoms → 27 dof = 6 TR + 21 vibrational modes.
+//  Geometry in Ångström in the source; stored below in bohr (col-major [3,9]).
+//  Hessian key is `ref_de` (note: NOT `de_ref`).
+// ============================================================================
+
+/// Acetaldehyde geometry `[3, 9]` (bohr, column-major).
+fn et_geom(device: &DeviceTsr) -> Tsr {
+    rt::asarray((
+        vec![
+            // x: C, C, O, H, H, H, H, H, H
+            1.7384157537711373,
+            4.59999022967752,
+            5.510252406619264,
+            1.0112491410385016,
+            0.9976431129416331,
+            1.0099641272737974,
+            5.339685726616021,
+            5.331295342622953,
+            4.86853920923946,
+            // y
+            -0.01859490506572021,
+            -0.02263891897228944,
+            -1.9603451898400581,
+            1.4538418966728848,
+            0.3039813443975359,
+            -1.8510623280564606,
+            1.7931989141222784,
+            -0.37431695075384747,
+            -1.6204590490757862,
+            // z
+            0.08785336753102972,
+            0.1009113750517743,
+            1.7184413486344845,
+            -1.1665279366940127,
+            1.9927161983538577,
+            -0.5392711441671317,
+            0.7583092992654681,
+            -1.8003042843506432,
+            3.406382517618489,
+        ],
+        [3, 9].c(),
+        device,
+    ))
+}
+
+fn et_mass(device: &DeviceTsr) -> Tsr {
+    rt::asarray((vec![12.011_f64, 12.011, 15.999, 1.008, 1.008, 1.008, 1.008, 1.008, 1.008], device))
+}
+
+/// Build the flat `[27, 27]` Hessian (col-major) from the stored `ref_de`
+/// `[9,9,3,3]` C-order array: `hess[(a,i), (b,j)] = ref_de[a,b,i,j]`.
+fn build_et_hess_flat(device: &DeviceTsr) -> Tsr {
+    let ref_de = read_npz("et_r_hf.npz", "ref_de"); // logical [a,b,i,j]
+    let n = 27;
+    let mut hess = rt::asarray((vec![0.0_f64; n * n], [n, n].c(), device));
+    for a in 0..9 {
+        for b in 0..9 {
+            for i in 0..3 {
+                for j in 0..3 {
+                    hess[[a * 3 + i, b * 3 + j]] = ref_de[[a, b, i, j]];
+                }
+            }
+        }
+    }
+    hess
+}
+
+#[test]
+fn test_et_trv_counts() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat(&device);
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+
+    assert_eq!(vib.ndof(), 27);
+    let n_tr = vib.trv.iter().filter(|&&t| t == "TR").count();
+    let n_v = vib.trv.iter().filter(|&&t| t == "V").count();
+    assert_eq!(n_tr, 6, "expected 6 TR modes");
+    assert_eq!(n_v, 21, "expected 21 vibrational modes");
+}
+
+#[test]
+fn test_et_tr_frequencies() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat(&device);
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+
+    // 6 TR modes, all with |frequency| well below 1 cm⁻¹ (they are projected
+    // out, so their eigenvalues are numerical noise; some are imaginary, for
+    // which `omega` holds the magnitude). Python reference real parts are
+    // [0, 0, 0.037, 0.073, 0.092, 0.104] — all < 0.2 cm⁻¹.
+    let tr_freqs: Vec<f64> = (0..27).filter(|&i| vib.trv[i] == "TR").map(|i| vib.omega[i]).collect();
+    assert_eq!(tr_freqs.len(), 6, "expected exactly 6 TR modes");
+    for (k, &f) in tr_freqs.iter().enumerate() {
+        assert!(f.abs() < 0.5, "TR freq {} not near zero: {}", k, f);
+    }
+}
+
+#[test]
+fn test_et_vib_frequencies_first10() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat(&device);
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+    let vib_idx = vib.vib_indices();
+    assert_eq!(vib_idx.len(), 21);
+
+    // first 10 vibrational frequencies [cm⁻¹]
+    let ref_freq = [
+        397.693146,
+        482.146314,
+        748.727643,
+        909.980504,
+        966.500675,
+        1128.802224,
+        1198.255774,
+        1254.376121,
+        1404.826430,
+        1513.104741,
+    ];
+    for k in 0..10 {
+        let i = vib_idx[k];
+        assert!((vib.omega[i] - ref_freq[k]).abs() < 1e-3, "vib freq {}: {} vs {}", k, vib.omega[i], ref_freq[k]);
+    }
+}
+
+#[test]
+fn test_et_vib_properties_first10() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat(&device);
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+    let vib_idx = vib.vib_indices();
+
+    // reduced masses [u]
+    let ref_mu = [1.114579, 2.671366, 1.116921, 1.079670, 2.425550, 3.653739, 1.566218, 1.431222, 1.196174, 1.233885];
+    // characteristic temperatures [K]
+    let ref_theta =
+        [572.1919, 693.7012, 1077.2524, 1309.2593, 1390.5793, 1624.0951, 1724.0233, 1804.7680, 2021.2325, 2177.0208];
+    for k in 0..10 {
+        let i = vib_idx[k];
+        assert!((vib.mu[i] - ref_mu[k]).abs() < 1e-4, "mu {}: {} vs {}", k, vib.mu[i], ref_mu[k]);
+        assert!(
+            (vib.theta_vib[i] - ref_theta[k]).abs() < 1e-2,
+            "theta {}: {} vs {}",
+            k,
+            vib.theta_vib[i],
+            ref_theta[k]
+        );
+    }
+}
+
+#[test]
+fn test_et_q_orthonormal() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat(&device);
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+    let q = &vib.q;
+    let ovlp = q.t() % q;
+    let n = 27;
+    let eye_vec: Vec<f64> = (0..n).flat_map(|i| (0..n).map(move |j| if i == j { 1.0 } else { 0.0 })).collect();
+    let eye = rt::asarray((eye_vec, [n, n].c(), &device));
+    assert!(rt::allclose(ovlp.view(), eye.view(), (1e-10, 1e-12)));
+}
+
+#[test]
+fn test_et_rotation_constants() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let geom_c = mass_centred_geom(&geom, &mass, &device);
+
+    let rc_cm = rotation_const(mass.view(), geom_c.view(), "wavenumber").to_vec();
+    let rc_ghz = rotation_const(mass.view(), geom_c.view(), "GHz").to_vec();
+    // Python: cm⁻¹ [1.11175601, 0.31790423, 0.27739508], GHz [33.32960657, 9.53052918, 8.31609533]
+    assert!((rc_cm[0] - 1.11175601).abs() < 1e-7);
+    assert!((rc_cm[1] - 0.31790423).abs() < 1e-7);
+    assert!((rc_cm[2] - 0.27739508).abs() < 1e-7);
+    assert!((rc_ghz[0] - 33.32960657).abs() < 1e-6);
+    assert!((rc_ghz[1] - 9.53052918).abs() < 1e-6);
+    assert!((rc_ghz[2] - 8.31609533).abs() < 1e-6);
+    assert_eq!(get_rotor_type(rt::asarray((rc_ghz.clone(), &device)).view()), "REGULAR");
+}
+
+#[test]
+fn test_et_thermo() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat(&device);
+    let mass_sum = mass.to_vec().iter().sum::<f64>();
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+    let geom_c = mass_centred_geom(&geom, &mass, &device);
+    let rc_cm = rotation_const(mass.view(), geom_c.view(), "wavenumber").to_vec();
+    let rc_ghz = rotation_const(mass.view(), geom_c.view(), "GHz");
+    let rotor = RotorType::from_rot_const_ghz(rc_ghz.view());
+
+    // acetaldehyde: sigma=1, E0=-153.0 (arbitrary well bottom), multiplicity=1
+    let th = thermo(&vib, 298.15, 101325.0, 1, mass_sum, -153.0, 1, &rc_cm, rotor);
+
+    // ZPE / energies [Eh]
+    assert!((th.zpe[VIB] - 0.084945609427).abs() < 1e-8);
+    assert!((th.e[VIB] - 0.085764093805).abs() < 1e-8);
+    assert!((th.zpe_tot - (-152.915054390573)).abs() < 1e-7);
+    assert!((th.e_tot - (-152.911403352551)).abs() < 1e-7);
+    assert!((th.h_tot - (-152.910459168003)).abs() < 1e-7);
+    assert!((th.g_tot - (-152.939964870917)).abs() < 1e-7);
+    // entropies [mEh/K]
+    assert!((th.s[TRANS] - 0.059613088371).abs() < 1e-9);
+    assert!((th.s[ROT] - 0.035576765773).abs() < 1e-9);
+    assert!((th.s[VIB] - 0.003772758345).abs() < 1e-9);
+    assert!((th.s_tot - 0.098962612490).abs() < 1e-9);
+    // heat capacities [mEh/K]
+    assert!((th.cv_tot - 0.018232060490).abs() < 1e-8);
+    assert!((th.cp_tot - 0.021398870982).abs() < 1e-8);
+}

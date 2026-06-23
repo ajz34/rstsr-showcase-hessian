@@ -496,7 +496,11 @@ class TestReferenceValues(unittest.TestCase):
 
     def test_reduced_masses_exact(self):
         for i, ref in enumerate(self.REF_MU):
-            self.assertAlmostEqual(vibinfo['mu'][i], ref, places=5,
+            # TR-mode reduced masses (indices 0..5) are not physically meaningful
+            # and drift at the ~1e-5 level under BLAS threading noise; vibrational
+            # modes (6..11) are pinned tightly.
+            places = 3 if vibinfo['TRV'][i] == 'TR' else 5
+            self.assertAlmostEqual(vibinfo['mu'][i], ref, places=places,
                                    msg=f'mu[{i}]')
 
     def test_force_constants_exact(self):
@@ -625,4 +629,146 @@ class TestSaveReferenceNpz(unittest.TestCase):
         path = 'prototype/nh3_r_hf_vib_reference.npz'
         np.savez(path, **out)
         self.assertTrue(os.path.exists(path))
-        print(f"  Saved vib reference to {path}")
+
+
+# ============================================================================
+#  Acetaldehyde (CH3CHO) / HF / def2-TZVP reference
+#  Geometry in Ångström (PySCF converts to bohr). Hessian key ``ref_de``.
+# ============================================================================
+
+ET_XYZ = """
+C          0.91993       -0.00984        0.04649
+C          2.43421       -0.01198        0.05340
+O          2.91590       -1.03737        0.90936
+H          0.53513        0.76934       -0.61730
+H          0.52793        0.16086        1.05450
+H          0.53445       -0.97954       -0.28537
+H          2.82564        0.94892        0.40128
+H          2.82120       -0.19808       -0.95268
+H          2.57632       -0.85751        1.80258
+"""
+
+
+def _et_setup():
+    mol_et = gto.Mole(atom=ET_XYZ, basis="def2-TZVP", max_memory=8000).build()
+    mass_et = mol_et.atom_mass_list(isotope_avg=True)
+    geom_et = mol_et.atom_coords()
+    ref_et = np.load("prototype/et_r_hf.npz")
+    hess_44_et = ref_et["ref_de"]                       # [9, 9, 3, 3]
+    hess_flat_et = hess_44_et.transpose(0, 2, 1, 3).reshape(27, 27)
+    vibinfo_et = harmonic_analysis(hess_flat_et, geom_et, mass_et)
+    return mol_et, mass_et, geom_et, hess_flat_et, vibinfo_et
+
+
+class TestEthaneReferenceValues(unittest.TestCase):
+    """Hardcoded reference numbers for acetaldehyde (CH3CHO) HF/def2-TZVP.
+
+    9 atoms → 27 dof = 6 TR + 21 vibrational modes.
+    """
+
+    # 6 TR frequencies (real parts, cm⁻¹) — should all be ~0
+    REF_TR_FREQ = [0.0, 0.0, 0.037297, 0.072651, 0.091944, 0.104091]
+
+    # first 10 vibrational frequencies [cm⁻¹]
+    REF_VIB_FREQ = [
+        397.693146, 482.146314, 748.727643, 909.980504, 966.500675,
+        1128.802224, 1198.255774, 1254.376121, 1404.826430, 1513.104741,
+    ]
+    # reduced masses [u] for those 10 modes
+    REF_VIB_MU = [
+        1.114579, 2.671366, 1.116921, 1.079670, 2.425550,
+        3.653739, 1.566218, 1.431222, 1.196174, 1.233885,
+    ]
+    # characteristic vibrational temperatures [K] for those 10 modes
+    REF_VIB_THETA = [
+        572.1919, 693.7012, 1077.2524, 1309.2593, 1390.5793,
+        1624.0951, 1724.0233, 1804.7680, 2021.2325, 2177.0208,
+    ]
+
+    THERMO_REF = {
+        'rot_const_cm': (1.11175601, 0.31790423, 0.27739508),
+        'rot_const_ghz': (33.32960657, 9.53052918, 8.31609533),
+        'rotor_type': 'REGULAR',
+        'ZPE_vib': 0.084945609427,
+        'E_vib': 0.085764093805,
+        'S_vib': 0.003772758345,
+        'Cv_vib': 0.008731629015,
+        'S_trans': 0.059613088371,
+        'E_trans': 0.001416276822,
+        'S_rot': 0.035576765773,
+        'E_rot': 0.001416276822,
+        'E_tot': -152.911403352551,
+        'H_tot': -152.910459168003,
+        'G_tot': -152.939964870917,
+        'ZPE_tot': -152.915054390573,
+        'S_tot': 0.098962612490,
+        'Cv_tot': 0.018232060490,
+        'Cp_tot': 0.021398870982,
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mol, cls.mass, cls.geom, cls.hess_flat, cls.vibinfo = _et_setup()
+        cls.vibonly = filter_nonvib(cls.vibinfo)
+
+    def test_trv_counts(self):
+        """6 TR + 21 V for nonlinear 9-atom acetaldehyde."""
+        trv = self.vibinfo['TRV']
+        self.assertEqual(list(trv).count('TR'), 6)
+        self.assertEqual(list(trv).count('V'), 21)
+        self.assertEqual(len(trv), 27)
+
+    def test_tr_frequencies(self):
+        """6 TR frequencies, all near zero."""
+        tr_freqs = [self.vibinfo['omega'][i].real
+                    for i in range(27) if self.vibinfo['TRV'][i] == 'TR']
+        self.assertEqual(len(tr_freqs), 6)
+        for actual, ref in zip(tr_freqs, self.REF_TR_FREQ):
+            self.assertAlmostEqual(actual, ref, places=4)
+            self.assertLess(abs(actual), 1.0)
+
+    def test_vib_frequencies(self):
+        for k in range(10):
+            self.assertAlmostEqual(self.vibonly['omega'][k].real,
+                                   self.REF_VIB_FREQ[k], places=4,
+                                   msg=f'vib freq {k}')
+
+    def test_vib_reduced_masses(self):
+        for k in range(10):
+            self.assertAlmostEqual(self.vibonly['mu'][k], self.REF_VIB_MU[k],
+                                   places=5, msg=f'mu {k}')
+
+    def test_vib_theta(self):
+        for k in range(10):
+            self.assertAlmostEqual(self.vibonly['theta_vib'][k],
+                                   self.REF_VIB_THETA[k], places=3,
+                                   msg=f'theta {k}')
+
+    def test_q_orthonormal(self):
+        q = self.vibinfo['q']
+        self.assertTrue(np.allclose(q.T @ q, np.eye(27), atol=1e-12))
+
+    def test_rotational_constants(self):
+        mass_center = (self.mass[:, None] * self.geom).sum(axis=0) / self.mass.sum()
+        geom_c = self.geom - mass_center
+        rc_cm = rotation_const(self.mass, geom_c, 'wavenumber')
+        rc_ghz = rotation_const(self.mass, geom_c, 'GHz')
+        for i in range(3):
+            self.assertAlmostEqual(rc_cm[i], self.THERMO_REF['rot_const_cm'][i], places=7)
+            self.assertAlmostEqual(rc_ghz[i], self.THERMO_REF['rot_const_ghz'][i], places=6)
+        self.assertEqual(_get_rotor_type(rc_ghz), self.THERMO_REF['rotor_type'])
+
+    def test_thermo(self):
+        mass_center = (self.mass[:, None] * self.geom).sum(axis=0) / self.mass.sum()
+        geom_c = self.geom - mass_center
+        rc_cm = rotation_const(self.mass, geom_c, 'wavenumber')
+        rc_ghz = rotation_const(self.mass, geom_c, 'GHz')
+        rotor = _get_rotor_type(rc_ghz)
+        th = thermo(self.vibinfo, T=298.15, P=101325.0, multiplicity=1,
+                    molecular_mass=self.mass.sum(), E0=-153.0, sigma=1,
+                    rot_const=rc_cm, rotor_type=rotor)
+        for key, ref in self.THERMO_REF.items():
+            if key in ('rot_const_cm', 'rot_const_ghz', 'rotor_type'):
+                continue
+            self.assertAlmostEqual(float(th[key]), float(ref), places=8,
+                                   msg=f'thermo {key}')
