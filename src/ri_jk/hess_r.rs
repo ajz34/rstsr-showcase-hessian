@@ -611,25 +611,25 @@ pub fn evaluate_oneshot(
             let slcA = rt::slice!(p0A, p1A);
 
             let tmp = dbas_j["J20_3"].i(slcA).sum_axes([0, 1]);
-            de_J20_3.i_mut((.., .., A, A)).assign(&tmp);
+            de_J20_3.i_mut((.., .., A, A)).assign(tmp);
 
             for (B, &[_, _, p0B, p1B]) in aoslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
                 let tmp = dbas_j["J20_2"].i((slcA, slcB)).sum_axes([0, 1]);
-                de_J20_2.i_mut((.., .., B, A)).assign(&tmp);
+                de_J20_2.i_mut((.., .., B, A)).assign(tmp);
             }
 
             for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
                 let tmp = dbas_j["J11_1"].i((slcA, slcB)).sum_axes([0, 1]);
-                de_J11_1.i_mut((.., .., B, A)).assign(&tmp);
+                de_J11_1.i_mut((.., .., B, A)).assign(tmp);
             }
         }
 
         for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
             let slcA = rt::slice!(p0A, p1A);
             let tmp = dbas_j["J02_1"].i(slcA).sum_axes(0);
-            de_J02_1.i_mut((.., .., A, A)).assign(&tmp);
+            de_J02_1.i_mut((.., .., A, A)).assign(tmp);
         }
 
         let scale_J20_2 = 1.0;
@@ -654,25 +654,25 @@ pub fn evaluate_oneshot(
             let slcA = rt::slice!(p0A, p1A);
 
             let tmp = dbas_ks[iset]["K20_3"].i(slcA).sum_axes([0, 1]);
-            de_K20_3.i_mut((.., .., A, A)).assign(&tmp);
+            de_K20_3.i_mut((.., .., A, A)).assign(tmp);
 
             for (B, &[_, _, p0B, p1B]) in aoslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
                 let tmp = dbas_ks[iset]["K20_2"].i((slcA, slcB)).sum_axes([0, 1]);
-                de_K20_2.i_mut((.., .., B, A)).assign(&tmp);
+                de_K20_2.i_mut((.., .., B, A)).assign(tmp);
             }
 
             for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
                 let tmp = dbas_ks[iset]["K11_1"].i((slcA, slcB)).sum_axes([0, 1]);
-                de_K11_1.i_mut((.., .., B, A)).assign(&tmp);
+                de_K11_1.i_mut((.., .., B, A)).assign(tmp);
             }
         }
 
         for (A, &[_, _, p0A, p1A]) in auxslices.iter().enumerate() {
             let slcA = rt::slice!(p0A, p1A);
             let tmp = dbas_ks[iset]["K02_1"].i(slcA).sum_axes(0);
-            de_K02_1.i_mut((.., .., A, A)).assign(&tmp);
+            de_K02_1.i_mut((.., .., A, A)).assign(tmp);
         }
 
         let scale_K20_2 = 1.0;
@@ -752,7 +752,7 @@ pub fn evaluate_j2c_deriv_only(
             let slcA = rt::slice!(p0A, p1A);
 
             let tmp = dbas_J02_2.i(slcA).sum_axes(0);
-            de_J02_2.i_mut((.., .., A, A)).assign(&tmp);
+            de_J02_2.i_mut((.., .., A, A)).assign(tmp);
 
             for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
@@ -813,7 +813,7 @@ pub fn evaluate_j2c_deriv_only(
             let slcA = rt::slice!(p0A, p1A);
 
             let tmp = dbas_K02_2.i(slcA).sum_axes(0);
-            de_K02_2.i_mut((.., .., A, A)).assign(&tmp);
+            de_K02_2.i_mut((.., .., A, A)).assign(tmp);
 
             for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
@@ -1223,6 +1223,7 @@ pub fn evaluate_j3c_ip2(
     }
 
     // --- move some intermediates to output --- //
+
     if do_j {
         let j_out = j_out.as_mut().unwrap();
         let j1ao_aux1_1 = j_intmd.unwrap().remove("j1ao_aux1_1").unwrap();
@@ -1278,7 +1279,7 @@ pub fn evaluate_j3c_ip1(
     for (k_in, k_intmd) in k_ins.iter_mut().zip(k_intmds.iter_mut()) {
         let nocc = k_in["occ_invsqrt"].shape()[0];
         k_intmd.insert("j3c_ip1_bra", rt::zeros(([nao, nocc, naux, 3], device)));
-        k_intmd.insert("j3c_ip1_k1bra_tmp", rt::zeros(([nao, nao, 3], device)));
+        k_intmd.insert("j3c_ip1_k1ao_tmp", rt::zeros(([nao, nao, 3], device)));
         k_intmd.insert("k1bra_aux0_4", rt::zeros(([nao, nocc, 3, natm], device)));
     }
 
@@ -1304,6 +1305,49 @@ pub fn evaluate_j3c_ip1(
             j3c_ip1_j1ao_tmp += rt::vecdot(&j3c_ip1_batch, rrcd_eri_aux.i((None, None, ..)), 2);
         }
         tic!(timing, t0, &format!("evaluate_j3c_ip1, intor contract j-part aux({p0}:{p1})"));
+
+        for iset in 0..nset_k {
+            let t0 = std::time::Instant::now();
+
+            let k_in = &k_ins[iset];
+            let k_intmd = &mut k_intmds[iset];
+            let rrcd_eri_bra = k_in["rrcd_eri_bra"].view();
+            let fold_eri_bra = k_in["fold_eri_bra"].view();
+            let mocc_2 = k_in["mocc_2"].view();
+            let nocc = k_in["occ_invsqrt"].shape()[0];
+
+            // some tensors are consequently used, need get_disjoint_mut to avoid borrow checker error
+            let [j3c_ip1_bra, j3c_ip1_k1ao_tmp] = k_intmd.get_disjoint_mut(["j3c_ip1_bra", "j3c_ip1_k1ao_tmp"]);
+            let j3c_ip1_bra = j3c_ip1_bra.unwrap();
+            let j3c_ip1_k1ao_tmp = j3c_ip1_k1ao_tmp.unwrap();
+
+            // --- j3c_ip1_bra --- //
+
+            let tmp = &j3c_ip1_batch % &mocc_2;
+            j3c_ip1_bra.i_mut((.., .., p0..p1)).assign(tmp);
+
+            // --- j3c_ip1_k1ao_tmp --- //
+
+            let m1 = j3c_ip1_bra.i((.., .., p0..p1, ..)).change_shape((nao, -1, 3));
+            let m2 = rrcd_eri_bra.i((.., .., p0..p1)).change_shape((nao, -1));
+            *j3c_ip1_k1ao_tmp += m1 % m2.t();
+
+            // --- k1bra_aux0_4 --- //
+
+            let mut k1bra_aux0_4 = k_intmd.get_mut("k1bra_aux0_4").unwrap().view_mut();
+            for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+                let slcA = rt::slice!(p0A, p1A);
+                // NOTE: reshape with data copy
+                let tmp1 = fold_eri_bra.i((slcA, .., p0..p1)).swapaxes(0, 1).into_shape((nocc, -1));
+                for t in 0..3 {
+                    // NOTE: reshape with data copy
+                    let tmp2 = j3c_ip1_batch.i((slcA, .., .., t)).into_swapaxes(0, 1).into_shape((nao, -1));
+                    *&mut k1bra_aux0_4.i_mut((.., .., t, A)) -= &tmp2 % tmp1.t();
+                }
+            }
+
+            tic!(timing, t0, &format!("evaluate_j3c_ip1, intor contract k-part {iset} aux({p0}:{p1})"));
+        }
     }
 
     // --- evaluation j-part --- //
@@ -1377,18 +1421,18 @@ pub fn evaluate_j3c_ip1(
                 let slcB = rt::slice!(p0B, p1B);
 
                 let tmp = dbas_J20_1.i((slcA, slcB)).sum_axes([0, 1]);
-                de_J20_1.i_mut((.., .., B, A)).assign(&tmp);
+                de_J20_1.i_mut((.., .., B, A)).assign(tmp);
             }
 
             for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
                 let slcB = rt::slice!(p0B, p1B);
 
                 let tmp = dbas_J11_2.i((slcA, slcB)).sum_axes([0, 1]);
-                de_J11_2.i_mut((.., .., B, A)).assign(&tmp);
+                de_J11_2.i_mut((.., .., B, A)).assign(tmp);
                 let tmp = dbas_J11_3.i((slcA, slcB)).sum_axes([0, 1]);
-                de_J11_3.i_mut((.., .., B, A)).assign(&tmp);
+                de_J11_3.i_mut((.., .., B, A)).assign(tmp);
                 let tmp = dbas_J11_4.i((slcA, slcB)).sum_axes([0, 1]);
-                de_J11_4.i_mut((.., .., B, A)).assign(&tmp);
+                de_J11_4.i_mut((.., .., B, A)).assign(tmp);
             }
         }
 
@@ -1402,6 +1446,204 @@ pub fn evaluate_j3c_ip1(
         j_out.insert("de_J11_4", scale_J11_4 * (&de_J11_4 + &de_J11_4.transpose([1, 0, 3, 2])));
 
         tic!(timing, t0, "evaluate_j3c_ip1, evaluation j-part");
+    }
+
+    // --- evaluation k-part --- //
+
+    for iset in 0..nset_k {
+        let t0 = std::time::Instant::now();
+
+        let k_in = &k_ins[iset];
+        let k_out = &mut k_outs[iset];
+        let rrcd_eri_bra = k_in["rrcd_eri_bra"].view();
+        let occ_invsqrt = k_in["occ_invsqrt"].view();
+        let fold_eri_bra = k_in["fold_eri_bra"].view();
+        let mocc = k_in["mocc"].view();
+        let mocc_2 = k_in["mocc_2"].view();
+        let nocc = occ_invsqrt.shape()[0];
+
+        let j3c_ip2_occ = k_intmds[iset].remove("j3c_ip2_occ").unwrap();
+        let j3c_ip1_bra = k_intmds[iset].remove("j3c_ip1_bra").unwrap();
+        let j3c_ip1_k1ao_tmp = k_intmds[iset].remove("j3c_ip1_k1ao_tmp").unwrap();
+
+        // --- k1bra --- //
+
+        let t1 = std::time::Instant::now();
+
+        let mut k1ao_aux_1: Tsr = rt::zeros(([nao, nao, 3, natm], device));
+        let mut k1ao_aux_2: Tsr = rt::zeros(([nao, nao, 3, natm], device));
+        for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            *&mut k1ao_aux_1.i_mut((.., slcA, .., A)) -= j3c_ip1_k1ao_tmp.i(slcA).swapaxes(0, 1);
+            *&mut k1ao_aux_2.i_mut((slcA, .., .., A)) -= j3c_ip1_k1ao_tmp.i(slcA);
+        }
+        let k1bra_aux0_1 = k1ao_aux_1 % &mocc;
+        let k1bra_aux0_2 = k1ao_aux_2 % &mocc;
+        k_out.insert("k1bra_aux0_1", k1bra_aux0_1);
+        k_out.insert("k1bra_aux0_2", k1bra_aux0_2);
+
+        let mut k1bra_aux0_3: Tsr = rt::zeros(([nao, nocc, 3, natm], device));
+        for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+            for t in 0..3 {
+                let tmp1 = j3c_ip1_bra.i((slcA, .., .., t)).swapaxes(0, 1) % mocc.i(slcA);
+                let tmp2 = rrcd_eri_bra.reshape((nao, -1)) % tmp1.reshape((nocc, -1)).t();
+                k1bra_aux0_3.i_mut((.., .., t, A)).assign(-tmp2);
+            }
+        }
+        k_out.insert("k1bra_aux0_3", k1bra_aux0_3);
+
+        tic!(timing, t1, &format!("evaluate_j3c_ip1, k1bra-1/2/3 {iset}"));
+
+        // --- dbas evaluation rcd_j3c_ip1_bra --- //
+
+        let mut rcd_j3c_ip1_bra = j3c_ip1_bra;
+        for t in 0..3 {
+            solve_aux(rcd_j3c_ip1_bra.i_mut((.., .., .., t)), Right, false);
+        }
+
+        let dm = &mocc_2 % mocc_2.t(); // spin density, not total density
+
+        let t1 = std::time::Instant::now();
+        let mut dbas_K20_1a: Tsr = rt::zeros(([nao, nao, 3, 3], device));
+        let tmp1 = rcd_j3c_ip1_bra.reshape((nao, nocc * naux, 3));
+        for t in 0..3 {
+            for s in 0..=t {
+                let tmp2 = tmp1.i((.., .., t)) % tmp1.i((.., .., s)).t() * &dm;
+                dbas_K20_1a.i_mut((.., .., s, t)).assign(&tmp2);
+                // apply symmetric trick
+                if t != s {
+                    dbas_K20_1a.i_mut((.., .., t, s)).assign(tmp2.t());
+                }
+            }
+        }
+        tic!(timing, t1, &format!("evaluate_j3c_ip1, dbas_K20_1a {iset}"));
+
+        // de_K20_1b is special. This term is better to be pre-contracted to hessian.
+        let t1 = std::time::Instant::now();
+        let mut de_K20_1b: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        for &[_, _, p0, p1] in aux_ranges {
+            let slcP = rt::slice!(p0, p1);
+            let nbatch = p1 - p0;
+            let mut fold_occ: Tsr = rt::zeros(([nocc, nocc, nbatch, 3, natm], device));
+            for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+                let slcA = rt::slice!(p0A, p1A);
+                let tmp1 = rcd_j3c_ip1_bra.i((slcA, .., slcP, ..));
+                for t in 0..3 {
+                    let tmp = mocc_2.i(slcA).t() % tmp1.i((.., .., .., t));
+                    fold_occ.i_mut((.., .., .., t, A)).assign(tmp);
+                }
+            }
+            // non-trivial transpose
+            let fold_occ_swap = fold_occ.swapaxes(0, 1).into_contig(ColMajor);
+            // handle shape conversions and hessian output
+            let fold_occ = fold_occ.reshape([nocc * nocc * nbatch, 3 * natm]);
+            let fold_occ_swap = fold_occ_swap.reshape([nocc * nocc * nbatch, 3 * natm]);
+            let de_swap = fold_occ.t() % fold_occ_swap; // [s, B, t, A]
+            let de_increment = de_swap.reshape([3, natm, 3, natm]).into_swapaxes(1, 2); // [s, t, B, A]
+            de_K20_1b += de_increment;
+        }
+        tic!(timing, t1, &format!("evaluate_j3c_ip1, de_K20_1b {iset}"));
+
+        // --- dbas evaluation rrcd_j3c_ip1_bra --- //
+
+        let mut rrcd_j3c_ip1_bra = rcd_j3c_ip1_bra;
+        for t in 0..3 {
+            solve_aux(rrcd_j3c_ip1_bra.i_mut((.., .., .., t)), Right, true);
+        }
+
+        let t1 = std::time::Instant::now();
+        let mut dbas_K11_2: Tsr = rt::zeros(([nao, naux, 3, 3], device));
+        for t in 0..3 {
+            for s in 0..3 {
+                let tmp1 = rrcd_j3c_ip1_bra.i((.., .., .., t)).change_shape([nao * nocc, naux]);
+                let tmp2 = (tmp1 % j2c_ip1.i((.., .., s))).into_shape([nao, nocc, naux]);
+                let tmp3 = rt::vecdot(&fold_eri_bra, tmp2, 1);
+                dbas_K11_2.i_mut((.., .., s, t)).assign(&tmp3);
+            }
+        }
+        tic!(timing, t1, &format!("evaluate_j3c_ip1, dbas_K11_2 {iset}"));
+
+        let t1 = std::time::Instant::now();
+        let mut dbas_K11_3: Tsr = rt::zeros(([nao, naux, 3, 3], device));
+        for s in 0..3 {
+            let tmp1 = fold_eri_bra.reshape([nao * nocc, naux]) % j2c_ip1.i((.., .., s));
+            let tmp1 = tmp1.into_shape([nao, nocc, naux]);
+            for t in 0..3 {
+                let tmp = rt::vecdot(rrcd_j3c_ip1_bra.i((.., .., .., t)), &tmp1, 1);
+                dbas_K11_3.i_mut((.., .., s, t)).assign(tmp);
+            }
+        }
+        tic!(timing, t1, &format!("evaluate_j3c_ip1, dbas_K11_3 {iset}"));
+
+        let t1 = std::time::Instant::now();
+        let mut dbas_K11_4: Tsr = rt::zeros(([nao, naux, 3, 3], device));
+        for s in 0..3 {
+            let tmp1 = &mocc_2 % j3c_ip2_occ.i((.., .., .., s));
+            for t in 0..3 {
+                let tmp = rt::vecdot(rrcd_j3c_ip1_bra.i((.., .., .., t)), &tmp1, 1);
+                dbas_K11_4.i_mut((.., .., s, t)).assign(tmp);
+            }
+        }
+        tic!(timing, t1, &format!("evaluate_j3c_ip1, dbas_K11_4 {iset}"));
+
+        // --- reduce to hessian contribution --- //
+
+        let mut de_K20_1a: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        // let mut de_K20_1b: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_K11_2: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_K11_3: Tsr = rt::zeros(([3, 3, natm, natm], device));
+        let mut de_K11_4: Tsr = rt::zeros(([3, 3, natm, natm], device));
+
+        for (A, &[_, _, p0A, p1A]) in aoslices.iter().enumerate() {
+            let slcA = rt::slice!(p0A, p1A);
+
+            for (B, &[_, _, p0B, p1B]) in aoslices.iter().enumerate() {
+                let slcB = rt::slice!(p0B, p1B);
+
+                let tmp = dbas_K20_1a.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K20_1a.i_mut((.., .., B, A)).assign(tmp);
+
+                // let tmp = dbas_K20_1b.i((slcA, slcB)).sum_axes([0, 1]);
+                // de_K20_1b.i_mut((.., .., B, A)).assign(tmp);
+            }
+
+            for (B, &[_, _, p0B, p1B]) in auxslices.iter().enumerate() {
+                let slcB = rt::slice!(p0B, p1B);
+
+                let tmp = dbas_K11_2.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K11_2.i_mut((.., .., B, A)).assign(tmp);
+
+                let tmp = dbas_K11_3.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K11_3.i_mut((.., .., B, A)).assign(tmp);
+
+                let tmp = dbas_K11_4.i((slcA, slcB)).sum_axes([0, 1]);
+                de_K11_4.i_mut((.., .., B, A)).assign(tmp);
+            }
+        }
+
+        let scale_K20_1a = 1.0;
+        // let scale_K20_1b = 1.0;
+        let scale_K11_2 = 2.0;
+        let scale_K11_3 = 2.0;
+        let scale_K11_4 = 2.0;
+        k_out.insert("de_K20_1a", scale_K20_1a * (&de_K20_1a + &de_K20_1a.transpose([1, 0, 3, 2])));
+        // k_out.insert("de_K20_1b", scale_K20_1b * (&de_K20_1b + &de_K20_1b.transpose([1, 0, 3, 2])));
+        k_out.insert("de_K11_2", scale_K11_2 * (&de_K11_2 + &de_K11_2.transpose([1, 0, 3, 2])));
+        k_out.insert("de_K11_3", scale_K11_3 * (&de_K11_3 + &de_K11_3.transpose([1, 0, 3, 2])));
+        k_out.insert("de_K11_4", scale_K11_4 * (&de_K11_4 + &de_K11_4.transpose([1, 0, 3, 2])));
+
+        tic!(timing, t0, &format!("evaluate_j3c_ip1, evaluation k-part {iset}"));
+    }
+
+    // --- move some intermediates to output --- //
+
+    for (iset, k_intmd) in k_intmds.iter_mut().enumerate() {
+        let k_out = &mut k_outs[iset];
+        let occ_invsqrt = k_ins[iset]["occ_invsqrt"].view();
+        let mut k1bra_aux0_4 = k_intmd.remove("k1bra_aux0_4").unwrap();
+        *&mut k1bra_aux0_4 *= occ_invsqrt.i((None, ..));
+        k_out.insert("k1bra_aux0_4", k1bra_aux0_4);
     }
 
     timing

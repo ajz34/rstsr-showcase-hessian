@@ -270,6 +270,10 @@ mod test_rhf_optimized {
             }
         }
         // special terms check
+        assert_abs_diff_eq!(fp(k_out["k1bra_aux0_1"].view()), 18.802914150861, epsilon = 1e-6);
+        assert_abs_diff_eq!(fp(k_out["k1bra_aux0_2"].view()), -25.362976629706, epsilon = 1e-6);
+        assert_abs_diff_eq!(fp(k_out["k1bra_aux0_3"].view()), -9.746782950535, epsilon = 1e-6);
+        assert_abs_diff_eq!(fp(k_out["k1bra_aux0_4"].view()), 17.639880529349, epsilon = 1e-6);
         assert_abs_diff_eq!(fp(k_out["k1bra_aux1_1"].view()), -8.642371202611, epsilon = 1e-6);
         assert_abs_diff_eq!(fp(k_out["k1bra_aux1_2"].view()), 8.757631723726, epsilon = 1e-6);
         assert_abs_diff_eq!(fp(k_out["k1bra_aux1_3"].view()), -8.749320624840, epsilon = 1e-6);
