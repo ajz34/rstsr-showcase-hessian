@@ -147,7 +147,7 @@ fn test_harmonic_analysis_frequencies() {
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
     // all 12 modes returned
-    assert_eq!(vib.ndof(), 12);
+    assert_eq!(vib.ndof, 12);
     // 6 TR + 6 V
     let n_tr = vib.trv.iter().filter(|&&t| t == "TR").count();
     let n_v = vib.trv.iter().filter(|&&t| t == "V").count();
@@ -223,15 +223,16 @@ fn test_harmonic_analysis_q_orthonormal() {
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
     // q^T q = I  (mass-weighted normal modes are orthonormal)
-    let q = &vib.q;
-    let ovlp = q.t() % q;
+    let q = vib.normco_matrix(&vib.q, &device);
+    let ovlp = q.t() % &q;
     let n = 12;
     let eye_vec: Vec<f64> = (0..n).flat_map(|i| (0..n).map(move |j| if i == j { 1.0 } else { 0.0 })).collect();
     let eye = rt::asarray((eye_vec, [n, n].c(), &device));
     assert!(rt::allclose(ovlp.view(), eye.view(), (1e-10, 1e-12)));
 
     // x columns have unit norm: ||x_i||^2 = 1
-    let x_norms = vib.x.l2_norm_axes(0); // [ndof], norm over rows per column
+    let x_mat = vib.normco_matrix(&vib.x, &device);
+    let x_norms = x_mat.l2_norm_axes(0); // [ndof], norm over rows per column
     let xnv = x_norms.to_vec();
     for &nrm in xnv.iter() {
         assert!((nrm - 1.0).abs() < 1e-9, "x column norm {} != 1", nrm);
@@ -406,7 +407,7 @@ fn test_et_trv_counts() {
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
-    assert_eq!(vib.ndof(), 27);
+    assert_eq!(vib.ndof, 27);
     let n_tr = vib.trv.iter().filter(|&&t| t == "TR").count();
     let n_v = vib.trv.iter().filter(|&&t| t == "V").count();
     assert_eq!(n_tr, 6, "expected 6 TR modes");
@@ -499,8 +500,8 @@ fn test_et_q_orthonormal() {
     let hess = build_et_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
-    let q = &vib.q;
-    let ovlp = q.t() % q;
+    let q = vib.normco_matrix(&vib.q, &device);
+    let ovlp = q.t() % &q;
     let n = 27;
     let eye_vec: Vec<f64> = (0..n).flat_map(|i| (0..n).map(move |j| if i == j { 1.0 } else { 0.0 })).collect();
     let eye = rt::asarray((eye_vec, [n, n].c(), &device));

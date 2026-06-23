@@ -131,7 +131,7 @@ fn _get_tr_space(mass: TsrView, geom: TsrView, space: &str, tol_user: Option<f64
         None => {
             let smax = svec.iter().copied().fold(0.0_f64, f64::max);
             (ndof as f64) * smax * f64::EPSILON
-        }
+        },
     };
     let num = svec.iter().filter(|&&x| x > tol).count();
     u.i((.., ..num)).to_owned()
@@ -216,16 +216,19 @@ pub fn get_rotor_type(rot_const_ghz: TsrView) -> &'static str {
 /// `[ndof]`.
 #[derive(Clone)]
 pub struct VibInfo {
+    /// Number of degrees of freedom (3 × natm).
+    pub ndof: usize,
     /// Frequency `[ndof]`, stored as `(real, imag)` pairs (imag > 0 ⇒ imaginary mode).
     pub omega: Vec<f64>,
     /// Imaginary flag per mode (true if `imag > real`).
     pub imag: Vec<bool>,
-    /// Mass-weighted normal modes `[ndof, ndof]` (columns = modes).
-    pub q: Tsr,
-    /// Un-mass-weighted normal modes `[ndof, ndof]`.
-    pub w: Tsr,
-    /// Normalized un-mass-weighted modes `[ndof, ndof]`.
-    pub x: Tsr,
+    /// Mass-weighted normal modes, flattened `[ndof × ndof]` in col-major order
+    /// (columns = modes): element `(row, col)` = `q[row + col * ndof]`.
+    pub q: Vec<f64>,
+    /// Un-mass-weighted normal modes, same flat layout `[ndof × ndof]`.
+    pub w: Vec<f64>,
+    /// Normalized un-mass-weighted normal modes, same flat layout `[ndof × ndof]`.
+    pub x: Vec<f64>,
     /// Degeneracy count per mode `[ndof]` (as `i64`).
     pub degeneracy: Vec<i64>,
     /// TR/V classification per mode: `"TR"`, `"V"`, or `"-"`.
@@ -257,14 +260,27 @@ impl VibInfo {
         }
     }
 
-    /// Number of degrees of freedom.
-    pub fn ndof(&self) -> usize {
-        self.omega.len()
-    }
-
     /// Indices of vibrational modes (`TRV == "V"`).
     pub fn vib_indices(&self) -> Vec<usize> {
         self.trv.iter().enumerate().filter(|(_, &t)| t == "V").map(|(i, _)| i).collect()
+    }
+
+    /// Number of atoms.
+    pub fn nat(&self) -> usize {
+        self.ndof / 3
+    }
+
+    /// Returns element `(row, col)` of a flat col-major `[ndof × ndof]` normal-
+    /// coordinate array (`q`, `w`, or `x`).
+    #[inline]
+    pub fn normco_index(data: &[f64], ndof: usize, row: usize, col: usize) -> f64 {
+        data[row + col * ndof]
+    }
+
+    /// Reconstruct a col-major `[ndof, ndof]` tensor from a flat normal-mode
+    /// slice (e.g. `&self.q`, `&self.w`, `&self.x`) — for testing / advanced use.
+    pub fn normco_matrix(&self, data: &[f64], device: &DeviceTsr) -> Tsr {
+        rt::asarray((data.to_vec(), [self.ndof, self.ndof].f(), device))
     }
 }
 
@@ -500,7 +516,11 @@ pub fn harmonic_analysis(
     let uconv_K = 100.0 * H * C / KB;
     let theta_vib: Vec<f64> = omega_real.iter().map(|&w| w * uconv_K).collect();
 
-    VibInfo { omega, imag, q: qL, w: wL, x: xL, degeneracy, trv, mu, k, dq0, qtp0, xtp0, theta_vib }
+    let q_vec = qL.reshape(-1).to_vec();
+    let w_vec = wL.reshape(-1).to_vec();
+    let x_vec = xL.reshape(-1).to_vec();
+
+    VibInfo { ndof, omega, imag, q: q_vec, w: w_vec, x: x_vec, degeneracy, trv, mu, k, dq0, qtp0, xtp0, theta_vib }
 }
 
 // ---------------------------------------------------------------------------
@@ -546,9 +566,9 @@ impl RotorType {
 pub struct ThermoInfo {
     // conditions
     pub e0: f64,
-    pub b: [f64; 3],          // rotational constants [cm⁻¹]
-    pub b_ghz: [f64; 3],      // rotational constants [GHz]
-    pub rotor_type: String,    // "ATOM" / "LINEAR" / "REGULAR"
+    pub b: [f64; 3],        // rotational constants [cm⁻¹]
+    pub b_ghz: [f64; 3],    // rotational constants [GHz]
+    pub rotor_type: String, // "ATOM" / "LINEAR" / "REGULAR"
     pub sigma: i64,
     pub t: f64,
     pub p: f64,
@@ -766,12 +786,15 @@ pub enum NormCo {
 }
 
 impl NormCo {
-    fn select<'a>(&self, vib: &'a VibInfo) -> &'a Tsr {
-        match self {
+    /// Returns a col-major `[ndof, ndof]` tensor view of the chosen normal
+    /// coordinate, reconstructed from the flat `Vec<f64>` storage.
+    fn select<'a>(&self, vib: &'a VibInfo) -> TsrView<'a> {
+        let data: &[f64] = match self {
             NormCo::Q => &vib.q,
             NormCo::W => &vib.w,
             NormCo::X => &vib.x,
-        }
+        };
+        rt::asarray((data, [vib.ndof, vib.ndof], &DeviceTsr::default()))
     }
 }
 
@@ -831,8 +854,8 @@ pub fn print_vibs(
     prec: usize,
     ncprec: Option<usize>,
 ) -> String {
-    let nat = vib.ndof() / 3;
-    let active: Vec<usize> = (0..vib.ndof()).filter(|&i| vib.trv[i] == "V").collect();
+    let nat = vib.ndof / 3;
+    let active: Vec<usize> = (0..vib.ndof).filter(|&i| vib.trv[i] == "V").collect();
 
     let presp = 2;
     let prewidth = 24usize;
@@ -856,7 +879,7 @@ pub fn print_vibs(
     let normco_t = normco.select(vib);
 
     // omega strings per mode (imaginary → "{imag}i")
-    let omega_str: Vec<String> = (0..vib.ndof())
+    let omega_str: Vec<String> = (0..vib.ndof)
         .map(|i| if vib.imag[i] { format!("{:.*}i", prec, vib.omega[i]) } else { format!("{:.*}", prec, vib.omega[i]) })
         .collect();
 
@@ -913,7 +936,6 @@ pub fn print_vibs(
                 let lbl = if at < atom_lbl.len() { atom_lbl[at] } else { "" };
                 let mut l = format!("{}{:5}   {}", " ".repeat(presp), at + 1, ljust(lbl, prewidth - 8));
                 for &vib_i in chunk {
-                    // x[at, vib_i], y, z ; normco_t is [ndof, nmodes], col-major
                     let vx = normco_t[[3 * at, vib_i]];
                     let vy = normco_t[[3 * at + 1, vib_i]];
                     let vz = normco_t[[3 * at + 2, vib_i]];
@@ -992,10 +1014,7 @@ pub fn print_thermo(th: &ThermoInfo, multiplicity: i64, molecular_mass: f64) -> 
     lines.push("\n  ==> Thermochemistry Components <==".to_string());
 
     // ---- rotational constants ----
-    lines.push(format!(
-        "\n  Rotational constants  {:11.6}  {:11.6}  {:11.6} [cm^-1]",
-        th.b[0], th.b[1], th.b[2],
-    ));
+    lines.push(format!("\n  Rotational constants  {:11.6}  {:11.6}  {:11.6} [cm^-1]", th.b[0], th.b[1], th.b[2],));
     lines.push(format!(
         "                        {:11.4}  {:11.4}  {:11.4} [GHz]",
         th.b_ghz[0], th.b_ghz[1], th.b_ghz[2],
@@ -1010,7 +1029,7 @@ pub fn print_thermo(th: &ThermoInfo, multiplicity: i64, molecular_mass: f64) -> 
             ELEC => l.push_str(&format!(" (multiplicity = {})", multiplicity)),
             TRANS => l.push_str(&format!(" (mol. weight = {:.4} [u], P = {:.2} [Pa])", molecular_mass, p)),
             ROT => l.push_str(&format!(" (symmetry no. = {})", sigma)),
-            _ => {}
+            _ => {},
         }
         lines.push(l);
     }
@@ -1058,8 +1077,7 @@ pub fn print_thermo(th: &ThermoInfo, multiplicity: i64, molecular_mass: f64) -> 
     lines.push("  *** Absolute enthalpy, not an enthalpy of formation ***".to_string());
 
     // ---- Thermal energy E ----
-    lines.push("\n\n  Thermal (internal) energy, E (includes ZPVE and finite-temperature corrections)"
-        .to_string());
+    lines.push("\n\n  Thermal (internal) energy, E (includes ZPVE and finite-temperature corrections)".to_string());
     for i in 0..4 {
         let label = if i == ELEC {
             format!("  {} contrib to E beyond E_e", component_names[i])
@@ -1071,7 +1089,9 @@ pub fn print_thermo(th: &ThermoInfo, multiplicity: i64, molecular_mass: f64) -> 
     lines.push(fmt_ehg("  Correction E", th.e_corr));
     lines.push(format!(
         "  Total E, Thermal (internal) energy at {:7.2} [K]{}  {:>15.8} [Eh]",
-        t, " ".repeat(47), th.e_tot
+        t,
+        " ".repeat(47),
+        th.e_tot
     ));
 
     // ---- Enthalpy H ----
@@ -1085,10 +1105,7 @@ pub fn print_thermo(th: &ThermoInfo, multiplicity: i64, molecular_mass: f64) -> 
         lines.push(fmt_ehg(&label, th.h[i]));
     }
     lines.push(fmt_ehg("  Correction H", th.h_corr));
-    lines.push(format!(
-        "  Total H, Enthalpy at {:7.2} [K]{}  {:>15.8} [Eh]",
-        t, " ".repeat(53), th.h_tot
-    ));
+    lines.push(format!("  Total H, Enthalpy at {:7.2} [K]{}  {:>15.8} [Eh]", t, " ".repeat(53), th.h_tot));
     lines.push("  *** Absolute enthalpy, not an enthalpy of formation ***".to_string());
 
     // ---- Gibbs G ----
@@ -1102,10 +1119,7 @@ pub fn print_thermo(th: &ThermoInfo, multiplicity: i64, molecular_mass: f64) -> 
         lines.push(fmt_ehg(&label, th.g[i]));
     }
     lines.push(fmt_ehg("  Correction G", th.g_corr));
-    lines.push(format!(
-        "  Total G, Gibbs energy at {:7.2} [K]{}  {:>15.8} [Eh]\n",
-        t, " ".repeat(53), th.g_tot
-    ));
+    lines.push(format!("  Total G, Gibbs energy at {:7.2} [K]{}  {:>15.8} [Eh]\n", t, " ".repeat(53), th.g_tot));
 
     lines.join("\n")
 }
