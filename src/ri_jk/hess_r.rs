@@ -1,8 +1,10 @@
 //! Optimized RI-JK Hessian computation.
 //!
-//! **NOTE** currently this is not completed.
+//! Algorithm is somehow optimized, and of no reference in current state.
+//! Author of first implementation: Andrew J. Zhu <ajz34@outlook.com>
 //!
-//! Algorithm is naive and of no reference.
+//! The optimization route is not following any article, or codebase that I (ajz34) know, and is not
+//! following AI assistance. If there is coincidence, it is accidental.
 //!
 //! The correct value is compared to PySCF (written by Qiming Sun). Reference article:
 //! > Alchemy: A Quantum Chemistry Dataset for Benchmarking AI Models
@@ -21,6 +23,33 @@ use FlagSide::R as Right;
 
 use crate::ri_jk::decompose::*;
 use crate::ri_jk::pure_decompose::{get_j2c_decomp, solve_by_j2c, solve_by_j2c_mut};
+
+/* #region skeleton derivative keys */
+
+pub const KEYS_J20: [&str; 3] = ["de_J20_1", "de_J20_2", "de_J20_3"];
+pub const KEYS_K20: [&str; 4] = ["de_K20_1a", "de_K20_1b", "de_K20_2", "de_K20_3"];
+pub const KEYS_J11: [&str; 4] = ["de_J11_1", "de_J11_2", "de_J11_3", "de_J11_4"];
+pub const KEYS_K11: [&str; 4] = ["de_K11_1", "de_K11_2", "de_K11_3", "de_K11_4"];
+pub const KEYS_J02: [&str; 9] =
+    ["de_J02_1", "de_J02_2", "de_J02_3a", "de_J02_3b", "de_J02_4", "de_J02_5", "de_J02_6", "de_J02_7", "de_J02_8"];
+pub const KEYS_K02: [&str; 9] =
+    ["de_K02_1", "de_K02_2", "de_K02_3a", "de_K02_3b", "de_K02_4", "de_K02_5", "de_K02_6", "de_K02_7", "de_K02_8"];
+
+pub const KEYS_J1AO: [&str; 5] = ["j1ao_aux0", "j1ao_aux1_1", "j1ao_aux1_2", "j1ao_aux1_3", "j1ao_aux1_4"];
+pub const KEYS_K1BRA: [&str; 8] = [
+    "k1bra_aux0_1",
+    "k1bra_aux0_2",
+    "k1bra_aux0_3",
+    "k1bra_aux0_4",
+    "k1bra_aux1_1",
+    "k1bra_aux1_2",
+    "k1bra_aux1_3",
+    "k1bra_aux1_4",
+];
+
+/* #endregion */
+
+/* #region response */
 
 #[allow(clippy::too_many_arguments)]
 pub fn get_rijk_response_bra(
@@ -118,6 +147,8 @@ pub fn get_rijk_response_bra(
 
     resp.into_shape(shape_bra)
 }
+
+/* #endregion */
 
 /* #region skeleton */
 
@@ -1543,6 +1574,8 @@ pub fn evaluate_j3c_ip1(
             let de_increment = de_swap.reshape([3, natm, 3, natm]).into_swapaxes(1, 2); // [s, t, B, A]
             de_K20_1b += de_increment;
         }
+        let scale_K20_1b = 1.0;
+        k_out.insert("de_K20_1b", scale_K20_1b * (&de_K20_1b + &de_K20_1b.transpose([1, 0, 3, 2])));
         tic!(timing, t1, &format!("evaluate_j3c_ip1, de_K20_1b {iset}"));
 
         // --- dbas evaluation rrcd_j3c_ip1_bra --- //
@@ -1623,12 +1656,10 @@ pub fn evaluate_j3c_ip1(
         }
 
         let scale_K20_1a = 1.0;
-        // let scale_K20_1b = 1.0;
         let scale_K11_2 = 2.0;
         let scale_K11_3 = 2.0;
         let scale_K11_4 = 2.0;
         k_out.insert("de_K20_1a", scale_K20_1a * (&de_K20_1a + &de_K20_1a.transpose([1, 0, 3, 2])));
-        // k_out.insert("de_K20_1b", scale_K20_1b * (&de_K20_1b + &de_K20_1b.transpose([1, 0, 3, 2])));
         k_out.insert("de_K11_2", scale_K11_2 * (&de_K11_2 + &de_K11_2.transpose([1, 0, 3, 2])));
         k_out.insert("de_K11_3", scale_K11_3 * (&de_K11_3 + &de_K11_3.transpose([1, 0, 3, 2])));
         k_out.insert("de_K11_4", scale_K11_4 * (&de_K11_4 + &de_K11_4.transpose([1, 0, 3, 2])));
@@ -1651,6 +1682,8 @@ pub fn evaluate_j3c_ip1(
 
 /* #endregion */
 
+/* #region impl */
+
 /// Generate cderi and decomposition.
 pub fn generate_cderi_with_decomp(
     mol: &CInt,
@@ -1671,8 +1704,10 @@ pub struct RHessRIJK<'a> {
     pub scale_k: f64,
     pub cderi: TsrCow<'a>,
     pub j2c_decomp: J2CDecompose,
-    pub intmd: HashMap<&'static str, Tsr>, // intermediates
+    pub intmd: HashMap<String, Tsr>, // intermediates
     pub result: HashMap<&'static str, Tsr>,
+    pub timing: Vec<(String, f64)>,
+    pub is_skeleton_ready: bool,
 }
 
 impl<'a> RHessRIJK<'a> {
@@ -1694,6 +1729,8 @@ impl<'a> RHessRIJK<'a> {
             j2c_decomp,
             intmd: HashMap::new(),
             result: HashMap::new(),
+            timing: Vec::new(),
+            is_skeleton_ready: false,
         }
     }
 
@@ -1702,7 +1739,7 @@ impl<'a> RHessRIJK<'a> {
         aux: &CInt,
         scale_j: f64,
         scale_k: f64,
-        cderi: TsrView<'a>,
+        cderi: TsrCow<'a>,
         j2c_decomp: J2CDecompose,
     ) -> Self {
         Self {
@@ -1714,7 +1751,45 @@ impl<'a> RHessRIJK<'a> {
             j2c_decomp,
             intmd: HashMap::new(),
             result: HashMap::new(),
+            timing: Vec::new(),
+            is_skeleton_ready: false,
         }
+    }
+
+    pub fn ensure_skeleton(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) {
+        if self.is_skeleton_ready {
+            return;
+        }
+        let (j_out, k_outs, timing) = get_rijk_skeleton_decomposed_separated(
+            &self.mol,
+            &self.aux,
+            &[mo_coeff],
+            &[mo_occ],
+            self.cderi.view(),
+            &self.j2c_decomp,
+            self.scale_j != 0.0,
+            self.scale_k != 0.0,
+            72, // TODO: batch size `72` should be tunable by max-memory.
+            atm_list,
+            None,
+        );
+        self.timing.extend(timing);
+
+        if let Some(j_out) = j_out {
+            for (key, value) in j_out.into_iter() {
+                self.intmd.insert(key.to_string(), value);
+            }
+        };
+
+        for (iset, k_out) in k_outs.into_iter().enumerate() {
+            // note the keys can clash for output of k.
+            // for storage of intermediates, we append `<spin_{iset}>` to the key name.
+            for (key, value) in k_out.into_iter() {
+                self.intmd.insert(format!("{key}<spin_{iset}>"), value);
+            }
+        }
+
+        self.is_skeleton_ready = true;
     }
 }
 
@@ -1722,36 +1797,83 @@ impl<'a> HessUtilAPI for RHessRIJK<'a> {}
 
 impl<'a> RHessElecInteractAPI for RHessRIJK<'a> {
     fn make_skeleton_hess(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
-        use crate::ri_jk::hess_r_naive::{
-            get_decomposed_rij_skeleton_deriv2_naive, get_decomposed_rik_skeleton_deriv2_naive,
-        };
-        let de_J_skeleton_dict =
-            get_decomposed_rij_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
-        let de_K_skeleton_dict =
-            get_decomposed_rik_skeleton_deriv2_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
-        let result = &mut self.result;
-        result.extend(de_J_skeleton_dict);
-        result.extend(de_K_skeleton_dict);
-        let de_J = &result["de_J20"] + &result["de_J11"] + &result["de_J02"];
-        let de_K = &result["de_K20"] + &result["de_K11"] + &result["de_K02"];
-        self.scale_j * de_J - 0.5 * self.scale_k * de_K
+        self.ensure_skeleton(mo_coeff, mo_occ, atm_list);
+        let intmd = &self.intmd;
+
+        let device = self.cderi.device();
+        let natm = atm_list.map_or_else(|| self.mol.natm(), |list| list.len());
+        let hess_init = || -> Tsr { rt::zeros(([3, 3, natm, natm], device)) };
+
+        let mut de = hess_init();
+        if self.scale_j != 0.0 {
+            let de_J20 = KEYS_J20.iter().map(|&key| &intmd[key]).fold(hess_init(), |acc, x| acc + x);
+            let de_J11 = KEYS_J11.iter().map(|&key| &intmd[key]).fold(hess_init(), |acc, x| acc + x);
+            let de_J02 = KEYS_J02.iter().map(|&key| &intmd[key]).fold(hess_init(), |acc, x| acc + x);
+            let de_J = &de_J20 + &de_J11 + &de_J02;
+            de += self.scale_j * &de_J;
+            self.result.insert("de_J20", de_J20);
+            self.result.insert("de_J11", de_J11);
+            self.result.insert("de_J02", de_J02);
+            self.result.insert("de_J", de_J);
+        }
+        if self.scale_k != 0.0 {
+            // rhf only have one spin
+            let de_K20 =
+                KEYS_K20.iter().map(|&key| &intmd[&format!("{key}<spin_0>")]).fold(hess_init(), |acc, x| acc + x);
+            let de_K11 =
+                KEYS_K11.iter().map(|&key| &intmd[&format!("{key}<spin_0>")]).fold(hess_init(), |acc, x| acc + x);
+            let de_K02 =
+                KEYS_K02.iter().map(|&key| &intmd[&format!("{key}<spin_0>")]).fold(hess_init(), |acc, x| acc + x);
+            let de_K = &de_K20 + &de_K11 + &de_K02;
+            de -= 0.5 * self.scale_k * &de_K;
+            self.result.insert("de_K20", de_K20);
+            self.result.insert("de_K11", de_K11);
+            self.result.insert("de_K02", de_K02);
+            self.result.insert("de_K", de_K);
+        }
+        self.result.insert("de_skeleton", de.clone());
+        de
     }
 
-    fn get_deriv1_ao(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
-        use crate::ri_jk::hess_r_naive::{get_rij_deriv1_ao_naive, get_rik_deriv1_ao_naive};
-        let j1ao_dict = get_rij_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
-        let k1ao_dict = get_rik_deriv1_ao_naive(&self.mol, &self.aux, mo_coeff.view(), mo_occ.view(), atm_list);
-        let result = &mut self.result;
-        result.extend(j1ao_dict);
-        result.extend(k1ao_dict);
-        let j1ao = &result["j1ao_aux0"] + &result["j1ao_aux1"];
-        let k1ao = &result["k1ao_aux0"] + &result["k1ao_aux1"];
-        self.scale_j * j1ao - 0.5 * self.scale_k * k1ao
+    fn get_deriv1_ao(&mut self, _mo_coeff: TsrView, _mo_occ: TsrView, _atm_list: Option<&[usize]>) -> Tsr {
+        unimplemented!("This function is not implemented for optimized RI-JK hessian. Use `get_deriv1_bra` instead.")
+    }
+
+    fn get_deriv1_bra(&mut self, mo_coeff: TsrView, mo_occ: TsrView, atm_list: Option<&[usize]>) -> Tsr {
+        self.ensure_skeleton(mo_coeff.view(), mo_occ.view(), atm_list);
+        let intmd = &self.intmd;
+
+        let device = self.cderi.device();
+        let natm = atm_list.map_or_else(|| self.mol.natm(), |list| list.len());
+        let nao = mo_coeff.shape()[0];
+        let occidx = mo_occ.greater(0.0).into_vec();
+        let nocc = occidx.iter().filter(|&&x| x).count();
+        let mocc = mo_coeff.bool_select(-1, &occidx).into_contig(ColMajor);
+
+        let deriv1_ao_init = || -> Tsr { rt::zeros(([nao, nao, 3, natm], device)) };
+        let deriv1_bra_init = || -> Tsr { rt::zeros(([nao, nocc, 3, natm], device)) };
+
+        let mut deriv1_bra = deriv1_bra_init();
+        if self.scale_j != 0.0 {
+            let j1ao = KEYS_J1AO.iter().map(|&key| &intmd[key]).fold(deriv1_ao_init(), |acc, x| acc + x);
+            deriv1_bra += self.scale_j * (&j1ao % &mocc);
+            self.result.insert("j1ao", j1ao);
+        }
+        if self.scale_k != 0.0 {
+            let k1bra = KEYS_K1BRA
+                .iter()
+                .map(|&key| &intmd[&format!("{key}<spin_0>")])
+                .fold(deriv1_bra_init(), |acc, x| acc + x);
+            deriv1_bra -= 0.5 * self.scale_k * &k1bra;
+            self.result.insert("k1bra", k1bra);
+        }
+        self.result.insert("deriv1_bra", deriv1_bra.clone());
+        deriv1_bra
     }
 
     fn make_response_preparation(&mut self, mo_coeff: TsrView, mo_occ: TsrView) {
-        self.intmd.insert("mo_coeff", mo_coeff.into_contig(RowMajor));
-        self.intmd.insert("mo_occ", mo_occ.to_owned());
+        self.intmd.insert("mo_coeff".to_string(), mo_coeff.into_contig(RowMajor));
+        self.intmd.insert("mo_occ".to_string(), mo_occ.to_owned());
     }
 
     fn get_response_bra(&mut self, bra: TsrView) -> Tsr {
@@ -1762,3 +1884,5 @@ impl<'a> RHessElecInteractAPI for RHessRIJK<'a> {
         get_rijk_response_bra(cderi, mo_coeff, mo_occ, bra, self.scale_j, self.scale_k, 72)
     }
 }
+
+/* #endregion */

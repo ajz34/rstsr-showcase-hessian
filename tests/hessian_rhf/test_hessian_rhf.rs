@@ -134,6 +134,7 @@ mod test_rhf_optimized {
         for (key, value) in hess_scf.timing.iter() {
             println!("    {:60}: {:10.6} seconds", key, value);
         }
+        println!("max deviation of Hessian: {:16.10e}", (de_hess.view() - de_hess_ref.view()).abs().max());
         assert!(rt::allclose(de_hess.view(), de_hess_ref.view(), (1e-4, 1e-6)));
         assert_abs_diff_eq!(fp(de_hess.view()), 1.4704252379360374, epsilon = 1e-5);
     }
