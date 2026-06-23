@@ -859,6 +859,7 @@ pub fn print_vibs(
 
     let presp = 2;
     let prewidth = 24usize;
+    let colsp = 2usize;
     let (groupby, ncprec, width) = if shortlong {
         let g = groupby.unwrap_or(3);
         let n = ncprec.unwrap_or(2);
@@ -868,65 +869,65 @@ pub fn print_vibs(
         let n = ncprec.unwrap_or(4);
         (g, n, n + 8)
     };
-    // "all" sentinel
     let groupby = if groupby == usize::MAX { active.len().max(1) } else { groupby };
-
-    // scalar_rows use a narrower column than the 3-cell displacement block (short
-    // mode) or the single-value long-mode block.  prec + 8 comfortably fits e.g.
-    // "3729.0115" (9 chars at prec=4) with a few spaces of right-padding.
-    let scalar_width = prec + 8;
 
     let normco_t = normco.select(vib);
 
-    // omega strings per mode (imaginary → "{imag}i")
     let omega_str: Vec<String> = (0..vib.ndof)
         .map(|i| if vib.imag[i] { format!("{:.*}i", prec, vib.omega[i]) } else { format!("{:.*}", prec, vib.omega[i]) })
         .collect();
 
     let mut lines: Vec<String> = Vec::new();
 
-    // 1-based running vibrational-mode number for the header (renumbered so the
-    // first vibration prints as 1, regardless of how many TR modes precede it).
+    // running 1-based vibrational mode number (renumbered starting from 1)
     let mut vib_num = 1usize;
-    // trailing spacing after each per-mode block
-    const TRAIL: usize = 5;
+    let mut iter = active.iter();
+    loop {
+        let mut row: Vec<usize> = Vec::new();
+        for _ in 0..groupby {
+            match iter.next() {
+                Some(&v) => row.push(v),
+                None => break,
+            }
+        }
+        if row.is_empty() {
+            break;
+        }
 
-    for chunk in active.chunks(groupby) {
-        // Vibration header — centered in width (wider than scalar_width)
+        // Vibration header — centered integer, colsp trailing
         let mut line = format!("{}{}", " ".repeat(presp), ljust("Vibration", prewidth));
-        for &_ in chunk {
-            line.push_str(&format!("{}{}", center(&format!("{}", vib_num), width), " ".repeat(TRAIL)));
+        for &_ in &row {
+            line.push_str(&format!("{}{}", center(&vib_num.to_string(), width), " ".repeat(colsp)));
             vib_num += 1;
         }
         lines.push(line);
 
-        // Freq — right-aligned in scalar_width
+        // Freq — centered, 2 trailing spaces (= colsp)
         let mut line = format!("{}{}", " ".repeat(presp), ljust("Freq [cm^-1]", prewidth));
-        for &vib_i in chunk {
-            line.push_str(&format!("{}{}", rjust(&omega_str[vib_i], scalar_width), " ".repeat(TRAIL)));
+        for &vib in &row {
+            line.push_str(&format!("{}  ", center(&omega_str[vib], width)));
         }
         lines.push(line);
 
-        // scalar property rows: (label, per-mode values for this chunk)
-        let scalar_rows: [(&str, Vec<f64>); 5] = [
-            ("Reduced mass [u]", chunk.iter().map(|&i| vib.mu[i]).collect()),
-            ("Force const [mDyne/A]", chunk.iter().map(|&i| vib.k[i]).collect()),
-            ("Turning point v=0 [a0]", chunk.iter().map(|&i| vib.xtp0[i]).collect()),
-            ("RMS dev v=0 [a0 u^1/2]", chunk.iter().map(|&i| vib.dq0[i]).collect()),
-            ("Char temp [K]", chunk.iter().map(|&i| vib.theta_vib[i]).collect()),
-        ];
-        for (label, vals) in scalar_rows {
+        // Irrep — skip (no irrep/symmetry in our implementation)
+        // scalar property rows — centered, colsp trailing
+        let labels: [&str; 5] =
+            ["Reduced mass [u]", "Force const [mDyne/A]", "Turning point v=0 [a0]", "RMS dev v=0 [a0 u^1/2]", "Char temp [K]"];
+        let val_slices: [&[f64]; 5] = [&vib.mu, &vib.k, &vib.xtp0, &vib.dq0, &vib.theta_vib];
+        for (label, vals) in labels.iter().zip(val_slices.iter()) {
             let mut l = format!("{}{}", " ".repeat(presp), ljust(label, prewidth));
-            for &v in vals.iter() {
-                let s = format!("{:.*}", prec, v);
-                l.push_str(&format!("{}{}", rjust(&s, scalar_width), " ".repeat(TRAIL)));
+            for &vib in &row {
+                l.push_str(&format!(
+                    "{}{}",
+                    center(&format!("{:.*}", prec, vals[vib]), width),
+                    " ".repeat(colsp)
+                ));
             }
             lines.push(l);
         }
 
-        // separator: span the label column plus the per-mode (value + TRAIL) blocks,
-        // dropping the final TRAIL so the dashes align with the last value's right edge.
-        let sep_len = prewidth + groupby * (width + TRAIL) - TRAIL;
+        // separator
+        let sep_len = prewidth + groupby * (width + colsp) - colsp;
         lines.push(format!("{}{}", " ".repeat(presp), "-".repeat(sep_len)));
 
         // normal coordinate values
@@ -935,14 +936,14 @@ pub fn print_vibs(
             for at in 0..nat {
                 let lbl = if at < atom_lbl.len() { atom_lbl[at] } else { "" };
                 let mut l = format!("{}{:5}   {}", " ".repeat(presp), at + 1, ljust(lbl, prewidth - 8));
-                for &vib_i in chunk {
-                    let vx = normco_t[[3 * at, vib_i]];
-                    let vy = normco_t[[3 * at + 1, vib_i]];
-                    let vz = normco_t[[3 * at + 2, vib_i]];
+                for &vib in &row {
+                    let vx = normco_t[[3 * at, vib]];
+                    let vy = normco_t[[3 * at + 1, vib]];
+                    let vz = normco_t[[3 * at + 2, vib]];
                     for v in [vx, vy, vz] {
                         l.push_str(&center(&format!("{:.*}", ncprec, v), cell));
                     }
-                    l.push_str(&" ".repeat(TRAIL));
+                    l.push_str(&" ".repeat(colsp));
                 }
                 lines.push(l);
             }
@@ -950,16 +951,21 @@ pub fn print_vibs(
             for at in 0..nat {
                 let lbl = if at < atom_lbl.len() { atom_lbl[at] } else { "" };
                 for xyz in 0..3 {
-                    let axis = match xyz {
-                        0 => 'X',
-                        1 => 'Y',
-                        _ => 'Z',
-                    };
-                    let mut l =
-                        format!("{}{:5}    {}    {}", " ".repeat(presp), at + 1, axis, ljust(lbl, prewidth - 14));
-                    for &vib_i in chunk {
-                        let v = normco_t[[3 * at + xyz, vib_i]];
-                        l.push_str(&format!("{}{}", center(&format!("{:.*}", ncprec, v), width), " ".repeat(TRAIL)));
+                    let axis = ['X', 'Y', 'Z'][xyz];
+                    let mut l = format!(
+                        "{}{:5}    {}    {}",
+                        " ".repeat(presp),
+                        at + 1,
+                        axis,
+                        ljust(lbl, prewidth - 14)
+                    );
+                    for &vib in &row {
+                        let v = normco_t[[3 * at + xyz, vib]];
+                        l.push_str(&format!(
+                            "{}{}",
+                            center(&format!("{:.*}", ncprec, v), width),
+                            " ".repeat(colsp)
+                        ));
                     }
                     lines.push(l);
                 }
