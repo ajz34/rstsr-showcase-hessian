@@ -1,9 +1,14 @@
-//! Vibrational (harmonic) analysis module — Rust/RSTSR port of `pyhessref/vib.py`.
+//! Vibrational (harmonic) analysis module.
 //!
 //! All tensors are column-major. Geometry is stored as `[3, natm]`, masses as
 //! `[natm]`, Hessian as `[3*natm, 3*natm]`.
 //!
 //! No IR intensity / dipole-derivative terms at this stage.
+//!
+//! # Note
+//!
+//! This module is direct transformation from psi4 (psi4/psi4/driver/qcdb/vib.py).
+//! This file contains AI assisted code, and not fully reviewed by human.
 
 use crate::prelude::*;
 
@@ -138,7 +143,7 @@ pub fn rotation_const(mass: TsrView, atom_coords: TsrView, unit: &str) -> Tsr {
     let im_rr = &weighted % atom_coords.t(); // [3, 3]
     let trace = im_rr.diagonal(None).sum();
     // I = trace*I - Σ m r r^T
-    let eye: Tsr = rt::asarray((vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], [3, 3].c(), &device));
+    let eye: Tsr = rt::eye((3, &device));
     let im = &eye * trace - &im_rr;
 
     let mut e = rt::linalg::eigvalsh(im.view());
@@ -335,7 +340,7 @@ pub fn harmonic_analysis(
 
     // projector  P = I - Σ |tr⟩⟨tr|
     let nrt = tr_space.shape()[1];
-    let mut p: Tsr = rt::asarray((vec![0.0_f64; ndof * ndof], [ndof, ndof].c(), &device));
+    let mut p: Tsr = rt::zeros(([ndof, ndof], &device));
     for i in 0..ndof {
         p[[i, i]] = 1.0;
     }
@@ -378,7 +383,7 @@ pub fn harmonic_analysis(
 
     // reorder eigenvalues and eigenvector columns
     let fc_sorted: Vec<f64> = order.iter().map(|&i| fc_vec[i]).collect();
-    let mut qL = rt::asarray((vec![0.0_f64; ndof * ndof], [ndof, ndof].c(), &device));
+    let mut qL: Tsr = rt::zeros(([ndof, ndof], &device));
     for (new, &old) in order.iter().enumerate() {
         for r in 0..ndof {
             qL[[r, new]] = qL_raw[[r, old]];
