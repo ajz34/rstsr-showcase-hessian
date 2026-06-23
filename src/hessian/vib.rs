@@ -571,6 +571,7 @@ pub const VIB: usize = 3;
 /// - `rot_const` : `[3]` rotational constants [cm⁻¹].
 /// - `rotor_type` : [`RotorType`]; use `None`-equivalent by passing the result of
 ///   [`RotorType::from_rot_const_ghz`].
+#[allow(clippy::too_many_arguments)]
 pub fn thermo(
     vib: &VibInfo,
     t: f64,
@@ -651,7 +652,7 @@ pub fn thermo(
             r.exp() * (r / denom).powi(2)
         })
         .sum();
-    let zpe_vib = rT.iter().map(|&r| r).sum::<f64>() * t / 2.0;
+    let zpe_vib = rT.iter().sum::<f64>() * t / 2.0;
     let e_vib = zpe_vib + rT.iter().map(|&r| r * t / r.exp_m1()).sum::<f64>();
 
     s[VIB] = s_vib;
@@ -786,8 +787,8 @@ fn center(s: &str, w: usize) -> String {
 /// - `atom_lbl` : atomic symbols; if empty, integers are used.
 /// - `normco` : which normal coordinate to print ([`NormCo`]).
 /// - `shortlong` : `true` for `(nat, 3)` layout, `false` for `(3*nat, 1)`.
-/// - `groupby` : modes per row (`Some(n)`); `None` ⇒ 3 (short) / 6 (long);
-///   `Some(usize::MAX)` is treated as "all" (clamped to active count).
+/// - `groupby` : modes per row (`Some(n)`); `None` ⇒ 3 (short) / 6 (long); `Some(usize::MAX)` is
+///   treated as "all" (clamped to active count).
 /// - `prec` : decimal places for scalar properties.
 /// - `ncprec` : decimal places for normal coordinates (`None` ⇒ 2 short / 4 long).
 pub fn print_vibs(
@@ -825,13 +826,7 @@ pub fn print_vibs(
 
     // omega strings per mode (imaginary → "{imag}i")
     let omega_str: Vec<String> = (0..vib.ndof())
-        .map(|i| {
-            if vib.imag[i] {
-                format!("{:.*}i", prec, vib.omega[i])
-            } else {
-                format!("{:.*}", prec, vib.omega[i])
-            }
-        })
+        .map(|i| if vib.imag[i] { format!("{:.*}i", prec, vib.omega[i]) } else { format!("{:.*}", prec, vib.omega[i]) })
         .collect();
 
     let mut lines: Vec<String> = Vec::new();
@@ -885,12 +880,7 @@ pub fn print_vibs(
             let cell = width / 3;
             for at in 0..nat {
                 let lbl = if at < atom_lbl.len() { atom_lbl[at] } else { "" };
-                let mut l = format!(
-                    "{}{:5}   {}",
-                    " ".repeat(presp),
-                    at + 1,
-                    ljust(lbl, prewidth - 8)
-                );
+                let mut l = format!("{}{:5}   {}", " ".repeat(presp), at + 1, ljust(lbl, prewidth - 8));
                 for &vib_i in chunk {
                     // x[at, vib_i], y, z ; normco_t is [ndof, nmodes], col-major
                     let vx = normco_t[[3 * at, vib_i]];
@@ -912,20 +902,11 @@ pub fn print_vibs(
                         1 => 'Y',
                         _ => 'Z',
                     };
-                    let mut l = format!(
-                        "{}{:5}    {}    {}",
-                        " ".repeat(presp),
-                        at + 1,
-                        axis,
-                        ljust(lbl, prewidth - 14)
-                    );
+                    let mut l =
+                        format!("{}{:5}    {}    {}", " ".repeat(presp), at + 1, axis, ljust(lbl, prewidth - 14));
                     for &vib_i in chunk {
                         let v = normco_t[[3 * at + xyz, vib_i]];
-                        l.push_str(&format!(
-                            "{}{}",
-                            center(&format!("{:.*}", ncprec, v), width),
-                            " ".repeat(TRAIL)
-                        ));
+                        l.push_str(&format!("{}{}", center(&format!("{:.*}", ncprec, v), width), " ".repeat(TRAIL)));
                     }
                     lines.push(l);
                 }

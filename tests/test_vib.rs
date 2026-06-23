@@ -35,22 +35,9 @@ fn nh3_mass(device: &DeviceTsr) -> Tsr {
 /// `de_ref` is loaded as a row-major-flagged `[4,4,3,3]` tensor (C-order data).
 /// Transpose to logical `[a,i,b,j]`, materialize col-major, then reshape to
 /// `[12,12]` so that `hess[a*3+i, b*3+j] = de_ref[a,b,i,j]`.
-fn build_hess_flat(device: &DeviceTsr) -> Tsr {
-    let de_ref = read_npz("nh3_r_hf_decomp.npz", "de_ref"); // logical [a,b,i,j]
-                                                            // hess[(a,i), (b,j)] = de_ref[a,b,i,j]. Index de_ref directly (read_npz
-                                                            // gives correct logical indexing for C-order npy) and assemble the flat
-                                                            // [12,12] col-major Hessian.
-    let mut hess = rt::asarray((vec![0.0_f64; 144], [12, 12].c(), device));
-    for a in 0..4 {
-        for b in 0..4 {
-            for i in 0..3 {
-                for j in 0..3 {
-                    hess[[a * 3 + i, b * 3 + j]] = de_ref[[a, b, i, j]];
-                }
-            }
-        }
-    }
-    hess
+fn build_hess_flat() -> Tsr {
+    let de_ref = read_npz("nh3_r_hf_decomp.npz", "de_ref");
+    de_ref.transpose((2, 0, 3, 1)).into_shape([12, 12])
 }
 
 /// Mass-centred geometry `[3, natm]`.
@@ -155,7 +142,7 @@ fn test_harmonic_analysis_frequencies() {
     let device = DeviceTsr::default();
     let geom = nh3_geom(&device);
     let mass = nh3_mass(&device);
-    let hess = build_hess_flat(&device);
+    let hess = build_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
@@ -188,7 +175,7 @@ fn test_harmonic_analysis_properties() {
     let device = DeviceTsr::default();
     let geom = nh3_geom(&device);
     let mass = nh3_mass(&device);
-    let hess = build_hess_flat(&device);
+    let hess = build_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
     let vib_idx = vib.vib_indices();
@@ -231,7 +218,7 @@ fn test_harmonic_analysis_q_orthonormal() {
     let device = DeviceTsr::default();
     let geom = nh3_geom(&device);
     let mass = nh3_mass(&device);
-    let hess = build_hess_flat(&device);
+    let hess = build_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
@@ -256,7 +243,7 @@ fn test_harmonic_analysis_degeneracy() {
     let device = DeviceTsr::default();
     let geom = nh3_geom(&device);
     let mass = nh3_mass(&device);
-    let hess = build_hess_flat(&device);
+    let hess = build_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
@@ -264,7 +251,7 @@ fn test_harmonic_analysis_degeneracy() {
     let omega_real: Vec<f64> = (0..12).map(|i| if vib.imag[i] { 0.0 } else { vib.omega[i] }).collect();
     let mut keys: Vec<(i64, usize)> = (0..12).map(|i| ((omega_real[i] * 10.0).round() as i64, i)).collect();
     keys.sort_by_key(|&(k, _)| k);
-    let mut expected = vec![0i64; 12];
+    let mut expected = [0i64; 12];
     let mut start = 0;
     while start < keys.len() {
         let k = keys[start].0;
@@ -278,6 +265,7 @@ fn test_harmonic_analysis_degeneracy() {
         }
         start = end;
     }
+    #[allow(clippy::needless_range_loop)]
     for i in 0..12 {
         assert_eq!(vib.degeneracy[i], expected[i], "degeneracy[{}]", i);
     }
@@ -292,7 +280,7 @@ fn test_thermo_nh3() {
     let device = DeviceTsr::default();
     let geom = nh3_geom(&device);
     let mass = nh3_mass(&device);
-    let hess = build_hess_flat(&device);
+    let hess = build_hess_flat();
     let mass_sum = mass.to_vec().iter().sum::<f64>();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
@@ -332,7 +320,7 @@ fn test_thermo_gibbs_relation() {
     let device = DeviceTsr::default();
     let geom = nh3_geom(&device);
     let mass = nh3_mass(&device);
-    let hess = build_hess_flat(&device);
+    let hess = build_hess_flat();
     let mass_sum = mass.to_vec().iter().sum::<f64>();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
@@ -404,20 +392,9 @@ fn et_mass(device: &DeviceTsr) -> Tsr {
 
 /// Build the flat `[27, 27]` Hessian (col-major) from the stored `ref_de`
 /// `[9,9,3,3]` C-order array: `hess[(a,i), (b,j)] = ref_de[a,b,i,j]`.
-fn build_et_hess_flat(device: &DeviceTsr) -> Tsr {
-    let ref_de = read_npz("et_r_hf.npz", "ref_de"); // logical [a,b,i,j]
-    let n = 27;
-    let mut hess = rt::asarray((vec![0.0_f64; n * n], [n, n].c(), device));
-    for a in 0..9 {
-        for b in 0..9 {
-            for i in 0..3 {
-                for j in 0..3 {
-                    hess[[a * 3 + i, b * 3 + j]] = ref_de[[a, b, i, j]];
-                }
-            }
-        }
-    }
-    hess
+fn build_et_hess_flat() -> Tsr {
+    let ref_de = read_npz("et_r_hf.npz", "ref_de");
+    ref_de.transpose((2, 0, 3, 1)).into_shape([27, 27])
 }
 
 #[test]
@@ -425,7 +402,7 @@ fn test_et_trv_counts() {
     let device = DeviceTsr::default();
     let geom = et_geom(&device);
     let mass = et_mass(&device);
-    let hess = build_et_hess_flat(&device);
+    let hess = build_et_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
@@ -441,7 +418,7 @@ fn test_et_tr_frequencies() {
     let device = DeviceTsr::default();
     let geom = et_geom(&device);
     let mass = et_mass(&device);
-    let hess = build_et_hess_flat(&device);
+    let hess = build_et_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
@@ -461,7 +438,7 @@ fn test_et_vib_frequencies_first10() {
     let device = DeviceTsr::default();
     let geom = et_geom(&device);
     let mass = et_mass(&device);
-    let hess = build_et_hess_flat(&device);
+    let hess = build_et_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
     let vib_idx = vib.vib_indices();
@@ -491,7 +468,7 @@ fn test_et_vib_properties_first10() {
     let device = DeviceTsr::default();
     let geom = et_geom(&device);
     let mass = et_mass(&device);
-    let hess = build_et_hess_flat(&device);
+    let hess = build_et_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
     let vib_idx = vib.vib_indices();
@@ -519,7 +496,7 @@ fn test_et_q_orthonormal() {
     let device = DeviceTsr::default();
     let geom = et_geom(&device);
     let mass = et_mass(&device);
-    let hess = build_et_hess_flat(&device);
+    let hess = build_et_hess_flat();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
     let q = &vib.q;
@@ -554,7 +531,7 @@ fn test_et_thermo() {
     let device = DeviceTsr::default();
     let geom = et_geom(&device);
     let mass = et_mass(&device);
-    let hess = build_et_hess_flat(&device);
+    let hess = build_et_hess_flat();
     let mass_sum = mass.to_vec().iter().sum::<f64>();
 
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
@@ -592,7 +569,7 @@ fn test_print_vibs_nh3() {
     let device = DeviceTsr::default();
     let geom = nh3_geom(&device);
     let mass = nh3_mass(&device);
-    let hess = build_hess_flat(&device);
+    let hess = build_hess_flat();
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
     let lbl = ["N", "H", "H", "H"];
@@ -607,7 +584,7 @@ fn test_print_vibs_acetaldehyde() {
     let device = DeviceTsr::default();
     let geom = et_geom(&device);
     let mass = et_mass(&device);
-    let hess = build_et_hess_flat(&device);
+    let hess = build_et_hess_flat();
     let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
 
     let lbl = ["C", "C", "O", "H", "H", "H", "H", "H", "H"];
