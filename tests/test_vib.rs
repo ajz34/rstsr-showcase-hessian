@@ -591,3 +591,46 @@ fn test_print_vibs_acetaldehyde() {
     println!("\n========== CH3CHO print_vibs (short, x, first rows) ==========");
     println!("{}", print_vibs(&vib, &lbl, NormCo::X, true, Some(3), 4, None));
 }
+
+// ============================================================================
+//  print_thermo (visual check only — no value assertions)
+// ============================================================================
+
+#[test]
+fn test_print_thermo_nh3() {
+    let device = DeviceTsr::default();
+    let geom = nh3_geom(&device);
+    let mass = nh3_mass(&device);
+    let hess = build_hess_flat();
+    let mass_sum = mass.to_vec().iter().sum::<f64>();
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+    let geom_c = mass_centred_geom(&geom, &mass, &device);
+    let rc_cm = rotation_const(mass.view(), geom_c.view(), "wavenumber").to_vec();
+    let rc_ghz = rotation_const(mass.view(), geom_c.view(), "GHz");
+    let rotor = RotorType::from_rot_const_ghz(rc_ghz.view());
+    // Note: E0 = -56.0 is a fake round number for display purposes, not a real
+    // computed electronic energy. It only shifts the absolute E/H/G/ totals.
+    let th = thermo(&vib, 298.15, 101325.0, 1, mass_sum, -56.0, 3, &rc_cm, rotor);
+
+    println!("\n{}", print_thermo(&th, 1, mass_sum));
+}
+
+#[test]
+fn test_print_thermo_acetaldehyde() {
+    let device = DeviceTsr::default();
+    let geom = et_geom(&device);
+    let mass = et_mass(&device);
+    let hess = build_et_hess_flat();
+    let mass_sum = mass.to_vec().iter().sum::<f64>();
+
+    let vib = harmonic_analysis(hess.view(), geom.view(), mass.view(), true, true);
+    let geom_c = mass_centred_geom(&geom, &mass, &device);
+    let rc_cm = rotation_const(mass.view(), geom_c.view(), "wavenumber").to_vec();
+    let rc_ghz = rotation_const(mass.view(), geom_c.view(), "GHz");
+    let rotor = RotorType::from_rot_const_ghz(rc_ghz.view());
+    // Note: E0 = -153.0 is a fake round number for display purposes.
+    let th = thermo(&vib, 298.15, 101325.0, 1, mass_sum, -153.0, 1, &rc_cm, rotor);
+
+    println!("\n{}", print_thermo(&th, 1, mass_sum));
+}

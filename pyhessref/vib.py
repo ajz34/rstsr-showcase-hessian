@@ -828,3 +828,109 @@ def print_molden_vibs(vibinfo, atom_symbol, geom, standalone=True):
             lines.append(('   ' + '{:20.10f}' * 3).format(*disp))
 
     return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Thermochemistry pretty-printer (port of Psi4 thermo display)
+# ---------------------------------------------------------------------------
+
+
+def print_thermo(therminfo, multiplicity=1, molecular_mass=None):
+    """Pretty-print thermochemistry results, mirroring Psi4's display format.
+
+    Parameters
+    ----------
+    therminfo : dict
+        Output of :func:`thermo`.
+    multiplicity : int
+        Spin multiplicity.
+    molecular_mass : float or None
+        Total molecular mass [u]. If None, prints ``?``.
+
+    Returns
+    -------
+    str
+        Formatted string.
+    """
+    T = therminfo.get('T', 298.15)
+    P = therminfo.get('P', 101325.0)
+    sigma = therminfo.get('sigma', 1)
+    E0 = therminfo.get('E0', 0.0)
+    if molecular_mass is None:
+        molecular_mass = '?'
+
+    fmt_scv = "  {:<36}{:11.3f} [cal/(mol K)]  {:11.3f} [J/(mol K)]  {:15.8f} [mEh/K]"
+    fmt_ehg = "  {:<36}{:11.3f} [kcal/mol]  {:11.3f} [kJ/mol]  {:15.8f} [Eh]"
+
+    components = ['elec', 'trans', 'rot', 'vib']
+    names = {'elec': 'Electronic', 'trans': 'Translational',
+             'rot': 'Rotational', 'vib': 'Vibrational'}
+
+    def get(prefix, suffix):
+        return float(therminfo.get(f'{prefix}_{suffix}', 0.0))
+
+    lines = []
+    lines.append("\n  ==> Thermochemistry Components <==")
+
+    # ---- Entropy S ----
+    lines.append("\n\n  Entropy, S")
+    for c in components:
+        val = get('S', c)
+        l = fmt_scv.format(f"  {names[c]} S", val * _hartree2kcalmol, val * _hartree2kJmol, val)
+        if c == 'elec':
+            l += f" (multiplicity = {multiplicity})"
+        elif c == 'trans':
+            l += f" (mol. weight = {molecular_mass:.4f} [u], P = {P:.2f} [Pa])"
+        elif c == 'rot':
+            l += f" (symmetry no. = {sigma})"
+        lines.append(l)
+    for tag in ['Total', 'Correction']:
+        val = float(therminfo.get('S_tot', 0.0))
+        lines.append(fmt_scv.format(f"  {tag} S", val * _hartree2kcalmol, val * _hartree2kJmol, val))
+
+    # ---- Cv, Cp ----
+    for (title, prefix) in [('Constant volume heat capacity, Cv', 'Cv'),
+                             ('Constant pressure heat capacity, Cp', 'Cp')]:
+        lines.append(f"\n\n  {title}")
+        for c in components:
+            val = get(prefix, c)
+            lines.append(fmt_scv.format(f"  {names[c]} {prefix}", val * _hartree2kcalmol, val * _hartree2kJmol, val))
+        for tag in ['Total', 'Correction']:
+            val = float(therminfo.get(f'{prefix}_tot', 0.0))
+            lines.append(fmt_scv.format(f"  {tag} {prefix}", val * _hartree2kcalmol, val * _hartree2kJmol, val))
+
+    # ---- Energy Analysis ----
+    lines.append("\n\n  ==> Thermochemistry Energy Analysis <==")
+
+    lines.append("\n\n  Raw electronic energy, E_e")
+    lines.append(f"  {'Total E_e, Electronic energy at well bottom':80} {E0:>15.8f} [Eh]")
+
+    # ---- ZPVE ----
+    lines.append("\n\n  Zero-point vibrational energy, ZPVE = Sum_i omega_i / 2,  E_0 = E_e + ZPVE")
+    zv = get('ZPE', 'vib')
+    lines.append(fmt_ehg.format("  Vibrational ZPVE", zv * _hartree2kcalmol, zv * _hartree2kJmol, zv) + f"  {zv * _hartree2wavenumbers:15.3f} [cm^-1]")
+    zc = float(therminfo.get('ZPE_corr', 0.0))
+    lines.append(fmt_ehg.format("  Correction ZPVE to E_e", zc * _hartree2kcalmol, zc * _hartree2kJmol, zc) + f"  {zc * _hartree2wavenumbers:15.3f} [cm^-1]")
+    ztot = float(therminfo.get('ZPE_tot', 0.0))
+    lines.append(f"  {'Total E_0, Enthalpy at 0 [K]':80} {ztot:>15.8f} [Eh]")
+    lines.append("  *** Absolute enthalpy, not an enthalpy of formation ***")
+
+    # ---- E, H, G ----
+    for (title, prefix, label) in [
+        ('Thermal (internal) energy, E (includes ZPVE and finite-temperature corrections)', 'E', 'E'),
+        ('Enthalpy, H_trans = E_trans + k_B * T = E_trans + P * V', 'H', 'H'),
+        ('Gibbs free energy, G = H - T * S', 'G', 'G')]:
+        lines.append(f"\n\n  {title}")
+        for c in components:
+            val = get(prefix, c)
+            lbl = f"  {names[c]} {'contrib to ' + label + ' beyond E_e' if c == 'elec' else 'contrib to ' + label}"
+            lines.append(fmt_ehg.format(lbl, val * _hartree2kcalmol, val * _hartree2kJmol, val))
+        cval = float(therminfo.get(f'{prefix}_corr', 0.0))
+        lines.append(fmt_ehg.format(f"  Correction {label}", cval * _hartree2kcalmol, cval * _hartree2kJmol, cval))
+        tval = float(therminfo.get(f'{prefix}_tot', 0.0))
+        lines.append(f"  {'Total ' + label + f', at {T:7.2f} [K]':60} {tval:>15.8f} [Eh]")
+        if prefix == 'H':
+            lines.append("  *** Absolute enthalpy, not an enthalpy of formation ***")
+
+    lines.append("")  # trailing newline
+    return '\n'.join(lines)

@@ -30,6 +30,7 @@ from pyhessref.vib import (
     _vec_in_space,
     print_vibs,
     print_molden_vibs,
+    print_thermo,
     _format_omega,
 )
 
@@ -799,3 +800,39 @@ class TestPrintVisual(unittest.TestCase):
                           normco='x', shortlong=True, groupby=3)
         print('\n========== CH3CHO print_vibs (short, x, first rows) ==========')
         print(text)
+
+
+# ============================================================================
+#  Visual thermochemistry print tests (no value assertions)
+# ============================================================================
+
+class TestPrintThermoVisual(unittest.TestCase):
+    """Print thermochemistry tables for visual inspection (mirrors rust)."""
+
+    def test_print_thermo_nh3(self):
+        mass_center = (mass[:, None] * geom).sum(axis=0) / mass.sum()
+        geom_c = geom - mass_center
+        rc_cm = rotation_const(mass, geom_c, 'wavenumber')
+        rc_ghz = rotation_const(mass, geom_c, 'GHz')
+        rotor = _get_rotor_type(rc_ghz)
+        th = thermo(vibinfo, T=298.15, P=101325.0, multiplicity=1,
+                    molecular_mass=mass.sum(), E0=-56.0, sigma=3,
+                    rot_const=rc_cm, rotor_type=rotor)
+        text = print_thermo(th, multiplicity=1, molecular_mass=mass.sum())
+        self.assertIn('Entropy, S', text)
+        self.assertIn('Thermochemistry Components', text)
+        self.assertIn('Total E_e', text)
+
+    def test_print_thermo_acetaldehyde(self):
+        _, mass_et, geom_et, hess_flat_et, vibinfo_et = _et_setup()
+        mass_center = (mass_et[:, None] * geom_et).sum(axis=0) / mass_et.sum()
+        geom_c = geom_et - mass_center
+        rc_cm = rotation_const(mass_et, geom_c, 'wavenumber')
+        rc_ghz = rotation_const(mass_et, geom_c, 'GHz')
+        rotor = _get_rotor_type(rc_ghz)
+        th = thermo(vibinfo_et, T=298.15, P=101325.0, multiplicity=1,
+                    molecular_mass=mass_et.sum(), E0=-153.0, sigma=1,
+                    rot_const=rc_cm, rotor_type=rotor)
+        text = print_thermo(th, multiplicity=1, molecular_mass=mass_et.sum())
+        self.assertIn('Entropy, S', text)
+        self.assertIn('Total G', text)

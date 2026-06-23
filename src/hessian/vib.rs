@@ -23,6 +23,8 @@ const H: f64 = 6.62607004e-34;
 const KB: f64 = 1.38064852e-23;
 const R_GAS: f64 = 8.3144598;
 const HARTREE2KJMOL: f64 = 2625.4996382852164;
+const HARTREE2KCALMOL: f64 = 627.5094737775374;
+const HARTREE2WAVENUMBERS: f64 = 219474.6313702;
 const AMU2KG: f64 = 1.66053904e-27;
 
 /// Tolerance for detecting nearly-linear geometries in `get_tr_space`.
@@ -544,7 +546,9 @@ impl RotorType {
 pub struct ThermoInfo {
     // conditions
     pub e0: f64,
-    pub b: Vec<f64>, // rotational constants [cm⁻¹]
+    pub b: [f64; 3],          // rotational constants [cm⁻¹]
+    pub b_ghz: [f64; 3],      // rotational constants [GHz]
+    pub rotor_type: String,    // "ATOM" / "LINEAR" / "REGULAR"
     pub sigma: i64,
     pub t: f64,
     pub p: f64,
@@ -710,9 +714,18 @@ pub fn thermo(
     let h_tot = e0 + h_corr;
     let g_tot = e0 + g_corr;
 
+    let b_ghz = [rot_const[0] * 29.9792458, rot_const[1] * 29.9792458, rot_const[2] * 29.9792458];
+    let rotor_str = match rotor_type {
+        RotorType::Atom => "ATOM",
+        RotorType::Linear => "LINEAR",
+        RotorType::Regular => "REGULAR",
+    };
+
     ThermoInfo {
         e0,
-        b: rot_const.to_vec(),
+        b: [rot_const[0], rot_const[1], rot_const[2]],
+        b_ghz,
+        rotor_type: rotor_str.to_string(),
         sigma,
         t,
         p,
@@ -931,6 +944,168 @@ pub fn print_vibs(
             }
         }
     }
+
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// Thermochemistry pretty-printer (port of Psi4 thermo display)
+// ---------------------------------------------------------------------------
+
+/// Pretty-print thermochemistry results. Rust port of Psi4's `thermo` display
+/// section. Uses the same three-column layout (cal/(mol K) / J/(mol K) / mEh/K
+/// for S/Cv/Cp; kcal/mol / kJ/mol / Eh for E/H/G/ZPE).
+///
+/// Not required to be byte-identical to Psi4, but sufficiently similar.
+pub fn print_thermo(th: &ThermoInfo, multiplicity: i64, molecular_mass: f64) -> String {
+    let t = th.t;
+    let p = th.p;
+    let sigma = th.sigma;
+    let e0 = th.e0;
+
+    // helper: format S/Cv/Cp row
+    let fmt_scv = |label: &str, val_mEhK: f64| -> String {
+        format!(
+            "  {:<36}{:11.3} [cal/(mol K)]  {:11.3} [J/(mol K)]  {:15.8} [mEh/K]",
+            label,
+            val_mEhK * HARTREE2KCALMOL,
+            val_mEhK * HARTREE2KJMOL,
+            val_mEhK,
+        )
+    };
+    // helper: format E/H/G/ZPE row
+    let fmt_ehg = |label: &str, val_Eh: f64| -> String {
+        format!(
+            "  {:<36}{:11.3} [kcal/mol]  {:11.3} [kJ/mol]  {:15.8} [Eh]",
+            label,
+            val_Eh * HARTREE2KCALMOL,
+            val_Eh * HARTREE2KJMOL,
+            val_Eh,
+        )
+    };
+
+    let component_names = ["Electronic", "Translational", "Rotational", "Vibrational"];
+
+    let mut lines: Vec<String> = Vec::new();
+
+    // ---- header ----
+    lines.push("\n  ==> Thermochemistry Components <==".to_string());
+
+    // ---- rotational constants ----
+    lines.push(format!(
+        "\n  Rotational constants  {:11.6}  {:11.6}  {:11.6} [cm^-1]",
+        th.b[0], th.b[1], th.b[2],
+    ));
+    lines.push(format!(
+        "                        {:11.4}  {:11.4}  {:11.4} [GHz]",
+        th.b_ghz[0], th.b_ghz[1], th.b_ghz[2],
+    ));
+    lines.push(format!("  Rotor type             {}", th.rotor_type));
+
+    // ---- Entropy S ----
+    lines.push("\n\n  Entropy, S".to_string());
+    for i in 0..4 {
+        let mut l = fmt_scv(&format!("  {} S", component_names[i]), th.s[i]);
+        match i {
+            ELEC => l.push_str(&format!(" (multiplicity = {})", multiplicity)),
+            TRANS => l.push_str(&format!(" (mol. weight = {:.4} [u], P = {:.2} [Pa])", molecular_mass, p)),
+            ROT => l.push_str(&format!(" (symmetry no. = {})", sigma)),
+            _ => {}
+        }
+        lines.push(l);
+    }
+    lines.push(fmt_scv("Total S", th.s_tot));
+    lines.push(fmt_scv("Correction S", th.s_tot));
+
+    // ---- Cv ----
+    lines.push("\n\n  Constant volume heat capacity, Cv".to_string());
+    for i in 0..4 {
+        lines.push(fmt_scv(&format!("  {} Cv", component_names[i]), th.cv[i]));
+    }
+    lines.push(fmt_scv("Total Cv", th.cv_tot));
+    lines.push(fmt_scv("Correction Cv", th.cv_tot));
+
+    // ---- Cp ----
+    lines.push("\n\n  Constant pressure heat capacity, Cp".to_string());
+    for i in 0..4 {
+        lines.push(fmt_scv(&format!("  {} Cp", component_names[i]), th.cp[i]));
+    }
+    lines.push(fmt_scv("Total Cp", th.cp_tot));
+    lines.push(fmt_scv("Correction Cp", th.cp_tot));
+
+    // ---- Energy Analysis ----
+    lines.push("\n\n  ==> Thermochemistry Energy Analysis <==".to_string());
+
+    // raw E_e
+    let raw_e_e_label = "  Total E_e, Electronic energy at well bottom";
+    lines.push("\n\n  Raw electronic energy, E_e".to_string());
+    lines.push(format!("{}  {:>15.8} [Eh]", rjust(raw_e_e_label, 85), e0));
+
+    // ---- ZPVE ----
+    lines.push("\n\n  Zero-point vibrational energy, ZPVE = Sum_i omega_i / 2,  E_0 = E_e + ZPVE".to_string());
+    {
+        let mut l = fmt_ehg("  Vibrational ZPVE", th.zpe[VIB]);
+        l.push_str(&format!(" {:15.3} [cm^-1]", th.zpe[VIB] * HARTREE2WAVENUMBERS));
+        lines.push(l);
+    }
+    {
+        let mut l = fmt_ehg("  Correction ZPVE to E_e", th.zpe_corr);
+        l.push_str(&format!(" {:15.3} [cm^-1]", th.zpe_corr * HARTREE2WAVENUMBERS));
+        lines.push(l);
+    }
+    let zpe_tot_label = "  Total E_0, Enthalpy at 0 [K]";
+    lines.push(format!("{}  {:>15.8} [Eh]", rjust(zpe_tot_label, 85), th.zpe_tot));
+    lines.push("  *** Absolute enthalpy, not an enthalpy of formation ***".to_string());
+
+    // ---- Thermal energy E ----
+    lines.push("\n\n  Thermal (internal) energy, E (includes ZPVE and finite-temperature corrections)"
+        .to_string());
+    for i in 0..4 {
+        let label = if i == ELEC {
+            format!("  {} contrib to E beyond E_e", component_names[i])
+        } else {
+            format!("  {} contrib to E", component_names[i])
+        };
+        lines.push(fmt_ehg(&label, th.e[i]));
+    }
+    lines.push(fmt_ehg("  Correction E", th.e_corr));
+    lines.push(format!(
+        "  Total E, Thermal (internal) energy at {:7.2} [K]{}  {:>15.8} [Eh]",
+        t, " ".repeat(47), th.e_tot
+    ));
+
+    // ---- Enthalpy H ----
+    lines.push("\n\n  Enthalpy, H_trans = E_trans + k_B * T = E_trans + P * V".to_string());
+    for i in 0..4 {
+        let label = if i == ELEC {
+            format!("  {} contrib to H beyond E_e", component_names[i])
+        } else {
+            format!("  {} contrib to H", component_names[i])
+        };
+        lines.push(fmt_ehg(&label, th.h[i]));
+    }
+    lines.push(fmt_ehg("  Correction H", th.h_corr));
+    lines.push(format!(
+        "  Total H, Enthalpy at {:7.2} [K]{}  {:>15.8} [Eh]",
+        t, " ".repeat(53), th.h_tot
+    ));
+    lines.push("  *** Absolute enthalpy, not an enthalpy of formation ***".to_string());
+
+    // ---- Gibbs G ----
+    lines.push("\n\n  Gibbs free energy, G = H - T * S".to_string());
+    for i in 0..4 {
+        let label = if i == ELEC {
+            format!("  {} contrib to G beyond E_e", component_names[i])
+        } else {
+            format!("  {} contrib to G", component_names[i])
+        };
+        lines.push(fmt_ehg(&label, th.g[i]));
+    }
+    lines.push(fmt_ehg("  Correction G", th.g_corr));
+    lines.push(format!(
+        "  Total G, Gibbs energy at {:7.2} [K]{}  {:>15.8} [Eh]\n",
+        t, " ".repeat(53), th.g_tot
+    ));
 
     lines.join("\n")
 }
