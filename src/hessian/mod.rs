@@ -14,6 +14,9 @@ pub mod ovlp;
 pub mod rscf;
 pub mod uscf;
 
+// vibrational analysis
+pub mod vib;
+
 #[allow(unused_imports)]
 pub mod prelude {
     use super::*;
