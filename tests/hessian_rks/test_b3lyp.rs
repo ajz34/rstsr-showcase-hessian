@@ -89,7 +89,7 @@ fn test_make_hess(hess_case_b3lyp: &CaseAmoniaRKS) {
     let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
     let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     // B3LYP scales the exchange contribution by 0.2
-    let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 0.2);
+    let mut rijk_obj = RHessRIJK::new_without_cderi(mol, aux, 1.0, 0.2);
 
     let ni = NIMatmul::new(mol, grid_coords, grid_weights);
     let xc_func_list = [(1.0, LibXCFunctional::from_identifier("HYB_GGA_XC_B3LYP", LibXCSpin::Unpolarized))];

@@ -61,7 +61,7 @@ fn test_make_hess(hess_case_svwn: &CaseAmoniaUKS) {
     let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
     let mut hcore_obj = UHessHcore::new(mol, &DeviceTsr::default());
     // 0.1*HF + SVWN, hybrid coefficient = 0.1
-    let mut rijk_obj = UHessRIJKNaive::new(mol, aux, 1.0, 0.1);
+    let mut rijk_obj = UHessRIJK::new_without_cderi(mol, aux, 1.0, 0.1);
 
     let ni = NIMatmul::new(mol, grid_coords, grid_weights);
     let xc_func_list = [

@@ -22,7 +22,7 @@ fn test_make_hess(hess_case_tpss0: &CaseAmoniaRKS) {
     let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
     let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     // TPSS0 scales the exchange contribution by 0.25
-    let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 0.25);
+    let mut rijk_obj = RHessRIJK::new_without_cderi(mol, aux, 1.0, 0.25);
 
     let ni = NIMatmul::new(mol, grid_coords, grid_weights);
     let xc_func_list = [(1.0, LibXCFunctional::from_identifier("HYB_MGGA_XC_TPSS0", LibXCSpin::Unpolarized))];

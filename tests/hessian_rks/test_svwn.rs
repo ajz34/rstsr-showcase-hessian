@@ -21,7 +21,7 @@ fn test_make_hess(hess_case_svwn: &CaseAmoniaRKS) {
     let mut nuc_repl_obj = HessNucRepl::new(mol, &DeviceTsr::default());
     let mut hcore_obj = RHessHcore::new(mol, &DeviceTsr::default());
     // SVWN is pure DFT, no exact exchange contribution
-    let mut rijk_obj = RHessRIJKNaive::new(mol, aux, 1.0, 0.0);
+    let mut rijk_obj = RHessRIJK::new_without_cderi(mol, aux, 1.0, 0.0);
 
     let ni = NIMatmul::new(mol, grid_coords, grid_weights);
     let xc_func_list = [
