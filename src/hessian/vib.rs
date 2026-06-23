@@ -47,6 +47,13 @@ fn uconv_cm1() -> f64 {
 /// # Returns
 /// `tr` : `[3*natm, nrt]` orthonormal basis (each column is a TR vector).
 pub fn get_tr_space(mass: TsrView, geom: TsrView, space: &str) -> Tsr {
+    _get_tr_space(mass, geom, space, None)
+}
+
+/// Internal helper with custom SVD tolerance.  When `tol` is `Some(t)`, that
+/// absolute value is used as the singular-value cutoff; when `None`, the default
+/// machine-epsilon-based tolerance (`ndof × max(s) × ε`) is used.
+fn _get_tr_space(mass: TsrView, geom: TsrView, space: &str, tol_user: Option<f64>) -> Tsr {
     let device = geom.device().clone();
     let natm = geom.shape()[1];
     let ndof = 3 * natm;
@@ -117,8 +124,13 @@ pub fn get_tr_space(mass: TsrView, geom: TsrView, space: &str) -> Tsr {
     // orthonormal basis for the column space via SVD: tr_raw = U S Vh, Q = U[:, :num]
     let (u, s, _vh): (Tsr, Tsr, Tsr) = rt::linalg::svd(tr_raw.view()).into();
     let svec = s.reshape(-1).to_vec();
-    let smax = svec.iter().copied().fold(0.0_f64, f64::max);
-    let tol = (ndof as f64) * smax * f64::EPSILON;
+    let tol = match tol_user {
+        Some(t) => t,
+        None => {
+            let smax = svec.iter().copied().fold(0.0_f64, f64::max);
+            (ndof as f64) * smax * f64::EPSILON
+        }
+    };
     let num = svec.iter().filter(|&&x| x > tol).count();
     u.i((.., ..num)).to_owned()
 }
@@ -336,7 +348,8 @@ pub fn harmonic_analysis(
 
     // --------------- translation / rotation projector ---------------
     let space = format!("{}{}", if project_trans { "T" } else { "" }, if project_rot { "R" } else { "" });
-    let tr_space = get_tr_space(mass.view(), geom.view(), &space); // [ndof, nrt]
+    // use LINEAR_A_TOL so nearly-linear geometries correctly drop to 5 TR dof
+    let tr_space = _get_tr_space(mass.view(), geom.view(), &space, Some(LINEAR_A_TOL)); // [ndof, nrt]
 
     // projector  P = I - Σ |tr⟩⟨tr|
     let nrt = tr_space.shape()[1];
