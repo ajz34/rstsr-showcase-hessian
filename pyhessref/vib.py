@@ -134,7 +134,7 @@ def _format_omega(omega, decimals):
 # Translation / rotation space
 # ---------------------------------------------------------------------------
 
-def _get_TR_space(mass, geom, space='TR', tol=None):
+def _get_TR_space(mass, geom, space='TR', tol=None, nrt=None):
     """Idealized translation + rotation basis vectors.
 
     Parameters
@@ -146,7 +146,12 @@ def _get_TR_space(mass, geom, space='TR', tol=None):
     space : str
         ``'T'``, ``'R'``, or ``'TR'``.
     tol : float or None
-        SVD tolerance for linear-dependence detection.
+        SVD tolerance for linear-dependence detection (ignored when *nrt*
+        is given).
+    nrt : int or None
+        If given, select the top-*nrt* singular vectors (rank is set by the
+        caller from rotor type, not by an SVD cutoff).  When *None*, the
+        rank is determined from *tol*.
 
     Returns
     -------
@@ -185,14 +190,17 @@ def _get_TR_space(mass, geom, space='TR', tol=None):
     TR = np.vstack(TRvecs)
 
     # orthogonalise via SVD
-    def _orth(A, tol=tol):
+    def _orth(A, tol=tol, nrt=nrt):
         u, s, vh = np.linalg.svd(A, full_matrices=False)
         M, N = A.shape
-        if tol is None:
+        if nrt is not None:
+            num = int(nrt)
+        elif tol is None:
             tol_eff = max(M, N) * np.amax(s) * np.finfo(float).eps
+            num = np.sum(s > tol_eff, dtype=int)
         else:
             tol_eff = tol
-        num = np.sum(s > tol_eff, dtype=int)
+            num = np.sum(s > tol_eff, dtype=int)
         return u[:, :num]
 
     TRindep = _orth(TR.T).T
@@ -307,18 +315,34 @@ def harmonic_analysis(hess, geom, mass, dipder=None,
 
     nmwhess = np.asarray(hess, dtype=np.float64).reshape(ndof, ndof)
 
-    # expected number of translation + rotation dof
-    if nat == 1:
-        nrt_expected = 3
-    elif np.linalg.matrix_rank(geom) == 1:
-        nrt_expected = 5
+    # --------------- rotor type → number of TR dof ---------------
+    # The TR count is determined physically from the rotor type (3 for an
+    # atom, 5 for a linear molecule, 6 otherwise), rather than by an SVD
+    # rank cutoff on the (numerically truncated) TR basis.  This mirrors
+    # PySCF's thermo.harmonic_analysis and makes the number of projected-out
+    # directions self-consistent with the TR/V classification below.
+    mass_center = (mass[:, None] * geom).sum(axis=0) / mass.sum()
+    geom_cm = geom - mass_center
+    rotor_type = _get_rotor_type(rotation_const(mass, geom_cm, 'GHz'))
+    if rotor_type == 'ATOM':
+        nrt = 0
+    elif rotor_type == 'LINEAR':
+        nrt = 5
     else:
-        nrt_expected = 6
+        nrt = 6
+    # translation is always 3 dof (independent of rotor type); rotations are
+    # 0 / 2 / 3 for ATOM / LINEAR / REGULAR.  When projection is disabled
+    # for one family, reduce nrt accordingly.
+    if not project_trans:
+        nrt = max(nrt - 3, 0)
+    if not project_rot:
+        nrt = nrt - (0 if rotor_type == 'ATOM' else
+                     (2 if rotor_type == 'LINEAR' else 3))
+        nrt = max(nrt, 0)
 
     # --------------- translation / rotation projector ---------------
     space = ('T' if project_trans else '') + ('R' if project_rot else '')
-    TRspace = _get_TR_space(mass, geom, space=space, tol=LINEAR_A_TOL)
-    nrt = TRspace.shape[0]
+    TRspace = _get_TR_space(mass, geom, space=space, nrt=nrt)
 
     # projector  P = I - Σ|tr⟩⟨tr|
     P = np.identity(ndof)
@@ -360,16 +384,24 @@ def harmonic_analysis(hess, geom, mass, dipder=None,
                                   return_inverse=True, return_counts=True)
     vibinfo['degeneracy'] = ucts[uinv]
 
-    # --------------- TR / V classification (no irrep) ---------------
+    # --------------- TR / V classification ---------------
+    # After projection P = I - Σ|tr⟩⟨tr|, the TR directions lie in null(P)
+    # and have machine-zero force constants (~1e-13), separated from every
+    # genuine vibrational eigenvalue (a 10 cm⁻¹ mode is already ~2e-9) by
+    # many orders of magnitude.  So the nrt modes with smallest
+    # |force_constant| are the TR modes; the rest are vibrations.  This is
+    # more robust than the per-mode SVD membership test (_vec_in_space) and
+    # its arbitrary 1e-4 tolerance.
+    fc_abs = np.abs(force_constant_au)
+    tr_indices = set(np.argsort(fc_abs)[:nrt].tolist())
     trv = []
-    for idx_vib, vib in enumerate(frequency_cm_1):
-        if _vec_in_space(qL[:, idx_vib], TRspace, 1.0e-4):
+    for i in range(ndof):
+        if i in tr_indices:
             trv.append('TR')
+        elif fc_abs[i] < 1.0e-3:
+            trv.append('-')
         else:
-            if np.linalg.norm(vib) < 1.e-3:
-                trv.append('-')
-            else:
-                trv.append('V')
+            trv.append('V')
     vibinfo['TRV'] = np.array(trv)
 
     # --------------- conversion factors ---------------

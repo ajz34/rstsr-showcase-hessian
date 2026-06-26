@@ -49,13 +49,14 @@ fn uconv_cm1() -> f64 {
 /// # Returns
 /// `tr` : `[3*natm, nrt]` orthonormal basis (each column is a TR vector).
 pub fn get_tr_space(mass: TsrView, geom: TsrView, space: &str) -> Tsr {
-    _get_tr_space(mass, geom, space, None)
+    _get_tr_space(mass, geom, space, None, None)
 }
 
-/// Internal helper with custom SVD tolerance.  When `tol` is `Some(t)`, that
-/// absolute value is used as the singular-value cutoff; when `None`, the default
-/// machine-epsilon-based tolerance (`ndof × max(s) × ε`) is used.
-fn _get_tr_space(mass: TsrView, geom: TsrView, space: &str, tol_user: Option<f64>) -> Tsr {
+/// Internal helper.  When `nrt_user` is `Some(k)`, the top-`k` singular
+/// vectors are selected (rank set by the caller from rotor type).  Otherwise
+/// `tol_user` (`Some(t)` absolute cutoff, or `None` for the default
+/// `ndof × max(s) × ε` tolerance) determines the rank.
+fn _get_tr_space(mass: TsrView, geom: TsrView, space: &str, tol_user: Option<f64>, nrt_user: Option<usize>) -> Tsr {
     let device = geom.device().clone();
     let natm = geom.shape()[1];
     let ndof = 3 * natm;
@@ -126,14 +127,19 @@ fn _get_tr_space(mass: TsrView, geom: TsrView, space: &str, tol_user: Option<f64
     // orthonormal basis for the column space via SVD: tr_raw = U S Vh, Q = U[:, :num]
     let (u, s, _vh): (Tsr, Tsr, Tsr) = rt::linalg::svd(tr_raw.view()).into();
     let svec = s.reshape(-1).to_vec();
-    let tol = match tol_user {
-        Some(t) => t,
+    let num = match nrt_user {
+        Some(k) => k,
         None => {
-            let smax = svec.iter().copied().fold(0.0_f64, f64::max);
-            (ndof as f64) * smax * f64::EPSILON
+            let tol = match tol_user {
+                Some(t) => t,
+                None => {
+                    let smax = svec.iter().copied().fold(0.0_f64, f64::max);
+                    (ndof as f64) * smax * f64::EPSILON
+                },
+            };
+            svec.iter().filter(|&&x| x > tol).count()
         },
     };
-    let num = svec.iter().filter(|&&x| x > tol).count();
     u.i((.., ..num)).to_owned()
 }
 
@@ -315,24 +321,6 @@ fn phase_cols_to_max_element(q: TsrView, tol: f64) -> Tsr {
     out
 }
 
-/// Check whether vector `vec` (length `n`) lies in the subspace spanned by the
-/// columns of `space` (`[n, nrt]`), via SVD: `vec` is in the space iff stacking
-/// it as an extra column does not increase the rank.
-fn vec_in_space(vec: &[f64], space: TsrView, tol: f64) -> bool {
-    let device = space.device().clone();
-    let nrt = space.shape()[1];
-    let vec_t = rt::asarray((vec.to_vec(), &device)); // [n]
-    let mut cols: Vec<Tsr> = Vec::with_capacity(nrt + 1);
-    for c in 0..nrt {
-        cols.push(space.i((.., c)).to_owned()); // [n]
-    }
-    cols.push(vec_t);
-    let merged: Tsr = rt::stack((cols, -1)); // [n, nrt+1]
-    let (_u, s, _vh): (Tsr, Tsr, Tsr) = rt::linalg::svd(merged.view()).into();
-    let svec = s.reshape(-1).to_vec();
-    svec.last().copied().unwrap_or(0.0) < tol
-}
-
 // ---------------------------------------------------------------------------
 // harmonic_analysis
 // ---------------------------------------------------------------------------
@@ -364,10 +352,41 @@ pub fn harmonic_analysis(
 
     let nmwhess = hess.into_contig(ColMajor);
 
+    // --------------- rotor type → number of TR dof ---------------
+    // The TR count is determined physically from the rotor type (3 for an
+    // atom, 5 for a linear molecule, 6 otherwise), rather than by an SVD
+    // rank cutoff on the (numerically truncated) TR basis.  This mirrors
+    // PySCF's thermo.harmonic_analysis and makes the number of projected-out
+    // directions self-consistent with the TR/V classification below.
+    let geom_cm = {
+        let mass_sum: f64 = mass.reshape(-1).to_vec().iter().sum();
+        // mc = Σ m_a r_a / Σ m_a  -> [3]; reshape to [3, 1] to broadcast over natm
+        let mc = (geom.view() * mass.i((None, ..))).sum_axes(1) / mass_sum; // [3]
+        geom.view() - mc.i((.., None)) // [3, natm]
+    };
+    let rc_ghz = rotation_const(mass.view(), geom_cm.view(), "GHz");
+    let rotor_type = get_rotor_type(rc_ghz.view());
+    let mut nrt = match rotor_type {
+        "ATOM" => 0,
+        "LINEAR" => 5,
+        _ => 6,
+    };
+    // translation is always 3 dof; rotations are 0/2/3 for ATOM/LINEAR/REGULAR.
+    if !project_trans {
+        nrt = (nrt - 3).max(0);
+    }
+    if !project_rot {
+        let nrot = match rotor_type {
+            "ATOM" => 0,
+            "LINEAR" => 2,
+            _ => 3,
+        };
+        nrt = (nrt - nrot).max(0);
+    }
+
     // --------------- translation / rotation projector ---------------
     let space = format!("{}{}", if project_trans { "T" } else { "" }, if project_rot { "R" } else { "" });
-    // use LINEAR_A_TOL so nearly-linear geometries correctly drop to 5 TR dof
-    let tr_space = _get_tr_space(mass.view(), geom.view(), &space, Some(LINEAR_A_TOL)); // [ndof, nrt]
+    let tr_space = _get_tr_space(mass.view(), geom.view(), &space, None, Some(nrt)); // [ndof, nrt]
 
     // projector  P = I - Σ |tr⟩⟨tr|
     let nrt = tr_space.shape()[1];
@@ -463,13 +482,24 @@ pub fn harmonic_analysis(
     }
 
     // --------------- TR / V classification ---------------
-    // vec_in_space(qL[:, i], tr_space rows)
+    // After projection P = I - Σ|tr⟩⟨tr|, the TR directions lie in null(P)
+    // and have machine-zero force constants (~1e-13), separated from every
+    // genuine vibrational eigenvalue (a 10 cm⁻¹ mode is already ~2e-9) by
+    // many orders of magnitude.  So the nrt modes with smallest
+    // |force_constant| are the TR modes; the rest are vibrations.  This is
+    // more robust than the per-mode SVD membership test (vec_in_space) and
+    // its arbitrary 1e-4 tolerance.
+    let mut order_by_fc: Vec<usize> = (0..ndof).collect();
+    order_by_fc.sort_by(|&a, &b| fc_sorted[a].abs().partial_cmp(&fc_sorted[b].abs()).unwrap());
+    let mut is_tr = vec![false; ndof];
+    for &i in order_by_fc.iter().take(nrt) {
+        is_tr[i] = true;
+    }
     let mut trv: Vec<&'static str> = Vec::with_capacity(ndof);
     for i in 0..ndof {
-        let qcol: Vec<f64> = (0..ndof).map(|r| qL[[r, i]]).collect();
-        if vec_in_space(&qcol, tr_space.view(), 1.0e-4) {
+        if is_tr[i] {
             trv.push("TR");
-        } else if omega_real[i].abs() < 1.0e-3 {
+        } else if fc_sorted[i].abs() < 1.0e-3 {
             trv.push("-");
         } else {
             trv.push("V");
@@ -911,17 +941,18 @@ pub fn print_vibs(
 
         // Irrep — skip (no irrep/symmetry in our implementation)
         // scalar property rows — centered, colsp trailing
-        let labels: [&str; 5] =
-            ["Reduced mass [u]", "Force const [mDyne/A]", "Turning point v=0 [a0]", "RMS dev v=0 [a0 u^1/2]", "Char temp [K]"];
+        let labels: [&str; 5] = [
+            "Reduced mass [u]",
+            "Force const [mDyne/A]",
+            "Turning point v=0 [a0]",
+            "RMS dev v=0 [a0 u^1/2]",
+            "Char temp [K]",
+        ];
         let val_slices: [&[f64]; 5] = [&vib.mu, &vib.k, &vib.xtp0, &vib.dq0, &vib.theta_vib];
         for (label, vals) in labels.iter().zip(val_slices.iter()) {
             let mut l = format!("{}{}", " ".repeat(presp), ljust(label, prewidth));
             for &vib in &row {
-                l.push_str(&format!(
-                    "{}{}",
-                    center(&format!("{:.*}", prec, vals[vib]), width),
-                    " ".repeat(colsp)
-                ));
+                l.push_str(&format!("{}{}", center(&format!("{:.*}", prec, vals[vib]), width), " ".repeat(colsp)));
             }
             lines.push(l);
         }
@@ -952,20 +983,11 @@ pub fn print_vibs(
                 let lbl = if at < atom_lbl.len() { atom_lbl[at] } else { "" };
                 for xyz in 0..3 {
                     let axis = ['X', 'Y', 'Z'][xyz];
-                    let mut l = format!(
-                        "{}{:5}    {}    {}",
-                        " ".repeat(presp),
-                        at + 1,
-                        axis,
-                        ljust(lbl, prewidth - 14)
-                    );
+                    let mut l =
+                        format!("{}{:5}    {}    {}", " ".repeat(presp), at + 1, axis, ljust(lbl, prewidth - 14));
                     for &vib in &row {
                         let v = normco_t[[3 * at + xyz, vib]];
-                        l.push_str(&format!(
-                            "{}{}",
-                            center(&format!("{:.*}", ncprec, v), width),
-                            " ".repeat(colsp)
-                        ));
+                        l.push_str(&format!("{}{}", center(&format!("{:.*}", ncprec, v), width), " ".repeat(colsp)));
                     }
                     lines.push(l);
                 }
