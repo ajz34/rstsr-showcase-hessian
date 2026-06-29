@@ -373,7 +373,7 @@ pub fn harmonic_analysis(
     };
     // translation is always 3 dof; rotations are 0/2/3 for ATOM/LINEAR/REGULAR.
     if !project_trans {
-        nrt = (nrt - 3).max(0);
+        nrt = nrt.max(3) - 3;
     }
     if !project_rot {
         let nrot = match rotor_type {
@@ -381,7 +381,7 @@ pub fn harmonic_analysis(
             "LINEAR" => 2,
             _ => 3,
         };
-        nrt = (nrt - nrot).max(0);
+        nrt = nrt.max(nrot) - nrot;
     }
 
     // --------------- translation / rotation projector ---------------
