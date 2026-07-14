@@ -11,21 +11,34 @@ use libcint::gto::deriv_util::FpSimd;
 use rayon::prelude::*;
 
 const SIMDD: usize = 8;
+const INVTOL: f64 = 1e-14;
 
 const SIMD_0: f64simd = f64simd::splat(0.0);
-const SIMD_1_0: f64simd = f64simd::splat(1.0);
 const SIMD_0_5: f64simd = f64simd::splat(0.5);
+const SIMD_1_0: f64simd = f64simd::splat(1.0);
 const SIMD_1_5: f64simd = f64simd::splat(1.5);
+const SIMD_2_0: f64simd = f64simd::splat(2.0);
 
 #[allow(non_camel_case_types)]
 type f64simd = FpSimd<f64, SIMDD>;
+
+/// Output of Becke partitioning function.
+///
+/// - `w`: Partition weights for each grid point. Length `ngrids`.
+/// - `dw`: Optional derivative of partition weights for each grid point. Shape `(ngrids, 3, natm)`
+///   in column-major. We do not provide shape information here, since it can be derived from length
+///   of variable `w`.
+pub struct BeckePartitionOutput {
+    pub w: Vec<f64>,
+    pub dw: Option<Vec<f64>>,
+}
 
 /// Becke partitioning implementation for DFT numerical integration.
 ///
 /// # Arguments
 ///
 /// - `grid_coords`: A slice of 3D coordinates representing the grid points. Length `ngrids`.
-/// - `atom_coords`: A slice of 3D coordinates representing the atomic positions. Length `natm`.
+/// - `atm_coords`: A slice of 3D coordinates representing the atomic positions. Length `natm`.
 /// - `atm_indices`: A slice of indices mapping each grid point to its corresponding atom (that
 ///   generates the Lebedev angular grids). Length `ngrids`. Usually values should not exceed `natm
 ///   - 1`, but will treat as padding atom if exceeds.
@@ -38,12 +51,14 @@ type f64simd = FpSimd<f64, SIMDD>;
 /// - `hardness`: Cutoff hardness of screen function. cf Becke 1988 eq (20) and FIG 1. Most commonly
 ///   used value is 3, and we have manually dispatched the case of 3 in code implementation.
 /// - `nbatch`: Batch size for parallel processing. Must be a multiple of `SIMDD` (8 for AVX-512).
+/// - `deriv`: Derivative order.
 ///
 /// # Reference
 ///
 /// A multicenter numerical integration scheme for polyatomic molecules
 /// A. D. Becke
 /// J. Chem. Phys. 88, 2547 (1988), doi: 10.1063/1.454033
+#[allow(clippy::too_many_arguments)]
 pub fn becke_partition(
     grid_coords: &[[f64; 3]],
     atm_coords: &[[f64; 3]],
@@ -52,7 +67,8 @@ pub fn becke_partition(
     adjustment_factor: &[f64],
     hardness: usize,
     nbatch: usize,
-) -> Vec<f64> {
+    deriv: usize,
+) -> BeckePartitionOutput {
     // dimensions
     let ngrids = grid_coords.len();
     let natm = atm_coords.len();
@@ -63,9 +79,9 @@ pub fn becke_partition(
 
     let adjustment_factor = adjustment_factor.chunks_exact(natm).collect_vec();
 
-    // generate atom_dist before iteration to grid coordinates
+    // generate atm_dist before iteration to grid coordinates
     // since it is not bottleneck, we duplicate the calculation for A > B.
-    let atom_dist: Vec<f64> = (0..natm * natm)
+    let atm_dist: Vec<f64> = (0..natm * natm)
         .into_par_iter()
         .map(|idx| {
             let (A, B) = (idx / natm, idx % natm);
@@ -76,10 +92,23 @@ pub fn becke_partition(
             }
         })
         .collect();
-    let atom_dist = atom_dist.chunks_exact(natm).collect_vec();
+    let atm_dist = atm_dist.chunks_exact(natm).collect_vec();
+
+    // compute derivative of atm_dist if deriv > 0
+    let dR_atm_dist: Option<Vec<[f64; 3]>> = (deriv > 0).then(|| {
+        (0..natm * natm)
+            .into_par_iter()
+            .map(|idx| {
+                let (A, B) = (idx / natm, idx % natm);
+                (0..3).map(|t| (atm_coords[A][t] - atm_coords[B][t]) / atm_dist[A][B]).collect_array().unwrap()
+            })
+            .collect()
+    });
+    let dR_atm_dist = dR_atm_dist.as_ref().map(|v| v.chunks_exact(natm).collect_vec());
 
     // prepare output buffer for partition weights
     let weights = vec![0.0; ngrids];
+    let dweights = (deriv > 0).then(|| vec![0.0; natm * 3 * ngrids]);
 
     // par-iter over grid coordinates in batches
     let ntasks = ngrids.div_ceil(nbatch);
@@ -89,40 +118,46 @@ pub fn becke_partition(
         let nlane = (g1 - g0).div_ceil(SIMDD);
 
         // batched vectors preparation
-        let mut coords = vec![[SIMD_0; 3]; nlane];
-        let mut wquad = vec![SIMD_0; nlane];
-        let mut atm_idx = vec![[0; SIMDD]; nlane];
+        let mut coords_lanes = vec![[SIMD_0; 3]; nlane];
+        let mut wquad_lanes = vec![SIMD_0; nlane];
+        let mut atm_idx_lanes = vec![[0; SIMDD]; nlane];
         for lane in 0..nlane {
             let glane = g0 + lane * SIMDD;
             for g in 0..SIMDD {
                 if glane + g < g1 {
                     for t in 0..3 {
-                        coords[lane][t][g] = grid_coords[glane + g][t];
+                        coords_lanes[lane][t][g] = grid_coords[glane + g][t];
                     }
-                    wquad[lane][g] = quadrature_weights[glane + g];
-                    atm_idx[lane][g] = atm_indices[glane + g];
+                    wquad_lanes[lane][g] = quadrature_weights[glane + g];
+                    atm_idx_lanes[lane][g] = atm_indices[glane + g];
                 } else {
                     // padding atom index set to natm (out of range)
-                    atm_idx[lane][g] = natm;
+                    atm_idx_lanes[lane][g] = natm;
                 }
             }
         }
 
         for lane in 0..nlane {
-            // partition output for this batch
+            let coords = coords_lanes[lane];
+            let wquad = wquad_lanes[lane];
+            let atm_idx = atm_idx_lanes[lane];
+
+            // --- deriv 0 --- //
+
+            // partition output
             let mut P = vec![SIMD_1_0; natm];
 
-            // evaluate grid distance to atom for this lane
+            // evaluate grid distance to atom
             let mut dist = vec![SIMD_0; natm];
             for A in 0..natm {
-                dist[A] = dist3_hybrid(&coords[lane], &atm_coords[A]);
+                dist[A] = dist3_hybrid(&coords, &atm_coords[A]);
             }
 
-            // 1st pass: evaluate Becke partition function
+            // 1st pass of switch function (without derivative)
             for A in 0..natm {
                 for B in 0..A {
                     let a_factor = adjustment_factor[B][A]; // column-major order
-                    let mu = (dist[A] - dist[B]) / f64simd::splat(atom_dist[A][B]);
+                    let mu = (dist[A] - dist[B]) / atm_dist[A][B];
                     let f3 = match hardness {
                         3 => switch_f3(mu, a_factor),
                         _ => switch_f_hardness(mu, a_factor, hardness),
@@ -137,11 +172,11 @@ pub fn becke_partition(
             let mut Z = SIMD_0;
             for A in 0..natm {
                 Z += P[A];
-                let mask = atm_idx[lane].map(|a| a == A);
+                let mask = atm_idx.map(|a| a == A);
                 Pg = P[A].mask_select(mask, Pg);
             }
             let partition = Pg / Z;
-            let w = wquad[lane] * partition;
+            let w = wquad * partition;
 
             // write back to output buffer
             let g_start = g0 + lane * SIMDD;
@@ -150,10 +185,110 @@ pub fn becke_partition(
             for g in 0..(g_end - g_start) {
                 weights[g] = w[g];
             }
+
+            // --- deriv 1 --- //
+
+            if deriv >= 1 {
+                let dR_atm_dist = dR_atm_dist.as_ref().unwrap();
+
+                // partition output
+                let mut dR_Z = vec![[SIMD_0; 3]; natm];
+                let mut dR_Pg = vec![[SIMD_0; 3]; natm];
+
+                // evaluate derivative of grid distance to atom
+                let mut dR_dist = vec![[SIMD_0; 3]; natm];
+                for A in 0..natm {
+                    for t in 0..3 {
+                        dR_dist[A][t] = (-coords[t] + atm_coords[A][t]) / dist[A];
+                    }
+                }
+
+                // 2nd pass of switch function (with 1st derivative)
+                // variable `P` is required to be generated in the 1st pass
+                // so two passes cannot merge for first derivative
+                for A in 0..natm {
+                    for B in 0..A {
+                        let a_factor = adjustment_factor[B][A]; // column-major order
+                        let inv_atm_dist_AB = 1.0 / atm_dist[A][B];
+                        let mu = (dist[A] - dist[B]) * inv_atm_dist_AB;
+                        let (f3, df3) = match hardness {
+                            3 => switch_dnu_f3(mu, a_factor),
+                            _ => switch_dnu_f_hardness(mu, a_factor, hardness),
+                        };
+                        let sA = SIMD_0_5 * (SIMD_1_0 - f3);
+                        let sB = SIMD_0_5 * (SIMD_1_0 + f3);
+                        let dmu_nu = SIMD_1_0 - SIMD_2_0 * mu * a_factor;
+                        let dmu_sA = -SIMD_0_5 * df3 * dmu_nu;
+                        let dmu_sB = SIMD_0_5 * df3 * dmu_nu;
+                        let sA_safe = sA.max_compare(INVTOL);
+                        let sB_safe = sB.max_compare(INVTOL);
+                        let dmu_log_sA = dmu_sA / sA_safe;
+                        let dmu_log_sB = dmu_sB / sB_safe;
+
+                        let common_Z = P[A] * dmu_log_sA + P[B] * dmu_log_sB;
+                        let maskA = atm_idx.map(|a| a == A);
+                        let maskB = atm_idx.map(|a| a == B);
+                        let common_Pg = (P[A] * dmu_log_sA).mask_select(maskA, SIMD_0)
+                            + (P[B] * dmu_log_sB).mask_select(maskB, SIMD_0);
+
+                        let mut dR_mu_roleA = [SIMD_0; 3];
+                        let mut dR_mu_roleB = [SIMD_0; 3];
+                        let dR_atm_dist_AB = dR_atm_dist[A][B];
+                        for t in 0..3 {
+                            dR_mu_roleA[t] = (dR_dist[A][t] - mu * dR_atm_dist_AB[t]) * inv_atm_dist_AB;
+                            dR_mu_roleB[t] = (-dR_dist[B][t] + mu * dR_atm_dist_AB[t]) * inv_atm_dist_AB;
+                            dR_Z[A][t] += common_Z * dR_mu_roleA[t];
+                            dR_Z[B][t] += common_Z * dR_mu_roleB[t];
+                            dR_Pg[A][t] += common_Pg * dR_mu_roleA[t];
+                            dR_Pg[B][t] += common_Pg * dR_mu_roleB[t];
+                        }
+                    }
+                }
+
+                // fill derivatives
+                let mut dw = vec![[SIMD_0; 3]; natm];
+                let inv_Z = SIMD_1_0 / Z;
+                for A in 0..natm {
+                    for t in 0..3 {
+                        dw[A][t] = wquad * inv_Z * (dR_Pg[A][t] - Pg * inv_Z * dR_Z[A][t]);
+                    }
+                }
+
+                // apply translation invariance
+                let mut dw_g = [SIMD_0; 3];
+                let mut dw_neg_sum = [SIMD_0; 3];
+                for A in 0..natm {
+                    let mask = atm_idx.map(|a| a == A);
+                    for t in 0..3 {
+                        dw_neg_sum[t] -= dw[A][t];
+                        dw_g[t] = dw[A][t].mask_select(mask, dw_g[t]);
+                    }
+                }
+                for g in 0..SIMDD {
+                    let atm_g = atm_idx[g];
+                    if atm_g < natm {
+                        for t in 0..3 {
+                            dw[atm_g][t][g] = dw_neg_sum[t][g] + dw_g[t][g];
+                        }
+                    }
+                }
+
+                // write back to output buffer
+                let g_start = g0 + lane * SIMDD;
+                let g_end = (g_start + SIMDD).min(g1);
+                let dweights = unsafe { cast_mut_slice(dweights.as_ref().unwrap()) };
+                for A in 0..natm {
+                    for t in 0..3 {
+                        for g in 0..(g_end - g_start) {
+                            dweights[A * 3 * ngrids + t * ngrids + g_start + g] = dw[A][t][g];
+                        }
+                    }
+                }
+            }
         }
     });
 
-    weights
+    BeckePartitionOutput { w: weights, dw: dweights }
 }
 
 /* #region simple utilities */
@@ -166,9 +301,9 @@ fn dist3_naive(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 }
 
 fn dist3_hybrid(a: &[f64simd; 3], b: &[f64; 3]) -> f64simd {
-    let dx = a[0] - f64simd::splat(b[0]);
-    let dy = a[1] - f64simd::splat(b[1]);
-    let dz = a[2] - f64simd::splat(b[2]);
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
     (dx * dx + dy * dy + dz * dz).map(f64::sqrt)
 }
 
@@ -177,8 +312,7 @@ fn dist3_hybrid(a: &[f64simd; 3], b: &[f64; 3]) -> f64simd {
 /* #region switch function utilities */
 
 fn switch_f3(mu: f64simd, a_factor: f64) -> f64simd {
-    let a_factor = f64simd::splat(a_factor);
-    let nu = mu + a_factor * (SIMD_1_0 - mu * mu); // eq (A2)
+    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
     let f1 = (SIMD_1_5 - SIMD_0_5 * nu * nu) * nu; // eq (19)
     let f2 = (SIMD_1_5 - SIMD_0_5 * f1 * f1) * f1; // eq (19)
     let f3 = (SIMD_1_5 - SIMD_0_5 * f2 * f2) * f2; // eq (19)
@@ -186,8 +320,7 @@ fn switch_f3(mu: f64simd, a_factor: f64) -> f64simd {
 }
 
 fn switch_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> f64simd {
-    let a_factor = f64simd::splat(a_factor);
-    let nu = mu + a_factor * (SIMD_1_0 - mu * mu); // eq (A2)
+    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
     let mut f = nu;
     for _ in 0..hardness {
         f = (SIMD_1_5 - SIMD_0_5 * f * f) * f; // eq (19)
@@ -195,15 +328,41 @@ fn switch_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> f64simd {
     f
 }
 
+fn switch_dnu_f3(mu: f64simd, a_factor: f64) -> (f64simd, f64simd) {
+    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
+    let f1 = (SIMD_1_5 - SIMD_0_5 * nu * nu) * nu; // eq (19)
+    let f2 = (SIMD_1_5 - SIMD_0_5 * f1 * f1) * f1; // eq (19)
+    let f3 = (SIMD_1_5 - SIMD_0_5 * f2 * f2) * f2; // eq (19)
+
+    let df1 = SIMD_1_5 * (SIMD_1_0 - nu * nu);
+    let df2 = SIMD_1_5 * (SIMD_1_0 - f1 * f1) * df1;
+    let df3 = SIMD_1_5 * (SIMD_1_0 - f2 * f2) * df2;
+    (f3, df3)
+}
+
+fn switch_dnu_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> (f64simd, f64simd) {
+    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
+    let mut f = nu;
+    let mut df = SIMD_1_0;
+    for _ in 0..hardness {
+        df = SIMD_1_5 * (SIMD_1_0 - f * f) * df;
+        f = (SIMD_1_5 - SIMD_0_5 * f * f) * f; // eq (19)
+    }
+    (f, df)
+}
+
 /* #endregion */
 
 /* #region enhancement to FpSimd */
 
-trait FpSimdMaskAPI {
+trait FpSimdEnhanceAPI<T> {
     fn mask_select(self, mask: [bool; SIMDD], other: Self) -> Self;
+    fn max_compare(self, val: T) -> Self
+    where
+        T: PartialOrd;
 }
 
-impl FpSimdMaskAPI for f64simd {
+impl<T: Copy> FpSimdEnhanceAPI<T> for FpSimd<T> {
     fn mask_select(self, mask: [bool; SIMDD], other: Self) -> Self {
         let mut result = self;
         for i in 0..SIMDD {
@@ -213,6 +372,16 @@ impl FpSimdMaskAPI for f64simd {
             }
         }
         result
+    }
+
+    fn max_compare(mut self, val: T) -> Self
+    where
+        T: PartialOrd,
+    {
+        for i in 0..SIMDD {
+            self[i] = if self[i] > val { self[i] } else { val };
+        }
+        self
     }
 }
 
