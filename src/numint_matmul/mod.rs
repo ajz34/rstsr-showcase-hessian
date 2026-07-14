@@ -1,6 +1,7 @@
 //! Matrix multiplication driver for DFT numerical integration.
 #![doc = include_str!("docs/mod.md")]
 
+pub mod becke_partition;
 pub mod hess_rks;
 pub mod hess_uks;
 pub mod nimatmul;
