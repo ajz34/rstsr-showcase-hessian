@@ -187,9 +187,8 @@ pub fn becke_partition(
             let g_start = g0 + lane * SIMDD;
             let g_end = (g_start + SIMDD).min(g1);
             let weights = unsafe { cast_mut_slice(&weights[g_start..g_end]) };
-            for g in 0..(g_end - g_start) {
-                weights[g] = w[g];
-            }
+            let nlane_g = g_end - g_start;
+            weights[..nlane_g].copy_from_slice(&w.0[..nlane_g]);
 
             // --- deriv 1 --- //
 
@@ -217,6 +216,24 @@ pub fn becke_partition(
                 let mut dR_log_P = do_deriv2.then(|| vec![vec![[SIMD_0; 3]; natm]; natm]); // [M][A][t]
                 let mut ddR_Z = do_deriv2.then(|| vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]); // [A][B][t][s]
                 let mut ddR_Pg = do_deriv2.then(|| vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]); // [A][B][t][s]
+
+                // per-atom projection matrix PrM[M] = Proj(r_M)/|r_M| (depends only on the atom,
+                // not the pair partner, so precomputed once per batch instead of per pair).
+                let PrM: Option<Vec<[[f64simd; 3]; 3]>> = (deriv >= 2).then(|| {
+                    (0..natm)
+                        .map(|M| {
+                            let inv_d = SIMD_1_0 / dist[M];
+                            let mut pm = [[SIMD_0; 3]; 3];
+                            for t in 0..3 {
+                                for s in 0..3 {
+                                    let delta = if t == s { SIMD_1_0 } else { SIMD_0 };
+                                    pm[t][s] = (delta - dR_dist[M][t] * dR_dist[M][s]) * inv_d;
+                                }
+                            }
+                            pm
+                        })
+                        .collect_vec()
+                });
 
                 // 2nd pass of switch function (with 1st derivative)
                 // variable `P` is required to be generated in the 1st pass
@@ -297,16 +314,13 @@ pub fn becke_partition(
                                 f64simd::splat(dR_atm_dist_AB[1]),
                                 f64simd::splat(dR_atm_dist_AB[2]),
                             ];
-                            let inv_dA = SIMD_1_0 / dist[A];
-                            let inv_dB = SIMD_1_0 / dist[B];
-                            let mut PrA = [[SIMD_0; 3]; 3];
-                            let mut PrB = [[SIMD_0; 3]; 3];
+                            // PrA/PrB are per-atom (precomputed in PrM above); only PU is per-pair.
+                            let PrA = PrM.as_ref().unwrap()[A];
+                            let PrB = PrM.as_ref().unwrap()[B];
                             let mut PU = [[SIMD_0; 3]; 3];
                             for t in 0..3 {
                                 for s in 0..3 {
                                     let delta = if t == s { SIMD_1_0 } else { SIMD_0 };
-                                    PrA[t][s] = (delta - rA[t] * rA[s]) * inv_dA;
-                                    PrB[t][s] = (delta - rB[t] * rB[s]) * inv_dB;
                                     PU[t][s] = (delta - Uvec[t] * Uvec[s]) * inv_atm_dist_AB;
                                 }
                             }
@@ -358,37 +372,37 @@ pub fn becke_partition(
                                 dR_log_P[B][B][t] += dmu_log_sB * dR_mu_roleB[t]; // M=B, role A
                             }
 
-                            // L2 (2nd log-deriv) into ddR_Z.  The w*(d_A mu)(d_B mu) term uses the
-                            // FIRST role derivatives dR_mu_roleA/B (NOT the unit vectors rA/rB).
+                            // L2 (2nd log-deriv) into ddR_Z and ddR_Pg.  The w*(d_A mu)(d_B mu)
+                            // term uses the FIRST role derivatives dR_mu_roleA/B (NOT the unit
+                            // vectors rA/rB).  The 4 outer products are precomputed once and reused
+                            // for both ddR_Z and ddR_Pg.
                             let common_dd = P[A] * ddmu_log_sA + P[B] * ddmu_log_sB;
-                            for t in 0..3 {
-                                for s in 0..3 {
-                                    ddR_Z[A][A][t][s] +=
-                                        common_dd * dR_mu_roleA[t] * dR_mu_roleA[s] + common_Z * ddR_mu_roleAA[t][s];
-                                    ddR_Z[A][B][t][s] +=
-                                        common_dd * dR_mu_roleA[t] * dR_mu_roleB[s] + common_Z * ddR_mu_roleAB[t][s];
-                                    ddR_Z[B][A][t][s] +=
-                                        common_dd * dR_mu_roleB[t] * dR_mu_roleA[s] + common_Z * ddR_mu_roleBA[t][s];
-                                    ddR_Z[B][B][t][s] +=
-                                        common_dd * dR_mu_roleB[t] * dR_mu_roleB[s] + common_Z * ddR_mu_roleBB[t][s];
-                                }
-                            }
-
-                            // L2 into ddR_Pg: pick M = A_g; M=A block on maskA, M=B block on maskB
                             let coef_A = P[A].mask_select(maskA, SIMD_0);
                             let coef_B = P[B].mask_select(maskB, SIMD_0);
                             let c1_Pg = coef_A * dmu_log_sA + coef_B * dmu_log_sB;
                             let cdd_Pg = coef_A * ddmu_log_sA + coef_B * ddmu_log_sB;
+                            let mut ooAA = [[SIMD_0; 3]; 3];
+                            let mut ooAB = [[SIMD_0; 3]; 3];
+                            let mut ooBA = [[SIMD_0; 3]; 3];
+                            let mut ooBB = [[SIMD_0; 3]; 3];
                             for t in 0..3 {
                                 for s in 0..3 {
-                                    ddR_Pg[A][A][t][s] +=
-                                        cdd_Pg * dR_mu_roleA[t] * dR_mu_roleA[s] + c1_Pg * ddR_mu_roleAA[t][s];
-                                    ddR_Pg[A][B][t][s] +=
-                                        cdd_Pg * dR_mu_roleA[t] * dR_mu_roleB[s] + c1_Pg * ddR_mu_roleAB[t][s];
-                                    ddR_Pg[B][A][t][s] +=
-                                        cdd_Pg * dR_mu_roleB[t] * dR_mu_roleA[s] + c1_Pg * ddR_mu_roleBA[t][s];
-                                    ddR_Pg[B][B][t][s] +=
-                                        cdd_Pg * dR_mu_roleB[t] * dR_mu_roleB[s] + c1_Pg * ddR_mu_roleBB[t][s];
+                                    ooAA[t][s] = dR_mu_roleA[t] * dR_mu_roleA[s];
+                                    ooAB[t][s] = dR_mu_roleA[t] * dR_mu_roleB[s];
+                                    ooBA[t][s] = dR_mu_roleB[t] * dR_mu_roleA[s];
+                                    ooBB[t][s] = dR_mu_roleB[t] * dR_mu_roleB[s];
+                                }
+                            }
+                            for t in 0..3 {
+                                for s in 0..3 {
+                                    ddR_Z[A][A][t][s] += common_dd * ooAA[t][s] + common_Z * ddR_mu_roleAA[t][s];
+                                    ddR_Z[A][B][t][s] += common_dd * ooAB[t][s] + common_Z * ddR_mu_roleAB[t][s];
+                                    ddR_Z[B][A][t][s] += common_dd * ooBA[t][s] + common_Z * ddR_mu_roleBA[t][s];
+                                    ddR_Z[B][B][t][s] += common_dd * ooBB[t][s] + common_Z * ddR_mu_roleBB[t][s];
+                                    ddR_Pg[A][A][t][s] += cdd_Pg * ooAA[t][s] + c1_Pg * ddR_mu_roleAA[t][s];
+                                    ddR_Pg[A][B][t][s] += cdd_Pg * ooAB[t][s] + c1_Pg * ddR_mu_roleAB[t][s];
+                                    ddR_Pg[B][A][t][s] += cdd_Pg * ooBA[t][s] + c1_Pg * ddR_mu_roleBA[t][s];
+                                    ddR_Pg[B][B][t][s] += cdd_Pg * ooBB[t][s] + c1_Pg * ddR_mu_roleBB[t][s];
                                 }
                             }
                         }
@@ -427,11 +441,11 @@ pub fn becke_partition(
                 let g_start = g0 + lane * SIMDD;
                 let g_end = (g_start + SIMDD).min(g1);
                 let dweights = unsafe { cast_mut_slice(dweights.as_ref().unwrap()) };
+                let nlane_g = g_end - g_start;
                 for A in 0..natm {
                     for t in 0..3 {
-                        for g in 0..(g_end - g_start) {
-                            dweights[A * 3 * ngrids + t * ngrids + g_start + g] = dw[A][t][g];
-                        }
+                        let base = A * 3 * ngrids + t * ngrids + g_start;
+                        dweights[base..base + nlane_g].copy_from_slice(&dw[A][t].0[..nlane_g]);
                     }
                 }
 
@@ -548,9 +562,7 @@ pub fn becke_partition(
                             for t in 0..3 {
                                 for s in 0..3 {
                                     ddw[atm_g][B][t][s][g] = if B == atm_g {
-                                        fullAB[t][s][g]
-                                            - fullB[atm_g][t][s][g]
-                                            - fullA[atm_g][t][s][g]
+                                        fullAB[t][s][g] - fullB[atm_g][t][s][g] - fullA[atm_g][t][s][g]
                                             + ddw[atm_g][atm_g][t][s][g]
                                     } else {
                                         -fullA[B][t][s][g] + ddw[atm_g][B][t][s][g]
@@ -567,7 +579,7 @@ pub fn becke_partition(
                             }
                             for t in 0..3 {
                                 for s in 0..3 {
-                                    ddw[A][atm_g][t][s][g] = -fullB[A][t][s][g] + ddw[A][atm_g][t][s][g];
+                                    ddw[A][atm_g][t][s][g] -= fullB[A][t][s][g];
                                 }
                             }
                         }
@@ -576,14 +588,13 @@ pub fn becke_partition(
                     // write back to output buffer; flat index is C-order for [A, t, B, s, g] so
                     // the column-major reshape in the test matches the numpy C-order reference.
                     let ddweights = unsafe { cast_mut_slice(ddweights.as_ref().unwrap()) };
+                    let nlane_g = g_end - g_start;
                     for A in 0..natm {
                         for t in 0..3 {
                             for B in 0..natm {
                                 for s in 0..3 {
-                                    for g in 0..(g_end - g_start) {
-                                        ddweights[((A * 3 + t) * natm + B) * (3 * ngrids) + s * ngrids + g_start + g] =
-                                            ddw[A][B][t][s][g];
-                                    }
+                                    let base = ((A * 3 + t) * natm + B) * (3 * ngrids) + s * ngrids + g_start;
+                                    ddweights[base..base + nlane_g].copy_from_slice(&ddw[A][B][t][s].0[..nlane_g]);
                                 }
                             }
                         }
