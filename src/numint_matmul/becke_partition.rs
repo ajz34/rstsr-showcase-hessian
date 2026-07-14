@@ -374,35 +374,27 @@ pub fn becke_partition(
 
                             // L2 (2nd log-deriv) into ddR_Z and ddR_Pg.  The w*(d_A mu)(d_B mu)
                             // term uses the FIRST role derivatives dR_mu_roleA/B (NOT the unit
-                            // vectors rA/rB).  The 4 outer products are precomputed once and reused
-                            // for both ddR_Z and ddR_Pg.
+                            // vectors rA/rB).  The 4 role outer products are formed once per (t,s)
+                            // and reused for both ddR_Z and ddR_Pg.
                             let common_dd = P[A] * ddmu_log_sA + P[B] * ddmu_log_sB;
                             let coef_A = P[A].mask_select(maskA, SIMD_0);
                             let coef_B = P[B].mask_select(maskB, SIMD_0);
                             let c1_Pg = coef_A * dmu_log_sA + coef_B * dmu_log_sB;
                             let cdd_Pg = coef_A * ddmu_log_sA + coef_B * ddmu_log_sB;
-                            let mut ooAA = [[SIMD_0; 3]; 3];
-                            let mut ooAB = [[SIMD_0; 3]; 3];
-                            let mut ooBA = [[SIMD_0; 3]; 3];
-                            let mut ooBB = [[SIMD_0; 3]; 3];
                             for t in 0..3 {
                                 for s in 0..3 {
-                                    ooAA[t][s] = dR_mu_roleA[t] * dR_mu_roleA[s];
-                                    ooAB[t][s] = dR_mu_roleA[t] * dR_mu_roleB[s];
-                                    ooBA[t][s] = dR_mu_roleB[t] * dR_mu_roleA[s];
-                                    ooBB[t][s] = dR_mu_roleB[t] * dR_mu_roleB[s];
-                                }
-                            }
-                            for t in 0..3 {
-                                for s in 0..3 {
-                                    ddR_Z[A][A][t][s] += common_dd * ooAA[t][s] + common_Z * ddR_mu_roleAA[t][s];
-                                    ddR_Z[A][B][t][s] += common_dd * ooAB[t][s] + common_Z * ddR_mu_roleAB[t][s];
-                                    ddR_Z[B][A][t][s] += common_dd * ooBA[t][s] + common_Z * ddR_mu_roleBA[t][s];
-                                    ddR_Z[B][B][t][s] += common_dd * ooBB[t][s] + common_Z * ddR_mu_roleBB[t][s];
-                                    ddR_Pg[A][A][t][s] += cdd_Pg * ooAA[t][s] + c1_Pg * ddR_mu_roleAA[t][s];
-                                    ddR_Pg[A][B][t][s] += cdd_Pg * ooAB[t][s] + c1_Pg * ddR_mu_roleAB[t][s];
-                                    ddR_Pg[B][A][t][s] += cdd_Pg * ooBA[t][s] + c1_Pg * ddR_mu_roleBA[t][s];
-                                    ddR_Pg[B][B][t][s] += cdd_Pg * ooBB[t][s] + c1_Pg * ddR_mu_roleBB[t][s];
+                                    let ooAA = dR_mu_roleA[t] * dR_mu_roleA[s];
+                                    let ooAB = dR_mu_roleA[t] * dR_mu_roleB[s];
+                                    let ooBA = dR_mu_roleB[t] * dR_mu_roleA[s];
+                                    let ooBB = dR_mu_roleB[t] * dR_mu_roleB[s];
+                                    ddR_Z[A][A][t][s] += common_dd * ooAA + common_Z * ddR_mu_roleAA[t][s];
+                                    ddR_Z[A][B][t][s] += common_dd * ooAB + common_Z * ddR_mu_roleAB[t][s];
+                                    ddR_Z[B][A][t][s] += common_dd * ooBA + common_Z * ddR_mu_roleBA[t][s];
+                                    ddR_Z[B][B][t][s] += common_dd * ooBB + common_Z * ddR_mu_roleBB[t][s];
+                                    ddR_Pg[A][A][t][s] += cdd_Pg * ooAA + c1_Pg * ddR_mu_roleAA[t][s];
+                                    ddR_Pg[A][B][t][s] += cdd_Pg * ooAB + c1_Pg * ddR_mu_roleAB[t][s];
+                                    ddR_Pg[B][A][t][s] += cdd_Pg * ooBA + c1_Pg * ddR_mu_roleBA[t][s];
+                                    ddR_Pg[B][B][t][s] += cdd_Pg * ooBB + c1_Pg * ddR_mu_roleBB[t][s];
                                 }
                             }
                         }
@@ -456,22 +448,8 @@ pub fn becke_partition(
                     let ddR_Z = ddR_Z.as_mut().unwrap();
                     let ddR_Pg = ddR_Pg.as_mut().unwrap();
 
-                    // cross term: ddR_Z += sum_M P_M (dR_log_P_M)(dR_log_P_M)
-                    for A in 0..natm {
-                        for B in 0..natm {
-                            for t in 0..3 {
-                                for s in 0..3 {
-                                    let mut acc = SIMD_0;
-                                    for M in 0..natm {
-                                        acc += P[M] * dR_log_P[M][A][t] * dR_log_P[M][B][s];
-                                    }
-                                    ddR_Z[A][B][t][s] += acc;
-                                }
-                            }
-                        }
-                    }
-
-                    // gather M = A_g for the ddR_Pg cross term: dlog_Ag[A][t], P_Ag
+                    // gather M = A_g for the ddR_Pg cross term (dlog_Ag[A][t], P_Ag) first, so the
+                    // two independent cross-term accumulations below can share one (A,B,t,s) loop.
                     let mut dlog_Ag = vec![[SIMD_0; 3]; natm]; // [A][t]
                     let mut P_Ag = SIMD_0;
                     for A in 0..natm {
@@ -484,11 +462,18 @@ pub fn becke_partition(
                         }
                         P_Ag = P[A].mask_select(atm_idx.map(|a| a == A), P_Ag);
                     }
-                    // ddR_Pg += P_Ag (dlog_Ag_A)(dlog_Ag_B)
+                    // cross terms (one shared (A,B,t,s) loop):
+                    //   ddR_Z  += sum_M P_M (dlog_M_A)(dlog_M_B)
+                    //   ddR_Pg += P_Ag (dlog_Ag_A)(dlog_Ag_B)
                     for A in 0..natm {
                         for B in 0..natm {
                             for t in 0..3 {
                                 for s in 0..3 {
+                                    let mut acc = SIMD_0;
+                                    for M in 0..natm {
+                                        acc += P[M] * dR_log_P[M][A][t] * dR_log_P[M][B][s];
+                                    }
+                                    ddR_Z[A][B][t][s] += acc;
                                     ddR_Pg[A][B][t][s] += P_Ag * dlog_Ag[A][t] * dlog_Ag[B][s];
                                 }
                             }
@@ -505,8 +490,13 @@ pub fn becke_partition(
                             dq[A][t] = (dR_Pg[A][t] - q * dR_Z[A][t]) * inv_Z;
                         }
                     }
-                    // ddw_partial[A][B][t][s] = wquad * d2q
+                    // ddw_partial[A][B][t][s] = wquad * d2q; the translation-invariance axis sums
+                    // (fullA = sum_A, fullB = sum_B, fullAB = sum_{A,B}) are accumulated in the
+                    // same pass over (A,B,t,s) so no separate sum loop is needed.
                     let mut ddw = vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]; // [A][B][t][s]
+                    let mut fullA = vec![[[SIMD_0; 3]; 3]; natm]; // [B][t][s] = sum_A ddw[A][B][t][s]
+                    let mut fullB = vec![[[SIMD_0; 3]; 3]; natm]; // [A][t][s] = sum_B ddw[A][B][t][s]
+                    let mut fullAB = [[SIMD_0; 3]; 3]; // [t][s] = sum_A sum_B ddw[A][B][t][s]
                     for A in 0..natm {
                         for B in 0..natm {
                             for t in 0..3 {
@@ -515,7 +505,11 @@ pub fn becke_partition(
                                     let term2 = dq[A][t] * dR_Z[B][s];
                                     let d2q =
                                         (ddR_Pg[A][B][t][s] - term1 - q * ddR_Z[A][B][t][s]) * inv_Z - term2 * inv_Z;
-                                    ddw[A][B][t][s] = wquad * d2q;
+                                    let v = wquad * d2q;
+                                    ddw[A][B][t][s] = v;
+                                    fullA[B][t][s] += v;
+                                    fullB[A][t][s] += v;
+                                    fullAB[t][s] += v;
                                 }
                             }
                         }
@@ -529,27 +523,6 @@ pub fn becke_partition(
                     //   col : ddw[A, t, A_g, s]   = -sum_{B'!=A_g} = -fullB[A,t,s] + ddw_partial[A,A_g,t,s]
                     //   corner: ddw[A_g,t,A_g,s] =  sum_{A'!=A_g,B'!=A_g}
                     //                            = fullAB - fullB[A_g] - fullA[A_g] + ddw_partial[A_g,A_g]
-                    let mut fullA = vec![[[SIMD_0; 3]; 3]; natm]; // [B][t][s] = sum_A ddw[A][B][t][s]
-                    let mut fullB = vec![[[SIMD_0; 3]; 3]; natm]; // [A][t][s] = sum_B ddw[A][B][t][s]
-                    let mut fullAB = [[SIMD_0; 3]; 3]; // [t][s] = sum_A sum_B ddw[A][B][t][s]
-                    for A in 0..natm {
-                        for B in 0..natm {
-                            for t in 0..3 {
-                                for s in 0..3 {
-                                    let v = ddw[A][B][t][s];
-                                    fullA[B][t][s] += v;
-                                    fullB[A][t][s] += v;
-                                }
-                            }
-                        }
-                    }
-                    for A in 0..natm {
-                        for t in 0..3 {
-                            for s in 0..3 {
-                                fullAB[t][s] += fullB[A][t][s];
-                            }
-                        }
-                    }
                     // per-lane write-back of only the A=A_g row and B=A_g column
                     for g in 0..SIMDD {
                         let atm_g = atm_idx[g];
