@@ -9,6 +9,10 @@
 use itertools::Itertools;
 use libcint::gto::deriv_util::FpSimd;
 use rayon::prelude::*;
+use std::sync::Mutex;
+
+#[allow(non_camel_case_types)]
+type f64simd = FpSimd<f64, SIMDD>;
 
 const SIMDD: usize = 8;
 const INVTOL: f64 = 1e-14;
@@ -20,21 +24,90 @@ const SIMD_1_5: f64simd = f64simd::splat(1.5);
 const SIMD_2_0: f64simd = f64simd::splat(2.0);
 const SIMD_3_0: f64simd = f64simd::splat(3.0);
 
-#[allow(non_camel_case_types)]
-type f64simd = FpSimd<f64, SIMDD>;
-
 /// Output of Becke partitioning function.
 ///
-/// - `w`: Partition weights for each grid point. Length `ngrids`.
-/// - `dw`: Optional 1st derivative of partition weights for each grid point. Shape `(natm, 3,
-///   ngrids)` in column-major. We do not provide shape information here, since it can be derived
-///   from length of variable `w`.
-/// - `ddw`: Optional 2nd derivative of partition weights for each grid point. Shape `(natm, 3,
-///   natm, 3, ngrids)` in column-major (outer-to-inner: `A, t, B, s, g`).
+/// - `w`: Partition weights for each grid point. Shape `(ngrids, )`.
+/// - `dw`: 1st derivative of partition weights for each grid point. Shape `(natm, 3, ngrids)` in
+///   row-major or `(ngrids, 3, natm)` in column-major. We do not provide shape information here,
+///   since it can be derived from length of variable `w`.
+/// - `ddw`: 2nd derivative of partition weights for each grid point. Shape `(natm, 3, natm, 3,
+///   ngrids)` in row-major or `(ngrids, 3, natm, 3, natm)` in column-major.
+/// - `c`: Contracted weights for each grid point. Shape `(nset, )`.
+/// - `dc`: 1st derivative of contracted weights for each grid point. Shape `(natm, 3, nset)` in
+///   row-major or `(nset, 3, natm)` in column-major.
+/// - `ddc`: 2nd derivative of contracted weights for each grid point. Shape `(natm, 3, natm, 3,
+///   nset)` in row-major or `(nset, 3, natm, 3, natm)` in column-major.
+#[derive(Debug, Clone, Default)]
 pub struct BeckePartitionOutput {
-    pub w: Vec<f64>,
+    pub w: Option<Vec<f64>>,
     pub dw: Option<Vec<f64>>,
     pub ddw: Option<Vec<f64>>,
+    pub c: Option<Vec<f64>>,
+    pub dc: Option<Vec<f64>>,
+    pub ddc: Option<Vec<f64>>,
+}
+
+/// Arguments for Becke partitioning function.
+///
+/// For usual usage, just default should work. You can contract the weights manually outside becke
+/// partition function.
+///
+/// For advanced usage, user may want not only to compute the partition weights, but also to
+/// contract them (especially 2nd derivative that generate a large $O(N^3)$ tensor of `ddw`, and the
+/// user may want to avoid it). For this case, the `contract` field will provide a slice, of shape
+/// `(nset, ngrids)` in row-major or `(ngrids, nset)` in column-major, to contract the weights. For
+/// the output shape, see [`BeckePartitionOutput`].
+///
+/// The user may want to specify if they want to output `w`, `dw`, `ddw`. However,
+/// - If deriv level is 0, `dw` and `ddw` will still be None, even `output_dw/ddw` is true. Same
+///   applies to deriv level 1.
+/// - If `contract_w/dw/ddw` is provided, `c/dc/ddc` will be computed with the given deriv level by
+///   default. But if it is not provided, `c/dc/ddc` will be None, even `output_c/dc/ddc` is true.
+#[derive(Debug)]
+pub struct BeckeDerivArg<'a> {
+    pub output_w: bool,
+    pub output_dw: bool,
+    pub output_ddw: bool,
+    pub contract_w: Option<&'a [f64]>,
+    pub contract_dw: Option<&'a [f64]>,
+    pub contract_ddw: Option<&'a [f64]>,
+}
+
+impl<'a> Default for BeckeDerivArg<'a> {
+    fn default() -> Self {
+        Self {
+            output_w: true,
+            output_dw: true,
+            output_ddw: true,
+            contract_w: None,
+            contract_dw: None,
+            contract_ddw: None,
+        }
+    }
+}
+
+impl<'a> BeckeDerivArg<'a> {
+    /// Set the contraction weights for the Becke partitioning.
+    pub fn set_contract(mut self, deriv: usize, contract: &'a [f64]) -> Self {
+        match deriv {
+            0 => self.contract_w = Some(contract),
+            1 => self.contract_dw = Some(contract),
+            2 => self.contract_ddw = Some(contract),
+            _ => panic!("Unsupported derivative order: {}", deriv),
+        }
+        self
+    }
+
+    /// Set the output flags for the Becke partitioning.
+    pub fn set_output_weights(mut self, deriv: usize, value: bool) -> Self {
+        match deriv {
+            0 => self.output_w = value,
+            1 => self.output_dw = value,
+            2 => self.output_ddw = value,
+            _ => panic!("Unsupported derivative order: {}", deriv),
+        }
+        self
+    }
 }
 
 /// Becke partitioning implementation for DFT numerical integration.
@@ -56,6 +129,8 @@ pub struct BeckePartitionOutput {
 ///   used value is 3, and we have manually dispatched the case of 3 in code implementation.
 /// - `nbatch`: Batch size for parallel processing. Must be a multiple of `SIMDD` (8 for AVX-512).
 /// - `deriv`: Derivative order.
+/// - `deriv_arg`: Optional arguments for derivative output and contraction. If None, default values
+///   will be used, which outputs all weights and derivatives without contraction.
 ///
 /// # Reference
 ///
@@ -63,7 +138,7 @@ pub struct BeckePartitionOutput {
 /// A. D. Becke
 /// J. Chem. Phys. 88, 2547 (1988), doi: 10.1063/1.454033
 #[allow(clippy::too_many_arguments)]
-pub fn becke_partition(
+pub fn becke_partition<'a>(
     grid_coords: &[[f64; 3]],
     atm_coords: &[[f64; 3]],
     atm_indices: &[usize],
@@ -72,6 +147,7 @@ pub fn becke_partition(
     hardness: usize,
     nbatch: usize,
     deriv: usize,
+    deriv_arg: Option<BeckeDerivArg<'a>>,
 ) -> BeckePartitionOutput {
     // dimensions
     let ngrids = grid_coords.len();
@@ -81,7 +157,44 @@ pub fn becke_partition(
     assert!(atm_indices.len() == ngrids, "atm_indices must have length ngrids");
     assert!(quadrature_weights.len() == ngrids, "quadrature_weights must have length ngrids");
 
+    let deriv_arg = deriv_arg.unwrap_or_default();
+    assert!(deriv <= 2, "deriv must be 0, 1, or 2 at current time");
+
     let adjustment_factor = adjustment_factor.chunks_exact(natm).collect_vec();
+
+    // check if contraction is requested, and split the contraction weights into
+    // per-set grid slices (shape `(nset, ngrids)` row-major).  Done before
+    // building the output struct so the buffers can be allocated in one literal.
+    let contract_w = deriv_arg.contract_w.as_ref().map(|c| {
+        assert!(c.len() % ngrids == 0, "contract_w length must be a multiple of ngrids");
+        c.chunks_exact(ngrids).collect_vec()
+    });
+    let contract_dw = deriv_arg.contract_dw.as_ref().map(|c| {
+        assert!(c.len() % ngrids == 0, "contract_dw length must be a multiple of ngrids");
+        c.chunks_exact(ngrids).collect_vec()
+    });
+    let contract_ddw = deriv_arg.contract_ddw.as_ref().map(|c| {
+        assert!(c.len() % ngrids == 0, "contract_ddw length must be a multiple of ngrids");
+        c.chunks_exact(ngrids).collect_vec()
+    });
+    let nset_w = contract_w.as_ref().map(|c| c.len());
+    let nset_dw = (deriv >= 1 && contract_dw.is_some()).then(|| contract_dw.as_ref().unwrap().len());
+    let nset_ddw = (deriv >= 2 && contract_ddw.is_some()).then(|| contract_ddw.as_ref().unwrap().len());
+    // whether any 2nd-order output (the full `ddw` tensor or its contraction) is
+    // actually requested.  When false the entire deriv2 machinery is skipped even
+    // if `deriv == 2`, since neither `ddw` nor `ddc` would be consumed.
+    let need_ddw = deriv_arg.output_ddw || contract_ddw.is_some();
+
+    // prepare output (buffers mutated later through `cast_mut_slice`, so `output`
+    // itself is not declared `mut`).
+    let output = BeckePartitionOutput {
+        w: deriv_arg.output_w.then(|| vec![0.0; ngrids]),
+        dw: (deriv_arg.output_dw && deriv >= 1).then(|| vec![0.0; natm * 3 * ngrids]),
+        ddw: (deriv_arg.output_ddw && deriv >= 2).then(|| vec![0.0; natm * 3 * natm * 3 * ngrids]),
+        c: nset_w.map(|nset| vec![0.0; nset]),
+        dc: nset_dw.map(|nset| vec![0.0; natm * 3 * nset]),
+        ddc: nset_ddw.map(|nset| vec![0.0; natm * 3 * natm * 3 * nset]),
+    };
 
     // generate atm_dist before iteration to grid coordinates
     // since it is not bottleneck, we duplicate the calculation for A > B.
@@ -110,17 +223,34 @@ pub fn becke_partition(
     });
     let dR_atm_dist = dR_atm_dist.as_ref().map(|v| v.chunks_exact(natm).collect_vec());
 
-    // prepare output buffer for partition weights
-    let weights = vec![0.0; ngrids];
-    let dweights = (deriv >= 1).then(|| vec![0.0; natm * 3 * ngrids]);
-    let ddweights = (deriv >= 2).then(|| vec![0.0; natm * 3 * natm * 3 * ngrids]);
-
     // par-iter over grid coordinates in batches
     let ntasks = ngrids.div_ceil(nbatch);
+    // guards the cross-task reduction into the shared c/dc/ddc buffers.  The
+    // contraction is a sum over grids into a per-set output, so (unlike the
+    // disjoint grid-range writes of w/dw/ddw) concurrent `+=` would race.  Each
+    // task accumulates a private partial lock-free, then takes this lock once to
+    // add it in - the cast_mut_slice += inside the guard is sound because the
+    // mutex grants exclusive access.
+    let contract_guard = Mutex::new(());
     (0..ntasks).into_par_iter().for_each(|itask| {
         let g0 = itask * nbatch;
         let g1 = (g0 + nbatch).min(ngrids);
         let nlane = (g1 - g0).div_ceil(SIMDD);
+
+        // per-task contraction partials.  Each task accumulates its own grid range
+        // into a private buffer (no cross-task sharing) during the lane loop, then
+        // adds the partial into the shared output under `contract_mutex`.  This is
+        // what lets the caller obtain a contracted `ddc` without ever materializing
+        // the full `O(natm^2 * ngrids)` `ddw` tensor.
+        let mut c_partial = nset_w.map(|n| vec![0.0; n]);
+        let mut dc_partial = nset_dw.map(|n| vec![0.0; natm * 3 * n]);
+        let mut ddc_partial = nset_ddw.map(|n| vec![0.0; natm * 3 * natm * 3 * n]);
+
+        // reusable scratch buffers holding this lane's contraction weights (one
+        // SIMD per set).  Allocated once per task and refilled each lane, so the
+        // dc/ddc contraction does not allocate inside the lane loop.
+        let mut cw_lanes_dw: Vec<f64simd> = nset_dw.map_or_else(Vec::new, |n| vec![SIMD_0; n]);
+        let mut cw_lanes_ddw: Vec<f64simd> = nset_ddw.map_or_else(Vec::new, |n| vec![SIMD_0; n]);
 
         // batched vectors preparation
         let mut coords_lanes = vec![[SIMD_0; 3]; nlane];
@@ -186,9 +316,20 @@ pub fn becke_partition(
             // write back to output buffer
             let g_start = g0 + lane * SIMDD;
             let g_end = (g_start + SIMDD).min(g1);
-            let weights = unsafe { cast_mut_slice(&weights[g_start..g_end]) };
             let nlane_g = g_end - g_start;
-            weights[..nlane_g].copy_from_slice(&w.0[..nlane_g]);
+            if let Some(w_buf) = output.w.as_ref() {
+                let wslc = unsafe { cast_mut_slice(&w_buf[g_start..g_end]) };
+                wslc[..nlane_g].copy_from_slice(&w.0[..nlane_g]);
+            }
+
+            // contract w -> c:  c[iset] += sum_g contract_w[iset, g] * w[g]
+            if let Some(cw) = contract_w.as_ref() {
+                let cp = c_partial.as_mut().unwrap();
+                for iset in 0..nset_w.unwrap() {
+                    let cw_lane = load_simd_pad(&cw[iset][g_start..g_end]);
+                    cp[iset] += sum_lanes(w * cw_lane, nlane_g);
+                }
+            }
 
             // --- deriv 1 --- //
 
@@ -212,14 +353,14 @@ pub fn becke_partition(
                 // `ddR_log_P`/`ddR_P` of the vectorized reference are never materialized - the
                 // 2nd log-deriv (L2) contributions are accumulated pair-by-pair directly into the
                 // 5D outputs `ddR_Z`/`ddR_Pg` indexed `[A][B][t][s]`.
-                let do_deriv2 = deriv >= 2;
+                let do_deriv2 = deriv >= 2 && need_ddw;
                 let mut dR_log_P = do_deriv2.then(|| vec![vec![[SIMD_0; 3]; natm]; natm]); // [M][A][t]
                 let mut ddR_Z = do_deriv2.then(|| vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]); // [A][B][t][s]
                 let mut ddR_Pg = do_deriv2.then(|| vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]); // [A][B][t][s]
 
                 // per-atom projection matrix PrM[M] = Proj(r_M)/|r_M| (depends only on the atom,
                 // not the pair partner, so precomputed once per batch instead of per pair).
-                let PrM: Option<Vec<[[f64simd; 3]; 3]>> = (deriv >= 2).then(|| {
+                let PrM: Option<Vec<[[f64simd; 3]; 3]>> = do_deriv2.then(|| {
                     (0..natm)
                         .map(|M| {
                             let inv_d = SIMD_1_0 / dist[M];
@@ -246,7 +387,7 @@ pub fn becke_partition(
                         // switch value + 1st nu-deriv always; the 2nd nu-deriv (f3pp) is only
                         // needed for deriv >= 2, so the deriv == 1 path uses the cheaper
                         // 1st-order-only switch and avoids computing f3''.
-                        let (f3, df3, ddf3): (f64simd, f64simd, Option<f64simd>) = if deriv >= 2 {
+                        let (f3, df3, ddf3): (f64simd, f64simd, Option<f64simd>) = if do_deriv2 {
                             let (f3, df3, ddf3) = match hardness {
                                 3 => switch_d2nu_f3(mu, a_factor),
                                 _ => switch_d2nu_f_hardness(mu, a_factor, hardness),
@@ -432,12 +573,32 @@ pub fn becke_partition(
                 // write back to output buffer
                 let g_start = g0 + lane * SIMDD;
                 let g_end = (g_start + SIMDD).min(g1);
-                let dweights = unsafe { cast_mut_slice(dweights.as_ref().unwrap()) };
                 let nlane_g = g_end - g_start;
-                for A in 0..natm {
-                    for t in 0..3 {
-                        let base = A * 3 * ngrids + t * ngrids + g_start;
-                        dweights[base..base + nlane_g].copy_from_slice(&dw[A][t].0[..nlane_g]);
+                if let Some(dw_buf) = output.dw.as_ref() {
+                    let dweights = unsafe { cast_mut_slice(dw_buf) };
+                    for A in 0..natm {
+                        for t in 0..3 {
+                            let base = A * 3 * ngrids + t * ngrids + g_start;
+                            dweights[base..base + nlane_g].copy_from_slice(&dw[A][t].0[..nlane_g]);
+                        }
+                    }
+                }
+
+                // contract dw -> dc:  dc[A, t, iset] += sum_g contract_dw[iset, g] * dw[A, t, g]
+                if let Some(cdw) = contract_dw.as_ref() {
+                    let dcp = dc_partial.as_mut().unwrap();
+                    let nset = nset_dw.unwrap();
+                    // load this lane's contraction weights once per set, reuse across (A, t)
+                    for iset in 0..nset {
+                        cw_lanes_dw[iset] = load_simd_pad(&cdw[iset][g_start..g_end]);
+                    }
+                    for A in 0..natm {
+                        for t in 0..3 {
+                            let dwv = dw[A][t];
+                            for iset in 0..nset {
+                                dcp[(A * 3 + t) * nset + iset] += sum_lanes(dwv * cw_lanes_dw[iset], nlane_g);
+                            }
+                        }
                     }
                 }
 
@@ -558,16 +719,42 @@ pub fn becke_partition(
                         }
                     }
 
-                    // write back to output buffer; flat index is C-order for [A, t, B, s, g] so
-                    // the column-major reshape in the test matches the numpy C-order reference.
-                    let ddweights = unsafe { cast_mut_slice(ddweights.as_ref().unwrap()) };
-                    let nlane_g = g_end - g_start;
-                    for A in 0..natm {
-                        for t in 0..3 {
-                            for B in 0..natm {
-                                for s in 0..3 {
-                                    let base = ((A * 3 + t) * natm + B) * (3 * ngrids) + s * ngrids + g_start;
-                                    ddweights[base..base + nlane_g].copy_from_slice(&ddw[A][B][t][s].0[..nlane_g]);
+                    // write back to output buffer; flat index is C-order for [A, t, B, s, g].
+                    if let Some(ddw_buf) = output.ddw.as_ref() {
+                        let ddweights = unsafe { cast_mut_slice(ddw_buf) };
+                        for A in 0..natm {
+                            for t in 0..3 {
+                                for B in 0..natm {
+                                    for s in 0..3 {
+                                        let base = ((A * 3 + t) * natm + B) * (3 * ngrids) + s * ngrids + g_start;
+                                        ddweights[base..base + nlane_g].copy_from_slice(&ddw[A][B][t][s].0[..nlane_g]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // contract ddw -> ddc:
+                    //   ddc[A, t, B, s, iset] += sum_g contract_ddw[iset, g] * ddw[A, t, B, s, g]
+                    // This is the contraction that lets the caller obtain a 2nd-order contracted
+                    // weight without ever materializing the full ddw tensor.
+                    if let Some(cddw) = contract_ddw.as_ref() {
+                        let ddcp = ddc_partial.as_mut().unwrap();
+                        let nset = nset_ddw.unwrap();
+                        // load this lane's contraction weights once per set, reuse across (A, t, B, s)
+                        for iset in 0..nset {
+                            cw_lanes_ddw[iset] = load_simd_pad(&cddw[iset][g_start..g_end]);
+                        }
+                        for A in 0..natm {
+                            for t in 0..3 {
+                                for B in 0..natm {
+                                    for s in 0..3 {
+                                        let ddwv = ddw[A][B][t][s];
+                                        for iset in 0..nset {
+                                            ddcp[((A * 3 + t) * natm + B) * 3 * nset + s * nset + iset] +=
+                                                sum_lanes(ddwv * cw_lanes_ddw[iset], nlane_g);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -575,9 +762,37 @@ pub fn becke_partition(
                 }
             }
         }
+
+        // reduce this task's private partials into the shared output buffers.
+        // Held under `contract_mutex` because c/dc/ddc are sums over grids into a
+        // per-set output that every task writes - the guard serializes the `+=` so
+        // no updates are lost.  The cast_mut_slice write is sound under the guard:
+        // the mutex grants exclusive access (no concurrent reader/writer), and the
+        // &mut-from-& derivation is the same pattern the w/dw/ddw write-back uses.
+        if c_partial.is_some() || dc_partial.is_some() || ddc_partial.is_some() {
+            let _guard = contract_guard.lock().unwrap();
+            if let (Some(c_buf), Some(cp)) = (output.c.as_ref(), c_partial.as_ref()) {
+                let cslc = unsafe { cast_mut_slice(c_buf) };
+                for (o, v) in cslc.iter_mut().zip(cp.iter()) {
+                    *o += v;
+                }
+            }
+            if let (Some(dc_buf), Some(dcp)) = (output.dc.as_ref(), dc_partial.as_ref()) {
+                let dcslc = unsafe { cast_mut_slice(dc_buf) };
+                for (o, v) in dcslc.iter_mut().zip(dcp.iter()) {
+                    *o += v;
+                }
+            }
+            if let (Some(ddc_buf), Some(ddcp)) = (output.ddc.as_ref(), ddc_partial.as_ref()) {
+                let ddcslc = unsafe { cast_mut_slice(ddc_buf) };
+                for (o, v) in ddcslc.iter_mut().zip(ddcp.iter()) {
+                    *o += v;
+                }
+            }
+        }
     });
 
-    BeckePartitionOutput { w: weights, dw: dweights, ddw: ddweights }
+    output
 }
 
 /* #region simple utilities */
@@ -604,6 +819,35 @@ fn neg3(v: [f64simd; 3]) -> [f64simd; 3] {
 /// Lane-wise negation of a 3x3 SIMD matrix (over `(t, s)`).
 fn neg33(m: [[f64simd; 3]; 3]) -> [[f64simd; 3]; 3] {
     [[-m[0][0], -m[0][1], -m[0][2]], [-m[1][0], -m[1][1], -m[1][2]], [-m[2][0], -m[2][1], -m[2][2]]]
+}
+
+/// Load up to `SIMDD` elements from `slc` into a SIMD register, zero-padding the
+/// remaining lanes.  Used to contract a per-grid SIMD intermediate against the
+/// contraction-weight slice for the current lane (whose tail may be shorter than
+/// `SIMDD` at the final grid batch).
+#[inline(always)]
+fn load_simd_pad(slc: &[f64]) -> f64simd {
+    let mut s = SIMD_0;
+    for i in 0..slc.len() {
+        s[i] = slc[i];
+    }
+    s
+}
+
+/// Horizontal sum of the first `n` lanes of a SIMD register (`n <= SIMDD`).  The
+/// trailing lanes are ignored; the caller passes `nlane_g` so padding lanes
+/// (already zero in the contraction weight) are never touched.
+#[inline(always)]
+fn sum_lanes(s: f64simd, n: usize) -> f64 {
+    // `n` is always <= SIMDD (== 8); hint this to the optimizer so the lane
+    // accumulation loop can be fully unrolled.  Maintained by the caller, which
+    // passes `nlane_g = g_end - g_start <= SIMDD`.
+    unsafe { std::hint::assert_unchecked(n <= SIMDD) };
+    let mut acc = 0.0;
+    for i in 0..n {
+        acc += s[i];
+    }
+    acc
 }
 
 /* #endregion */

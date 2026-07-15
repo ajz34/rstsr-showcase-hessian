@@ -20,9 +20,18 @@ pub fn test_becke_partition_0() {
     let device = w_ref.device().clone();
 
     let time = std::time::Instant::now();
-    let res =
-        becke_partition(&grid_coords, &atm_coords, &atm_indices, &quadrature_weights, &adjustment_factor, 3, 512, 1);
-    let w = res.w;
+    let res = becke_partition(
+        &grid_coords,
+        &atm_coords,
+        &atm_indices,
+        &quadrature_weights,
+        &adjustment_factor,
+        3,
+        512,
+        1,
+        None,
+    );
+    let w = res.w.unwrap();
     let dw = res.dw;
     println!("becke_partition time: {:?}", time.elapsed());
 
@@ -53,9 +62,18 @@ pub fn test_becke_partition_2() {
     let device = w_ref.device().clone();
 
     let time = std::time::Instant::now();
-    let res =
-        becke_partition(&grid_coords, &atm_coords, &atm_indices, &quadrature_weights, &adjustment_factor, 3, 512, 2);
-    let w = res.w;
+    let res = becke_partition(
+        &grid_coords,
+        &atm_coords,
+        &atm_indices,
+        &quadrature_weights,
+        &adjustment_factor,
+        3,
+        512,
+        2,
+        None,
+    );
+    let w = res.w.unwrap();
     let dw = res.dw.unwrap();
     let ddw = res.ddw.unwrap();
     println!("becke_partition (deriv=2) time: {:?}", time.elapsed());
