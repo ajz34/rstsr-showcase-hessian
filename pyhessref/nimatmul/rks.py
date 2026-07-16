@@ -36,7 +36,7 @@ XC_AO_DERIV = {"LDA": 2, "GGA": 3, "MGGA": 3}
 XC_NCOMP_AO_DM0 = {"LDA": 1, "GGA": 4, "MGGA": 4}
 
 
-def _eval_rho_vxc_fxc(xc, xc_type, ao, ao_dm0):
+def _eval_rho_exc_vxc_fxc(xc, xc_type, ao, ao_dm0):
     """Evaluate the on-grid density together with the first/second functional
     derivatives ``vxc``/``fxc`` for the requested xc functional.
 
@@ -69,6 +69,8 @@ def _eval_rho_vxc_fxc(xc, xc_type, ao, ao_dm0):
     -------
     rho : np.ndarray
         On-grid density components, shape ``[nvar, ngrids]``.
+    exc : np.ndarray
+        On-grid XC energy, shape ``[ngrids]``.
     vxc : np.ndarray
         First functional derivative ``f^chi``, shape ``[nvar, ngrids]``.
     fxc : np.ndarray
@@ -92,8 +94,8 @@ def _eval_rho_vxc_fxc(xc, xc_type, ao, ao_dm0):
         )
 
     ni = dft.numint.NumInt()
-    _, vxc, fxc, _ = ni.eval_xc_eff(xc, rho, deriv=2, xctype=xc_type)
-    return rho, vxc, fxc
+    exc, vxc, fxc, _ = ni.eval_xc_eff(xc, rho, deriv=2, xctype=xc_type)
+    return rho, exc, vxc, fxc
 
 
 def _make_drho(xc_type, ao, ao_dm0, aoslices):
@@ -584,7 +586,7 @@ def make_hessian_setup_batch(
     t0 = time.time()
     ao = dft.numint.eval_ao(mol, coords, deriv=XC_AO_DERIV[xc_type])
     ao_dm0 = ao[: XC_NCOMP_AO_DM0[xc_type]] @ dm0
-    _, vxc, fxc = _eval_rho_vxc_fxc(xc, xc_type, ao, ao_dm0)
+    _, _, vxc, fxc = _eval_rho_exc_vxc_fxc(xc, xc_type, ao, ao_dm0)
     wv = weights * vxc
     wf = weights * fxc
     tic("ao, rho, vxc, fxc", t0)

@@ -36,7 +36,7 @@ XC_AO_DERIV = {"LDA": 2, "GGA": 3, "MGGA": 3}
 XC_NCOMP_AO_DM0 = {"LDA": 1, "GGA": 4, "MGGA": 4}
 
 
-def _eval_rho_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b):
+def _eval_rho_exc_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b):
     """Evaluate the on-grid density together with the first/second functional
     derivatives ``vxc``/``fxc`` for the requested xc functional in the
     spin-polarized (UKS) case.
@@ -57,6 +57,8 @@ def _eval_rho_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b):
     -------
     rhoa, rhob : np.ndarray
         On-grid density components per spin, shape ``[nvar, ngrids]``.
+    exc : np.ndarray
+        On-grid XC energy, shape ``[ngrids]``.
     vxc : np.ndarray
         First functional derivative, shape ``[2, nvar, ngrids]``.
     fxc : np.ndarray
@@ -82,8 +84,8 @@ def _eval_rho_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b):
             )
 
     ni = dft.numint.NumInt()
-    _, vxc, fxc, _ = ni.eval_xc_eff(xc, (rhoa, rhob), deriv=2, xctype=xc_type)
-    return rhoa, rhob, vxc, fxc
+    exc, vxc, fxc, _ = ni.eval_xc_eff(xc, (rhoa, rhob), deriv=2, xctype=xc_type)
+    return rhoa, rhob, exc, vxc, fxc
 
 
 def _make_drho_uks(xc_type, ao, ao_dm0a, ao_dm0b, aoslices):
@@ -499,7 +501,7 @@ def make_hessian_setup_batch_uks(
     ncomp_dm0 = XC_NCOMP_AO_DM0[xc_type]
     ao_dm0a = ao[:ncomp_dm0] @ dm0a
     ao_dm0b = ao[:ncomp_dm0] @ dm0b
-    rhoa, rhob, vxc, fxc = _eval_rho_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b)
+    rhoa, rhob, exc, vxc, fxc = _eval_rho_exc_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b)
     wva = weights * vxc[0]
     wvb = weights * vxc[1]
     wf = weights * fxc
