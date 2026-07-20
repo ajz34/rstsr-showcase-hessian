@@ -5,41 +5,38 @@ import time
 from pyhessref.hess_trait_unrestricted import UHessElecInteractAPI
 from pyhessref.util import get_dm0_unrestricted
 
-
-# AO derivative component indices (deriv up to 3).
-O = 0
-X, Y, Z = 1, 2, 3
-XX, XY, XZ = 4, 5, 6
-YX, YY, YZ = 5, 7, 8
-ZX, ZY, ZZ = 6, 8, 9
-XXX, XXY, XXZ, XYY, XYZ, XZZ = 10, 11, 12, 13, 14, 15
-YYY, YYZ, YZZ, ZZZ = 16, 17, 18, 19
-
-IDX_AO_DERIV2 = [[XX, XY, XZ], [YX, YY, YZ], [ZX, ZY, ZZ]]
-TRIPLE_SIGMA_DIAG = [
-    [XXX, XXY, XXZ],  # xx
-    [XXY, XYY, XYZ],  # xy
-    [XXZ, XYZ, XZZ],  # xz
-    [XYY, YYY, YYZ],  # yy
-    [XYZ, YYZ, YZZ],  # yz
-    [XZZ, YZZ, ZZZ],  # zz
-]
-# Triple derivatives organised by direction (X, Y, Z) for the diagonal MGGA tau term.
-TRIPLE_TAU_DIAG = [
-    ([XXX, XXY, XXZ, XYY, XYZ, XZZ], 0),
-    ([XXY, XYY, XYZ, YYY, YYZ, YZZ], 1),
-    ([XXZ, XYZ, XZZ, YYZ, YZZ, ZZZ], 2),
-]
-
-XC_NVAR = {"LDA": 1, "GGA": 4, "MGGA": 5}
-XC_AO_DERIV = {"LDA": 2, "GGA": 3, "MGGA": 3}
-XC_NCOMP_AO_DM0 = {"LDA": 1, "GGA": 4, "MGGA": 4}
+# The single-spin XC skeleton ingredients (rho/vxc/fxc-free pieces) are shared
+# with the RKS implementation; UKS only adds the spin-coupled pieces on top:
+# the spin-polarized rho/vxc/fxc evaluation, the four spin-pair fxc contraction,
+# and the spin-coupled ``vmat_deriv1``.  This mirrors the Rust layout where
+# ``hess_uks.rs`` imports ``get_drho / get_de_vxc_diag / get_de_vxc_off /
+# get_vmat_ip`` from ``hess_rks.rs``.
+from pyhessref.nimatmul.rks import (
+    _make_drho,
+    _de_vxc_diag,
+    _de_vxc_off,
+    _vmat_ip,
+    # AO derivative component indices (only the value/gradient channels are
+    # referenced directly in the UKS-specific routines below; the higher-order
+    # indices live with the shared single-spin helpers in ``rks.py``).
+    O,
+    X,
+    Y,
+    Z,
+    XC_NVAR,
+    XC_AO_DERIV,
+    XC_NCOMP_AO_DM0,
+)
 
 
 def _eval_rho_exc_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b):
     """Evaluate the on-grid density together with the first/second functional
     derivatives ``vxc``/``fxc`` for the requested xc functional in the
     spin-polarized (UKS) case.
+
+    The per-spin rho assembly is identical to the RKS routine in
+    ``rks._eval_rho_exc_vxc_fxc``; only the spin-polarized ``eval_xc_eff``
+    call (taking the ``(rhoa, rhob)`` tuple) differs, so it is kept here.
 
     Parameters
     ----------
@@ -91,7 +88,9 @@ def _eval_rho_exc_vxc_fxc_uks(xc, xc_type, ao, ao_dm0a, ao_dm0b):
 def _make_drho_uks(xc_type, ao, ao_dm0a, ao_dm0b, aoslices):
     """First-order skeleton derivative of rho components for UKS.
 
-    Returns separate alpha and beta drho arrays.
+    Thin per-spin wrapper around the RKS routine ``_make_drho`` - the
+    skeleton derivative is spin-diagonal, so alpha and beta are computed
+    independently.  Mirrors ``get_drho_uks`` in the Rust implementation.
 
     Parameters
     ----------
@@ -109,54 +108,14 @@ def _make_drho_uks(xc_type, ao, ao_dm0a, ao_dm0b, aoslices):
     drhoa, drhob : np.ndarray
         Skeleton derivative of rho per spin, shape ``[natm, 3, nvar, ngrids]``.
     """
-    ngrids = ao.shape[1]
-    nvar = XC_NVAR[xc_type]
-    natm = len(aoslices)
-    drhoa = np.zeros((natm, 3, nvar, ngrids))
-    drhob = np.zeros((natm, 3, nvar, ngrids))
-
-    # (rho_var, t_direction, cbra, cket) tuples that contribute to each rho component.
-    components = [
-        (0, 0, X, O),
-        (0, 1, Y, O),
-        (0, 2, Z, O),
-    ]
-    if xc_type in ("GGA", "MGGA"):
-        components += [
-            (1, 0, XX, O), (2, 0, XY, O), (3, 0, XZ, O),
-            (1, 1, YX, O), (2, 1, YY, O), (3, 1, YZ, O),
-            (1, 2, ZX, O), (2, 2, ZY, O), (3, 2, ZZ, O),
-        ]
-        components += [
-            (1, 0, X, X), (2, 0, X, Y), (3, 0, X, Z),
-            (1, 1, Y, X), (2, 1, Y, Y), (3, 1, Y, Z),
-            (1, 2, Z, X), (2, 2, Z, Y), (3, 2, Z, Z),
-        ]
-    if xc_type == "MGGA":
-        components += [
-            (4, 0, XX, X), (4, 0, XY, Y), (4, 0, XZ, Z),
-            (4, 1, YX, X), (4, 1, YY, Y), (4, 1, YZ, Z),
-            (4, 2, ZX, X), (4, 2, ZY, Y), (4, 2, ZZ, Z),
-        ]
-
-    for A in range(natm):
-        _, _, p0, p1 = aoslices[A]
-        slc = slice(p0, p1)
-        ao_slc = ao[:, :, slc]
-        ao_dm0a_slc = ao_dm0a[:, :, slc]
-        ao_dm0b_slc = ao_dm0b[:, :, slc]
-        for v, t, cbra, cket in components:
-            drhoa[A, t, v] -= np.einsum("gu, gu -> g", ao_slc[cbra], ao_dm0a_slc[cket])
-            drhob[A, t, v] -= np.einsum("gu, gu -> g", ao_slc[cbra], ao_dm0b_slc[cket])
-
-    # Symmetry: RHO + grad components carry factor 2; TAU does NOT.
-    if xc_type in ("GGA", "MGGA"):
-        drhoa[:, :, :4] *= 2
-        drhob[:, :, :4] *= 2
-    elif xc_type == "LDA":
-        drhoa[:, :, :1] *= 2
-        drhob[:, :, :1] *= 2
+    drhoa = _make_drho(xc_type, ao, ao_dm0a, aoslices)
+    drhob = _make_drho(xc_type, ao, ao_dm0b, aoslices)
     return drhoa, drhob
+
+
+def _de_fxc_uks_inner(weights, drho1, fxc_block, drho2):
+    """Single spin-pair fxc contraction."""
+    return np.einsum("g, Atxg, xyg, Bsyg -> ABts", weights, drho1, fxc_block, drho2, optimize=True)
 
 
 def _de_fxc_uks(weights, drhoa, drhob, fxc):
@@ -193,191 +152,15 @@ def _de_fxc_uks(weights, drhoa, drhob, fxc):
     return de_fxc
 
 
-def _de_fxc_uks_inner(weights, drho1, fxc_block, drho2):
-    """Single spin-pair fxc contraction."""
-    return np.einsum("g, Atxg, xyg, Bsyg -> ABts", weights, drho1, fxc_block, drho2, optimize=True)
-
-
-def _de_vxc_diag_uks(xc_type, ao, ao_dm0a, ao_dm0b, wva, wvb, aoslices, natm, nao):
-    """Same-atom (A == B) block of the UKS XC skeleton 2nd derivative.
-
-    Returns separate alpha and beta contributions.
-
-    Parameters
-    ----------
-    xc_type : str
-    ao : np.ndarray
-    ao_dm0a, ao_dm0b : np.ndarray
-        Per-spin ao@dm0, shape ``[ncomp_dm0, ngrids, nao]``.
-    wva, wvb : np.ndarray
-        Per-spin weight*vxc, shape ``[nvar, ngrids]``.
-    aoslices, natm, nao : as in RKS
-
-    Returns
-    -------
-    de_vxc_diag_a, de_vxc_diag_b : np.ndarray
-        Each shape ``[natm, natm, 3, 3]``, only diagonal A==B blocks non-zero.
-    """
-    de_vxc_diag_a = _de_vxc_diag_one_spin(xc_type, ao, ao_dm0a, wva, aoslices, natm, nao)
-    de_vxc_diag_b = _de_vxc_diag_one_spin(xc_type, ao, ao_dm0b, wvb, aoslices, natm, nao)
-    return de_vxc_diag_a, de_vxc_diag_b
-
-
-def _de_vxc_diag_one_spin(xc_type, ao, ao_dm0, wv, aoslices, natm, nao):
-    """Same-atom vxc diag block for one spin channel (same as RKS)."""
-    dao_vxc_diag = np.zeros((6, nao))
-
-    aow = np.einsum("gu, g -> gu", ao_dm0[0], wv[0])
-    if xc_type in ("GGA", "MGGA"):
-        for r in range(3):
-            aow += np.einsum("gu, g -> gu", ao_dm0[1 + r], wv[1 + r])
-    for idx_ts, its in enumerate([XX, XY, XZ, YY, YZ, ZZ]):
-        dao_vxc_diag[idx_ts] += 2 * np.einsum("gu, gu -> u", ao[its], aow)
-
-    if xc_type in ("GGA", "MGGA"):
-        for idx_ts, (i3x, i3y, i3z) in enumerate(TRIPLE_SIGMA_DIAG):
-            aow = (
-                np.einsum("gu, g -> gu", ao[i3x], wv[1])
-                + np.einsum("gu, g -> gu", ao[i3y], wv[2])
-                + np.einsum("gu, g -> gu", ao[i3z], wv[3])
-            )
-            dao_vxc_diag[idx_ts] += 2 * np.einsum("gu, gu -> u", aow, ao_dm0[0])
-
-    if xc_type == "MGGA":
-        for trip_idx, r in TRIPLE_TAU_DIAG:
-            aow = np.einsum("gu, g -> gu", ao_dm0[r + 1], wv[4])
-            for idx_ts, i3 in enumerate(trip_idx):
-                dao_vxc_diag[idx_ts] += np.einsum("gu, gu -> u", ao[i3], aow)
-
-    de_vxc_diag = np.zeros((natm, natm, 6))
-    for A in range(natm):
-        _, _, p0A, p1A = aoslices[A]
-        de_vxc_diag[A, A] = np.einsum("Au -> A", dao_vxc_diag[:, p0A:p1A])
-    de_vxc_diag = de_vxc_diag[:, :, [0, 1, 2, 1, 3, 4, 2, 4, 5]].reshape(natm, natm, 3, 3)
-    return de_vxc_diag
-
-
-def _de_vxc_off_uks(xc_type, ao, dm0a, dm0b, wva, wvb, aoslices, natm, nao):
-    """Two-atom (A != B) block of the UKS XC skeleton 2nd derivative.
-
-    Returns separate alpha and beta contributions.
-
-    Parameters
-    ----------
-    dm0a, dm0b : np.ndarray
-        Per-spin density matrices, shape ``[nao, nao]``.
-    wva, wvb : np.ndarray
-        Per-spin weight*vxc, shape ``[nvar, ngrids]``.
-
-    Returns
-    -------
-    de_vxc_off_a, de_vxc_off_b : np.ndarray
-        Each shape ``[natm, natm, 3, 3]``.
-    """
-    de_vxc_off_a = _de_vxc_off_one_spin(xc_type, ao, dm0a, wva, aoslices, natm, nao)
-    de_vxc_off_b = _de_vxc_off_one_spin(xc_type, ao, dm0b, wvb, aoslices, natm, nao)
-    return de_vxc_off_a, de_vxc_off_b
-
-
-def _de_vxc_off_one_spin(xc_type, ao, dm0, wv, aoslices, natm, nao):
-    """Off-diagonal vxc block for one spin channel (same as RKS)."""
-    dao_vxc_off = np.zeros((3, 3, nao, nao))
-
-    if xc_type == "LDA":
-        for t in range(3):
-            aowv = 0.5 * np.einsum("gu, g -> gu", ao[t + 1], wv[0])
-            for s in range(3):
-                dao_vxc_off[t, s] += 2 * ao[s + 1].T @ aowv
-
-    if xc_type in ("GGA", "MGGA"):
-        for t in range(3):
-            aowv = 0.5 * np.einsum("gu, g -> gu", ao[t + 1], wv[0])
-            for r in range(3):
-                aowv += np.einsum("gu, g -> gu", ao[IDX_AO_DERIV2[t][r]], wv[r + 1])
-            for s in range(3):
-                dao_vxc_off[t, s] += 2 * ao[s + 1].T @ aowv
-
-    if xc_type == "MGGA":
-        dao_vxc_tau = np.zeros((3, 3, nao, nao))
-        for k in range(3):
-            for s in range(3):
-                aowv = np.einsum("gu, g -> gu", ao[IDX_AO_DERIV2[k][s]], wv[4])
-                for t in range(s, 3):
-                    dao_vxc_tau[t, s] += 0.5 * aowv.T @ ao[IDX_AO_DERIV2[k][t]]
-        for t in range(3):
-            for s in range(t):
-                dao_vxc_tau[s, t] = dao_vxc_tau[t, s].T
-        dao_vxc_off += dao_vxc_tau
-
-    dao_vxc_off += dao_vxc_off.transpose(1, 0, 3, 2)
-
-    de_vxc_off = np.zeros((natm, natm, 3, 3))
-    for A in range(natm):
-        _, _, p0A, p1A = aoslices[A]
-        for B in range(A + 1):
-            _, _, p0B, p1B = aoslices[B]
-            de_vxc_off[A, B] = np.einsum(
-                "tsuv, uv -> ts",
-                dao_vxc_off[:, :, p0B:p1B, p0A:p1A],
-                dm0[p0B:p1B, p0A:p1A],
-            )
-            if A != B:
-                de_vxc_off[B, A] = de_vxc_off[A, B].T
-    return de_vxc_off
-
-
-def _vmat_ip_uks(xc_type, ao, wva, wvb, nao):
-    """Gradient-level Vxc matrix for UKS, per spin.
-
-    Parameters
-    ----------
-    wva, wvb : np.ndarray
-        Per-spin weight*vxc, shape ``[nvar, ngrids]``.
-
-    Returns
-    -------
-    vmata_ip, vmatb_ip : np.ndarray
-        Each shape ``[3, nao, nao]``.
-    """
-    vmata_ip = _vmat_ip_one_spin(xc_type, ao, wva, nao)
-    vmatb_ip = _vmat_ip_one_spin(xc_type, ao, wvb, nao)
-    return vmata_ip, vmatb_ip
-
-
-def _vmat_ip_one_spin(xc_type, ao, wv, nao):
-    """Gradient-level Vxc matrix for one spin channel (same as RKS)."""
-    vmat_ip = np.zeros((3, nao, nao))
-
-    if xc_type == "LDA":
-        aow = np.einsum("g, gu -> gu", wv[0], ao[O])
-        for t in range(3):
-            vmat_ip[t] += ao[t + 1].T @ aow
-        return vmat_ip
-
-    aow = 0.5 * np.einsum("g, gu -> gu", wv[0], ao[O])
-    for r in range(3):
-        aow += np.einsum("g, gu -> gu", wv[1 + r], ao[1 + r])
-    for t in range(3):
-        vmat_ip[t] += ao[t + 1].T @ aow
-
-    aow_d = np.array([0.5 * wv[0, :, None] * ao[t + 1] for t in range(3)])
-    aow_d[0] += wv[1, :, None] * ao[XX] + wv[2, :, None] * ao[XY] + wv[3, :, None] * ao[XZ]
-    aow_d[1] += wv[1, :, None] * ao[YX] + wv[2, :, None] * ao[YY] + wv[3, :, None] * ao[YZ]
-    aow_d[2] += wv[1, :, None] * ao[ZX] + wv[2, :, None] * ao[ZY] + wv[3, :, None] * ao[ZZ]
-    for t in range(3):
-        vmat_ip[t] += aow_d[t].T @ ao[O]
-
-    if xc_type == "MGGA":
-        for r in range(3):
-            aow = 0.5 * wv[4, :, None] * ao[1 + r]
-            for t in range(3):
-                vmat_ip[t] += ao[IDX_AO_DERIV2[t][r]].T @ aow
-
-    return vmat_ip
-
-
 def _vmat_deriv1_uks(xc_type, ao, drhoa, drhob, wf, vmata_ip, vmatb_ip, aoslices, natm, nao):
     """Per-atom skeleton derivative of the Vxc Fock matrix for UKS.
+
+    Unlike the spin-diagonal pieces (``_make_drho`` / ``_de_vxc_diag`` /
+    ``_de_vxc_off`` / ``_vmat_ip``, all shared with RKS), the fxc contraction
+    here couples the two spin channels:
+        wva_f = wf_aa @ drho_a + wf_ab @ drho_b
+        wvb_f = wf_ba @ drho_a + wf_bb @ drho_b
+    so this routine is genuinely UKS-specific.
 
     Parameters
     ----------
@@ -386,7 +169,8 @@ def _vmat_deriv1_uks(xc_type, ao, drhoa, drhob, wf, vmata_ip, vmatb_ip, aoslices
     wf : np.ndarray
         Weight*fxc, shape ``[2, nvar, 2, nvar, ngrids]``.
     vmata_ip, vmatb_ip : np.ndarray
-        Per-spin gradient-level Vxc, shape ``[3, nao, nao]``.
+        Per-spin gradient-level Vxc (from the shared RKS ``_vmat_ip``),
+        shape ``[3, nao, nao]``.
 
     Returns
     -------
@@ -467,6 +251,11 @@ def make_hessian_setup_batch_uks(
 ) -> dict[str, np.ndarray]:
     """Compute all DFT skeleton ingredients of the UKS Hessian in one pass.
 
+    The spin-diagonal pieces (``de_vxc_diag``, ``de_vxc_off``, ``vmat_ip``,
+    ``drho``) reuse the RKS single-spin helpers from ``rks.py``, called once
+    per spin channel.  Only the spin-coupled pieces (``_eval_rho_exc_vxc_fxc_uks``,
+    ``_de_fxc_uks``, ``_vmat_deriv1_uks``) are UKS-specific.
+
     Parameters
     ----------
     dm0a, dm0b : np.ndarray
@@ -512,20 +301,20 @@ def make_hessian_setup_batch_uks(
     de_fxc = _de_fxc_uks(weights, drhoa, drhob, fxc)
     tic("drho, de_fxc", t0)
 
+    # Spin-diagonal pieces: delegate to the RKS single-spin helpers.
     t0 = time.time()
-    de_vxc_diag_a, de_vxc_diag_b = _de_vxc_diag_uks(
-        xc_type, ao, ao_dm0a, ao_dm0b, wva, wvb, aoslices, natm, nao
-    )
+    de_vxc_diag_a = _de_vxc_diag(xc_type, ao, ao_dm0a, wva, aoslices, natm, nao)
+    de_vxc_diag_b = _de_vxc_diag(xc_type, ao, ao_dm0b, wvb, aoslices, natm, nao)
     tic("de_vxc_diag", t0)
 
     t0 = time.time()
-    de_vxc_off_a, de_vxc_off_b = _de_vxc_off_uks(
-        xc_type, ao, dm0a, dm0b, wva, wvb, aoslices, natm, nao
-    )
+    de_vxc_off_a = _de_vxc_off(xc_type, ao, dm0a, wva, aoslices, natm, nao)
+    de_vxc_off_b = _de_vxc_off(xc_type, ao, dm0b, wvb, aoslices, natm, nao)
     tic("de_vxc_off", t0)
 
     t0 = time.time()
-    vmat_ip_a, vmat_ip_b = _vmat_ip_uks(xc_type, ao, wva, wvb, nao)
+    vmat_ip_a = _vmat_ip(xc_type, ao, wva, nao)
+    vmat_ip_b = _vmat_ip(xc_type, ao, wvb, nao)
     tic("vmat_ip", t0)
 
     t0 = time.time()
@@ -596,8 +385,15 @@ def get_uks_response_bra_naive(
     dm1b = dm1b + dm1b.swapaxes(-1, -2)
 
     v1a, v1b = ni.nr_uks_fxc(
-        mol, grids, xc, (dm0a, dm0b), (dm1a, dm1b), hermi=1,
-        rho0=rho_cached, vxc=vxc_cached, fxc=fxc_cached,
+        mol,
+        grids,
+        xc,
+        (dm0a, dm0b),
+        (dm1a, dm1b),
+        hermi=1,
+        rho0=rho_cached,
+        vxc=vxc_cached,
+        fxc=fxc_cached,
     )
 
     resp_a = v1a @ mocc_a
@@ -649,9 +445,13 @@ class UHessKSNaive(UHessElecInteractAPI):
         for start in range(0, ngrids, self.nbatch_grids):
             stop = min(start + self.nbatch_grids, ngrids)
             partial = make_hessian_setup_batch_uks(
-                self.mol, self.xc,
-                coords[start:stop], weights[start:stop],
-                dm0a, dm0b, verbose=False,
+                self.mol,
+                self.xc,
+                coords[start:stop],
+                weights[start:stop],
+                dm0a,
+                dm0b,
+                verbose=False,
             )
             if result_sum is None:
                 result_sum = {k: v.copy() for k, v in partial.items()}
@@ -661,15 +461,19 @@ class UHessKSNaive(UHessElecInteractAPI):
 
         # Total XC skeleton = (diag_a + off_a + diag_b + off_b + de_fxc)
         self.result["de_xc_skeleton"] = (
-            result_sum["de_vxc_diag_a"] + result_sum["de_vxc_off_a"]
-            + result_sum["de_vxc_diag_b"] + result_sum["de_vxc_off_b"]
+            result_sum["de_vxc_diag_a"]
+            + result_sum["de_vxc_off_a"]
+            + result_sum["de_vxc_diag_b"]
+            + result_sum["de_vxc_off_b"]
             + result_sum["de_fxc"]
         )
         # Per-spin deriv1_ao
-        self.result["de_xc_deriv1_ao"] = np.array([
-            result_sum["vmat_deriv1_a"],
-            result_sum["vmat_deriv1_b"],
-        ])
+        self.result["de_xc_deriv1_ao"] = np.array(
+            [
+                result_sum["vmat_deriv1_a"],
+                result_sum["vmat_deriv1_b"],
+            ]
+        )
 
     def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
         if "de_xc_skeleton" not in self.result:
@@ -690,13 +494,24 @@ class UHessKSNaive(UHessElecInteractAPI):
 
         ni = dft.numint.NumInt()
         self.rho_cached, self.vxc_cached, self.fxc_cached = ni.cache_xc_kernel(
-            self.mol, self.grids, self.xc, mo_coeff, mo_occ, spin=1,
+            self.mol,
+            self.grids,
+            self.xc,
+            mo_coeff,
+            mo_occ,
+            spin=1,
         )
 
     def get_response_bra(self, bra: list[np.ndarray]) -> list[np.ndarray]:
         return get_uks_response_bra_naive(
-            self.mol, self.grids, self.xc,
-            self.mo_coeff, self.mo_occ, self.dm0a, self.dm0b, bra,
+            self.mol,
+            self.grids,
+            self.xc,
+            self.mo_coeff,
+            self.mo_occ,
+            self.dm0a,
+            self.dm0b,
+            bra,
             rho_cached=self.rho_cached,
             vxc_cached=self.vxc_cached,
             fxc_cached=self.fxc_cached,
