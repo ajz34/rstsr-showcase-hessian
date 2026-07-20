@@ -468,28 +468,55 @@ pub fn get_vmat_ip(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
     vmat_ip
 }
 
-pub fn get_vmat_deriv1(
+pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
+    // direct transformation of `pyhessref/nimatmul/rks.py`, function `_vmat_vxc`
+    //
+    // vxc contribution to the per-atom skeleton derivative of the Vxc Fock
+    // matrix - the ipip (basis-function derivative) part, sliced directly
+    // from the gradient-level `vmat_ip` onto each atom's bra rows.  Spin-diagonal,
+    // so UKS reuses it per spin channel.
+
+    let natm = aoslices.len();
+    let nao = vmat_ip.shape()[0];
+
+    let mut vmat_vxc: Tsr = rt::zeros(([nao, nao, 3, natm], vmat_ip.device()));
+
+    for (A, &[_, _, p0, p1]) in aoslices.iter().enumerate() {
+        let slc = rt::slice!(p0, p1);
+        // ipip part lives only on atom A's bra rows; sign matches the existing test.
+        *&mut vmat_vxc.i_mut((slc, .., .., A)) -= vmat_ip.i((slc, .., ..));
+    }
+
+    // Assemble bra + ket (electron->nuclear coordinate convention).
+    &vmat_vxc + vmat_vxc.swapaxes(0, 1)
+}
+
+pub fn get_vmat_fxc(
     xc_type: XCDenType,
     ao: TsrView,
     drho: TsrView,
     wf: TsrView,
-    vmat_ip: TsrView,
     aoslices: &[[usize; 4]],
 ) -> Tsr {
+    // direct transformation of `pyhessref/nimatmul/rks.py`, function `_vmat_fxc`
+    //
+    // fxc contribution to the per-atom skeleton derivative of the Vxc Fock
+    // matrix - the fxc kernel folded against the skeleton density derivative
+    // `drho`.  This is the genuinely spin-coupled piece for UKS, so the UKS
+    // counterpart `get_vmat_fxc_uks` is kept separate.
+
     let natm = aoslices.len();
     let nao = ao.shape()[1];
 
-    let mut vmat_deriv1: Tsr = rt::zeros(([nao, nao, 3, natm], ao.device()));
+    let mut vmat_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], ao.device()));
 
-    for (A, &[_, _, p0, p1]) in aoslices.iter().enumerate() {
-        let slc = rt::slice!(p0, p1);
-
+    for A in 0..natm {
         if matches!(xc_type, RHO) {
             // wf_rho: [ngrids, 3]
             let wf_rho: Tsr = 0.5 * index!(wf, O, O) * drho.i((.., O, .., A));
             for t in 0..3 {
                 let aow = index!(wf_rho, t) * index!(ao, O);
-                index_mut!(vmat_deriv1, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
+                index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
             }
         }
 
@@ -503,23 +530,43 @@ pub fn get_vmat_deriv1(
             }
             for t in 0..3 {
                 let aow = rt::vecdot(wf_rho.i((.., None, ..4, t)), ao.i((.., .., ..4)), 2);
-                index_mut!(vmat_deriv1, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
+                index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
             }
 
             if matches!(xc_type, TAU) {
                 for r in [X, Y, Z] {
                     for t in 0..3 {
                         let aow = wf_rho.i((.., 4, t)) * index!(ao, r);
-                        index_mut!(vmat_deriv1, t, A).matmul_from(aow.t(), index!(ao, r), 1.0, 1.0);
+                        index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, r), 1.0, 1.0);
                     }
                 }
             }
         }
-
-        *&mut vmat_deriv1.i_mut((slc, .., .., A)) -= vmat_ip.i((slc, .., ..));
     }
 
-    &vmat_deriv1 + vmat_deriv1.swapaxes(0, 1)
+    // Assemble bra + ket (electron->nuclear coordinate convention).
+    &vmat_fxc + vmat_fxc.swapaxes(0, 1)
+}
+
+pub fn get_vmat_deriv1(
+    xc_type: XCDenType,
+    ao: TsrView,
+    drho: TsrView,
+    wf: TsrView,
+    vmat_ip: TsrView,
+    aoslices: &[[usize; 4]],
+) -> Tsr {
+    // direct transformation of `pyhessref/nimatmul/rks.py`, function `_vmat_deriv1`
+    //
+    // Split into a vxc contribution (the ipip basis-derivative part, from
+    // `vmat_ip`) and an fxc contribution (the fxc kernel folded against `drho`).
+    // Each is assembled independently (bra + ket) and the two are summed.  The
+    // split is exact up to floating-point order: the assembled sum
+    // `(F + F.T) + (V + V.T)` equals the previous `(F + V) + (F + V).T`.
+
+    let vmat_fxc = get_vmat_fxc(xc_type, ao, drho, wf, aoslices);
+    let vmat_vxc = get_vmat_vxc(vmat_ip, aoslices);
+    &vmat_fxc + &vmat_vxc
 }
 
 /* #endregion */

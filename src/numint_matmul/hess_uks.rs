@@ -1,6 +1,6 @@
 // see also pyhessref/nimatmul/uks.py
 
-use super::hess_rks::{get_de_vxc_diag, get_de_vxc_off, get_drho, get_vmat_ip};
+use super::hess_rks::{get_de_vxc_diag, get_de_vxc_off, get_drho, get_vmat_ip, get_vmat_vxc};
 use super::prelude::*;
 
 /* #region const dimensions/indices definition */
@@ -148,25 +148,31 @@ pub fn get_de_fxc_uks(wf: TsrView, drhoα: TsrView, drhoβ: TsrView) -> Tsr {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn get_vmat_deriv1_uks(
+pub fn get_vmat_fxc_uks(
     xc_type: XCDenType,
     ao: TsrView,
     drhoα: TsrView,
     drhoβ: TsrView,
     wf: TsrView,
-    vmat_ip_α: TsrView,
-    vmat_ip_β: TsrView,
     aoslices: &[[usize; 4]],
 ) -> (Tsr, Tsr) {
+    // see also pyhessref/nimatmul/uks.py, function `_vmat_fxc_uks`
+    //
+    // fxc contribution to the per-atom skeleton derivative of the Vxc Fock
+    // matrix for UKS - the spin-coupled part.  Unlike the spin-diagonal
+    // `get_vmat_vxc` (reused from RKS per spin), the fxc contraction here
+    // couples the two spin channels:
+    //   wvα_f = wf_αα @ drho_α + wf_βα @ drho_β
+    //   wvβ_f = wf_αβ @ drho_α + wf_ββ @ drho_β
+
     let natm = aoslices.len();
     let nao = ao.shape()[1];
     let device = ao.device();
 
-    let mut vmatα_deriv1: Tsr = rt::zeros(([nao, nao, 3, natm], device));
-    let mut vmatβ_deriv1: Tsr = rt::zeros(([nao, nao, 3, natm], device));
+    let mut vmatα_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], device));
+    let mut vmatβ_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], device));
 
-    for (A, &[_, _, p0, p1]) in aoslices.iter().enumerate() {
-        let slc = rt::slice!(p0, p1);
+    for A in 0..natm {
 
         if matches!(xc_type, RHO) {
             // LDA: fxc is [G, 1, 2, 1, 2], extract scalar spin blocks
@@ -186,9 +192,9 @@ pub fn get_vmat_deriv1_uks(
 
             for t in 0..3 {
                 let aowα = wvα_f.i((.., t)) * index!(ao, O);
-                index_mut!(vmatα_deriv1, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
+                index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
                 let aowβ = wvβ_f.i((.., t)) * index!(ao, O);
-                index_mut!(vmatβ_deriv1, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
+                index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
             }
         }
 
@@ -231,30 +237,51 @@ pub fn get_vmat_deriv1_uks(
                 // Contract with ao: aow = sum_c wvα_f_t[:,c] * ao[c]
                 for c in 0..4 {
                     let aowα = wf_rho_α.i((.., c)) * index!(ao, c); // [G, nao]
-                    index_mut!(vmatα_deriv1, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
+                    index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
                     let aowβ = wf_rho_β.i((.., c)) * index!(ao, c); // [G, nao]
-                    index_mut!(vmatβ_deriv1, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
+                    index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
                 }
 
                 if matches!(xc_type, TAU) {
                     for r in [X, Y, Z] {
                         let aowα = wf_rho_α.i((.., 4)) * index!(ao, r); // [G, nao]
-                        index_mut!(vmatα_deriv1, t, A).matmul_from(aowα.t(), index!(ao, r), 1.0, 1.0);
+                        index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, r), 1.0, 1.0);
                         let aowβ = wf_rho_β.i((.., 4)) * index!(ao, r); // [G, nao]
-                        index_mut!(vmatβ_deriv1, t, A).matmul_from(aowβ.t(), index!(ao, r), 1.0, 1.0);
+                        index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, r), 1.0, 1.0);
                     }
                 }
             }
         }
-
-        *&mut vmatα_deriv1.i_mut((slc, .., .., A)) -= vmat_ip_α.i((slc, .., ..));
-        *&mut vmatβ_deriv1.i_mut((slc, .., .., A)) -= vmat_ip_β.i((slc, .., ..));
     }
 
-    let vmatα_deriv1 = &vmatα_deriv1 + vmatα_deriv1.swapaxes(0, 1);
-    let vmatβ_deriv1 = &vmatβ_deriv1 + vmatβ_deriv1.swapaxes(0, 1);
+    let vmatα_fxc = &vmatα_fxc + vmatα_fxc.swapaxes(0, 1);
+    let vmatβ_fxc = &vmatβ_fxc + vmatβ_fxc.swapaxes(0, 1);
 
-    (vmatα_deriv1, vmatβ_deriv1)
+    (vmatα_fxc, vmatβ_fxc)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn get_vmat_deriv1_uks(
+    xc_type: XCDenType,
+    ao: TsrView,
+    drhoα: TsrView,
+    drhoβ: TsrView,
+    wf: TsrView,
+    vmat_ip_α: TsrView,
+    vmat_ip_β: TsrView,
+    aoslices: &[[usize; 4]],
+) -> (Tsr, Tsr) {
+    // see also pyhessref/nimatmul/uks.py, function `_vmat_deriv1_uks`
+    //
+    // Split into a per-spin vxc contribution (the ipip basis-derivative part,
+    // reused from the RKS `get_vmat_vxc`) and a spin-coupled fxc contribution
+    // (`get_vmat_fxc_uks`).  Each is assembled independently and summed per spin;
+    // the split is exact up to floating-point order (same as the RKS split).
+
+    let (vmatα_fxc, vmatβ_fxc) = get_vmat_fxc_uks(xc_type, ao, drhoα, drhoβ, wf, aoslices);
+    let vmatα_vxc = get_vmat_vxc(vmat_ip_α, aoslices);
+    let vmatβ_vxc = get_vmat_vxc(vmat_ip_β, aoslices);
+    (&vmatα_fxc + &vmatα_vxc, &vmatβ_fxc + &vmatβ_vxc)
 }
 
 pub fn make_hessian_setup_uks(
