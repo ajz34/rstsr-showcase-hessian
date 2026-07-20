@@ -441,15 +441,127 @@ def _vmat_ip(xc_type, ao, wv, nao):
     return vmat_ip
 
 
+def _vmat_vxc(vmat_ip, aoslices, natm, nao):
+    """vxc contribution to the per-atom skeleton derivative of the Vxc Fock
+    matrix - the ipip (basis-function derivative) part.
+
+    This is the slice of the gradient-level ``vmat_ip`` matrix that lives on
+    each atom ``A``'s bra rows (the on-atom contribution ``_vmat_deriv1``
+    previously folded in directly).  It depends only on ``vmat_ip`` and the
+    per-atom AO slices - it is spin-diagonal, so UKS reuses it per spin
+    channel.
+
+    Parameters
+    ----------
+    vmat_ip : np.ndarray
+        Gradient-level Vxc matrix from ``_vmat_ip``, shape ``[3, nao, nao]``.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]`` - only the last two columns
+        ``[p0, p1)`` are used for the bra-side AO range of each atom.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+    nao : int
+        Total number of atomic orbitals.
+
+    Returns
+    -------
+    vmat_vxc : np.ndarray
+        vxc contribution, shape ``[natm, 3, nao, nao]``, assembled across the
+        AO axes (``vmat_vxc += vmat_vxc.swapaxes(-1, -2)``).
+    """
+    vmat_vxc = np.zeros((natm, 3, nao, nao))
+    for A in range(natm):
+        _, _, p0, p1 = aoslices[A]
+        # ipip part lives only on atom A's bra rows; sign matches the existing test.
+        vmat_vxc[A, :, p0:p1, :] -= vmat_ip[:, p0:p1, :]
+    # Assemble bra + ket (electron->nuclear coordinate convention).
+    vmat_vxc += vmat_vxc.swapaxes(-1, -2)
+    return vmat_vxc
+
+
+def _vmat_fxc(xc_type, ao, drho, wf, natm, nao):
+    """fxc contribution to the per-atom skeleton derivative of the Vxc Fock
+    matrix - the part that comes from the fxc kernel responding to the
+    skeleton density derivative ``drho``.
+
+    For each atom ``A`` and Cartesian direction ``t``, this contracts the
+    fxc kernel ``wf`` (weight*fxc) folded against ``drho[A]`` with the AO
+    value/gradient channels.  It is the genuinely spin-coupled piece for
+    UKS (alpha/beta drho mixed through the spin-indexed fxc kernel), so the
+    UKS counterpart ``_vmat_fxc_uks`` is kept separate.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]``.  Only indices 0..3 are read here; higher
+        channels in ``ao`` are unused but may be present.
+    drho : np.ndarray
+        Skeleton derivative of rho components (output of ``_make_drho``),
+        shape ``[natm, 3, nvar, ngrids]``.
+    wf : np.ndarray
+        Weight-times-fxc, shape ``[nvar, nvar, ngrids]``.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+    nao : int
+        Total number of atomic orbitals.
+
+    Returns
+    -------
+    vmat_fxc : np.ndarray
+        fxc contribution, shape ``[natm, 3, nao, nao]``, assembled across the
+        AO axes (``vmat_fxc += vmat_fxc.swapaxes(-1, -2)``).
+    """
+    vmat_fxc = np.zeros((natm, 3, nao, nao))
+
+    for A in range(natm):
+        if xc_type == "LDA":
+            # wv_f[t, g] = wf[g] * drho[A, t, 0, g] / 2  (drho already has the *2)
+            wv_f = np.einsum("g, tg -> tg", wf[0, 0], drho[A, :, 0]) * 0.5
+            for t in range(3):
+                aow = wv_f[t][:, None] * ao[O]
+                vmat_fxc[A, t] += aow.T @ ao[O]
+
+        if xc_type in ("GGA", "MGGA"):
+            wv_f = np.einsum("xyg, txg -> ytg", wf, drho[A])
+            wv_f[0] *= 0.5
+            if xc_type == "MGGA":
+                wv_f[4] *= 0.25
+
+            aow_f = np.einsum("ctg, cgm -> tgm", wv_f[:4], ao[:4])
+            for t in range(3):
+                vmat_fxc[A, t] += aow_f[t].T @ ao[O]
+
+        if xc_type == "MGGA":
+            for j in range(1, 4):
+                for t in range(3):
+                    aow = wv_f[4, t][:, None] * ao[j]
+                    vmat_fxc[A, t] += aow.T @ ao[j]
+
+    # Assemble bra + ket (electron->nuclear coordinate convention).
+    vmat_fxc += vmat_fxc.swapaxes(-1, -2)
+    return vmat_fxc
+
+
 def _vmat_deriv1(xc_type, ao, drho, wf, vmat_ip, aoslices, natm, nao):
     """Per-atom skeleton derivative of the Vxc Fock matrix (``vmat_deriv1``).
 
     For each atom ``A`` and Cartesian direction ``t``, this is the
     nuclear-coordinate derivative of the Vxc Fock matrix that holds the
     density matrix fixed (i.e. the CP-KS *skeleton* term, not the full
-    response).  It combines the fxc kernel folded against ``drho[A]`` with
-    the bra-side ipip slice from ``vmat_ip``, then antisymmetrises across
-    AO indices to enforce the bra↔ket convention.
+    response).  It is split into two independently assembled contributions:
+
+    - ``_vmat_vxc`` : the ipip basis-derivative part, taken directly from the
+      gradient-level ``vmat_ip`` sliced on atom A's bra rows.
+    - ``_vmat_fxc`` : the fxc kernel folded against the skeleton density
+      derivative ``drho[A]``.
+
+    Each part is assembled across the AO axes (bra + ket) on its own, and the
+    two are summed here.  Splitting is exact up to floating-point order: the
+    assembled sum ``(F + F.T) + (V + V.T)`` equals the previous
+    ``(F + V) + (F + V).T``.
 
     Parameters
     ----------
@@ -476,45 +588,20 @@ def _vmat_deriv1(xc_type, ao, drho, wf, vmat_ip, aoslices, natm, nao):
 
     Returns
     -------
-    vmat_deriv1 : np.ndarray
-        Skeleton derivative of the Vxc Fock matrix, shape
-        ``[natm, 3, nao, nao]``, antisymmetrised on the trailing AO axes
-        (``vmat_deriv1 += vmat_deriv1.swapaxes(-1, -2)``).
+    dict[str, np.ndarray]
+        Dictionary with keys:
+        - ``"vmat_fxc"`` : the fxc contribution (assembled across AO axes).
+        - ``"vmat_vxc"`` : the vxc (ipip) contribution (assembled across AO axes).
+        - ``"vmat_deriv1"`` : the summed skeleton derivative, shape
+          ``[natm, 3, nao, nao]``.
     """
-    vmat_deriv1 = np.zeros((natm, 3, nao, nao))
-
-    for A in range(natm):
-        _, _, p0, p1 = aoslices[A]
-
-        if xc_type == "LDA":
-            # wv_f[t, g] = wf[g] * drho[A, t, 0, g] / 2  (drho already has the *2)
-            wv_f = np.einsum("g, tg -> tg", wf[0, 0], drho[A, :, 0]) * 0.5
-            for t in range(3):
-                aow = wv_f[t][:, None] * ao[O]
-                vmat_deriv1[A, t] += aow.T @ ao[O]
-
-        if xc_type in ("GGA", "MGGA"):
-            wv_f = np.einsum("xyg, txg -> ytg", wf, drho[A])
-            wv_f[0] *= 0.5
-            if xc_type == "MGGA":
-                wv_f[4] *= 0.25
-
-            aow_f = np.einsum("ctg, cgm -> tgm", wv_f[:4], ao[:4])
-            for t in range(3):
-                vmat_deriv1[A, t] += aow_f[t].T @ ao[O]
-
-        if xc_type == "MGGA":
-            for j in range(1, 4):
-                for t in range(3):
-                    aow = wv_f[4, t][:, None] * ao[j]
-                    vmat_deriv1[A, t] += aow.T @ ao[j]
-
-        # ipip part lives only on atom A's bra rows; sign matches the existing test.
-        vmat_deriv1[A, :, p0:p1, :] -= vmat_ip[:, p0:p1, :]
-
-    # Antisymmetrise across AO indices (electron→nuclear coordinate convention).
-    vmat_deriv1 += vmat_deriv1.swapaxes(-1, -2)
-    return vmat_deriv1
+    vmat_fxc = _vmat_fxc(xc_type, ao, drho, wf, natm, nao)
+    vmat_vxc = _vmat_vxc(vmat_ip, aoslices, natm, nao)
+    return {
+        "vmat_fxc": vmat_fxc,
+        "vmat_vxc": vmat_vxc,
+        "vmat_deriv1": vmat_fxc + vmat_vxc,
+    }
 
 
 def make_hessian_setup_batch(
@@ -609,7 +696,7 @@ def make_hessian_setup_batch(
     tic("vmat_ip", t0)
 
     t0 = time.time()
-    vmat_deriv1 = _vmat_deriv1(xc_type, ao, drho, wf, vmat_ip, aoslices, natm, nao)
+    vmat = _vmat_deriv1(xc_type, ao, drho, wf, vmat_ip, aoslices, natm, nao)
     tic("vmat_deriv1", t0)
 
     return {
@@ -617,7 +704,9 @@ def make_hessian_setup_batch(
         "de_vxc_off": de_vxc_off,
         "de_fxc": de_fxc,
         "vmat_ip": vmat_ip,
-        "vmat_deriv1": vmat_deriv1,
+        "vmat_deriv1": vmat["vmat_deriv1"],
+        "vmat_fxc": vmat["vmat_fxc"],
+        "vmat_vxc": vmat["vmat_vxc"],
     }
 
 

@@ -16,6 +16,7 @@ from pyhessref.nimatmul.rks import (
     _de_vxc_diag,
     _de_vxc_off,
     _vmat_ip,
+    _vmat_vxc,
     # AO derivative component indices (only the value/gradient channels are
     # referenced directly in the UKS-specific routines below; the higher-order
     # indices live with the shared single-spin helpers in ``rks.py``).
@@ -152,37 +153,39 @@ def _de_fxc_uks(weights, drhoa, drhob, fxc):
     return de_fxc
 
 
-def _vmat_deriv1_uks(xc_type, ao, drhoa, drhob, wf, vmata_ip, vmatb_ip, aoslices, natm, nao):
-    """Per-atom skeleton derivative of the Vxc Fock matrix for UKS.
+def _vmat_fxc_uks(xc_type, ao, drhoa, drhob, wf, natm, nao):
+    """fxc contribution to the per-atom skeleton derivative of the Vxc Fock
+    matrix for UKS - the spin-coupled part.
 
-    Unlike the spin-diagonal pieces (``_make_drho`` / ``_de_vxc_diag`` /
-    ``_de_vxc_off`` / ``_vmat_ip``, all shared with RKS), the fxc contraction
-    here couples the two spin channels:
+    Unlike the spin-diagonal ``_vmat_vxc`` (reused from RKS per spin), the fxc
+    contraction here couples the two spin channels:
         wva_f = wf_aa @ drho_a + wf_ab @ drho_b
         wvb_f = wf_ba @ drho_a + wf_bb @ drho_b
-    so this routine is genuinely UKS-specific.
+    Returned per spin, each assembled across the AO axes (bra + ket).
 
     Parameters
     ----------
+    xc_type : str
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and derivatives, shape ``[ncomp, ngrids, nao]``.  Only indices
+        0..3 are read here.
     drhoa, drhob : np.ndarray
         Per-spin drho, shape ``[natm, 3, nvar, ngrids]``.
     wf : np.ndarray
         Weight*fxc, shape ``[2, nvar, 2, nvar, ngrids]``.
-    vmata_ip, vmatb_ip : np.ndarray
-        Per-spin gradient-level Vxc (from the shared RKS ``_vmat_ip``),
-        shape ``[3, nao, nao]``.
+    natm : int
+    nao : int
 
     Returns
     -------
-    vmata_deriv1, vmatb_deriv1 : np.ndarray
-        Each shape ``[natm, 3, nao, nao]``, antisymmetrised in AO.
+    vmata_fxc, vmatb_fxc : np.ndarray
+        Each shape ``[natm, 3, nao, nao]``, assembled across the AO axes.
     """
-    vmata_deriv1 = np.zeros((natm, 3, nao, nao))
-    vmatb_deriv1 = np.zeros((natm, 3, nao, nao))
+    vmata_fxc = np.zeros((natm, 3, nao, nao))
+    vmatb_fxc = np.zeros((natm, 3, nao, nao))
 
     for A in range(natm):
-        _, _, p0, p1 = aoslices[A]
-
         # For UKS, the fxc contraction couples both spin channels:
         # wva_f = wf_aa @ drho_a + wf_ab @ drho_b
         # wvb_f = wf_ba @ drho_a + wf_bb @ drho_b
@@ -194,9 +197,9 @@ def _vmat_deriv1_uks(xc_type, ao, drhoa, drhob, wf, vmata_ip, vmatb_ip, aoslices
             wvb_f += np.einsum("g, tg -> tg", wf[1, 0, 1, 0], drhob[A, :, 0]) * 0.5
             for t in range(3):
                 aowa = wva_f[t][:, None] * ao[O]
-                vmata_deriv1[A, t] += aowa.T @ ao[O]
+                vmata_fxc[A, t] += aowa.T @ ao[O]
                 aowb = wvb_f[t][:, None] * ao[O]
-                vmatb_deriv1[A, t] += aowb.T @ ao[O]
+                vmatb_fxc[A, t] += aowb.T @ ao[O]
 
         if xc_type in ("GGA", "MGGA"):
             # wf has shape [2, nvar, 2, nvar, ngrids]
@@ -218,25 +221,56 @@ def _vmat_deriv1_uks(xc_type, ao, drhoa, drhob, wf, vmata_ip, vmatb_ip, aoslices
             aowa_f = np.einsum("ctg, cgm -> tgm", wva_f[:4], ao[:4])
             aowb_f = np.einsum("ctg, cgm -> tgm", wvb_f[:4], ao[:4])
             for t in range(3):
-                vmata_deriv1[A, t] += aowa_f[t].T @ ao[O]
-                vmatb_deriv1[A, t] += aowb_f[t].T @ ao[O]
+                vmata_fxc[A, t] += aowa_f[t].T @ ao[O]
+                vmatb_fxc[A, t] += aowb_f[t].T @ ao[O]
 
         if xc_type == "MGGA":
             for j in range(1, 4):
                 for t in range(3):
                     aowa = wva_f[4, t][:, None] * ao[j]
-                    vmata_deriv1[A, t] += aowa.T @ ao[j]
+                    vmata_fxc[A, t] += aowa.T @ ao[j]
                     aowb = wvb_f[4, t][:, None] * ao[j]
-                    vmatb_deriv1[A, t] += aowb.T @ ao[j]
+                    vmatb_fxc[A, t] += aowb.T @ ao[j]
 
-        # ipip part: subtract from atom A's bra rows
-        vmata_deriv1[A, :, p0:p1, :] -= vmata_ip[:, p0:p1, :]
-        vmatb_deriv1[A, :, p0:p1, :] -= vmatb_ip[:, p0:p1, :]
+    # Assemble bra + ket per spin.
+    vmata_fxc += vmata_fxc.swapaxes(-1, -2)
+    vmatb_fxc += vmatb_fxc.swapaxes(-1, -2)
+    return vmata_fxc, vmatb_fxc
 
-    # Antisymmetrise
-    vmata_deriv1 += vmata_deriv1.swapaxes(-1, -2)
-    vmatb_deriv1 += vmatb_deriv1.swapaxes(-1, -2)
-    return vmata_deriv1, vmatb_deriv1
+
+def _vmat_deriv1_uks(xc_type, ao, drhoa, drhob, wf, vmata_ip, vmatb_ip, aoslices, natm, nao):
+    """Per-atom skeleton derivative of the Vxc Fock matrix for UKS.
+
+    Split into a per-spin vxc contribution (the ipip basis-derivative part,
+    reused from the RKS ``_vmat_vxc``) and a spin-coupled fxc contribution
+    (``_vmat_fxc_uks``).  Each is assembled independently and summed per spin;
+    the split is exact up to floating-point order (same as the RKS split).
+
+    Parameters
+    ----------
+    drhoa, drhob : np.ndarray
+        Per-spin drho, shape ``[natm, 3, nvar, ngrids]``.
+    wf : np.ndarray
+        Weight*fxc, shape ``[2, nvar, 2, nvar, ngrids]``.
+    vmata_ip, vmatb_ip : np.ndarray
+        Per-spin gradient-level Vxc (from the shared RKS ``_vmat_ip``),
+        shape ``[3, nao, nao]``.
+
+    Returns
+    -------
+    dict[str, list[np.ndarray]]
+        Dictionary with keys ``"vmat_fxc"``, ``"vmat_vxc"``, ``"vmat_deriv1"``,
+        each mapping to a per-spin ``[alpha, beta]`` list of arrays, each of
+        shape ``[natm, 3, nao, nao]`` and assembled across the AO axes.
+    """
+    vmata_fxc, vmatb_fxc = _vmat_fxc_uks(xc_type, ao, drhoa, drhob, wf, natm, nao)
+    vmata_vxc = _vmat_vxc(vmata_ip, aoslices, natm, nao)
+    vmatb_vxc = _vmat_vxc(vmatb_ip, aoslices, natm, nao)
+    return {
+        "vmat_fxc": [vmata_fxc, vmatb_fxc],
+        "vmat_vxc": [vmata_vxc, vmatb_vxc],
+        "vmat_deriv1": [vmata_fxc + vmata_vxc, vmatb_fxc + vmatb_vxc],
+    }
 
 
 def make_hessian_setup_batch_uks(
@@ -318,9 +352,12 @@ def make_hessian_setup_batch_uks(
     tic("vmat_ip", t0)
 
     t0 = time.time()
-    vmat_deriv1_a, vmat_deriv1_b = _vmat_deriv1_uks(
+    vmat = _vmat_deriv1_uks(
         xc_type, ao, drhoa, drhob, wf, vmat_ip_a, vmat_ip_b, aoslices, natm, nao
     )
+    vmat_deriv1_a, vmat_deriv1_b = vmat["vmat_deriv1"]
+    vmat_fxc_a, vmat_fxc_b = vmat["vmat_fxc"]
+    vmat_vxc_a, vmat_vxc_b = vmat["vmat_vxc"]
     tic("vmat_deriv1", t0)
 
     return {
@@ -333,6 +370,10 @@ def make_hessian_setup_batch_uks(
         "vmat_ip_b": vmat_ip_b,
         "vmat_deriv1_a": vmat_deriv1_a,
         "vmat_deriv1_b": vmat_deriv1_b,
+        "vmat_fxc_a": vmat_fxc_a,
+        "vmat_fxc_b": vmat_fxc_b,
+        "vmat_vxc_a": vmat_vxc_a,
+        "vmat_vxc_b": vmat_vxc_b,
     }
 
 
