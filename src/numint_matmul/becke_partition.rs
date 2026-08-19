@@ -253,9 +253,9 @@ struct BeckePartitionContext<'a> {
     atm_coords: &'a [[f64; 3]],
     /// grid attribution scheme (see [`AtmIndices`]).
     atm_indices: AtmIndices<'a>,
-    /// `A`-th chunk of the column-major `(natm, natm)` adjustment-factor matrix, so that
-    /// `adjustment_factor[B][A]` reads entry `(A, B)`.
-    adjustment_factor: Vec<&'a [f64]>,
+    /// `A`-th row of the column-major `(natm, natm)` adjustment-factor matrix (copied
+    /// from the input slice), so that `adjustment_factor[B][A]` reads entry `(A, B)`.
+    adjustment_factor: Vec<Vec<f64>>,
     /// interatomic distances `[A][B]`; the diagonal is `INFINITY`.
     atm_dist: Vec<Vec<f64>>,
     /// 1st derivative of the interatomic distances `[A][B][t]` (deriv >= 1 only).
@@ -311,7 +311,8 @@ impl<'a> BeckePartitionContext<'a> {
         let deriv_arg = deriv_arg.unwrap_or_default();
         assert!(deriv <= 2, "deriv must be 0, 1, or 2 at current time");
 
-        let adjustment_factor = adjustment_factor.chunks_exact(natm).collect_vec();
+        let adjustment_factor: Vec<Vec<f64>> =
+            adjustment_factor.chunks_exact(natm).map(|row| row.to_vec()).collect_vec();
 
         // check if contraction is requested, and split the contraction weights into
         // per-set grid slices (shape `(nset, ngrids)` row-major).  Done before
