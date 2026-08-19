@@ -600,7 +600,7 @@ def _de_becke_vxc_parts(xc_type, dao_vxc_diag, dao_vxc_off, dm0, atm_idx, aoslic
     Parameters
     ----------
     xc_type : str
-        One of ``"GGA"``, ``"MGGA"`` — the LDA case is not handled.
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
     dao_vxc_diag : np.ndarray
         Diagonal vxc kernel from ``_make_dao_vxc_diag``, shape ``[6, nao]``.
     dao_vxc_off : np.ndarray
@@ -625,9 +625,6 @@ def _de_becke_vxc_parts(xc_type, dao_vxc_diag, dao_vxc_off, dm0, atm_idx, aoslic
         - ``"de_becke_vxc_off"`` (t9) : from ``0.5 * dao_vxc_off`` contracted
           with ``dm0`` on the ket AO index, shape ``[natm, natm, 3, 3]``.
     """
-    if xc_type == "LDA":
-        raise NotImplementedError
-
     pvxc_diag = 0.5 * dao_vxc_diag[IDX_PAIR_TS]
     pvxc_off = 0.5 * np.einsum("tsuv, uv -> tsu", dao_vxc_off, dm0, optimize=True)
     return {
@@ -648,13 +645,17 @@ def _de_becke_atom_expensive(xc_type, ao, ao_dm0, w, vxc, aoslices, natm, ngrids
     Parameters
     ----------
     xc_type : str
-        One of ``"GGA"``, ``"MGGA"`` — the LDA case is not handled.
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"`` — for LDA only the rho
+        channel of ``pdrho`` is built.
     ao : np.ndarray
         AO and its derivatives evaluated on the grid, shape
         ``[ncomp, ngrids, nao]`` with 3rd-order channels (indices 0..19).
     ao_dm0 : np.ndarray
         Pre-contracted ``ao @ dm0``, shape ``[ncomp_dm0, ngrids, nao]``;
-        the MGGA tau part reads the 2nd-order channels (indices up to 9).
+        the GGA sigma and MGGA tau parts read the 2nd-order channels
+        (indices up to 9), so pass the FULL ``ao @ dm0`` contraction —
+        ``make_hessian_setup_batch`` only contracts ``XC_NCOMP_AO_DM0``
+        channels and no longer provides them.
     w : np.ndarray
         Grid weights of the batch, shape ``[ngrids]``.
     vxc : np.ndarray
@@ -681,8 +682,6 @@ def _de_becke_atom_expensive(xc_type, ao, ao_dm0, w, vxc, aoslices, natm, ngrids
         [[XXY, XYY, XYZ], [XYY, YYY, YYZ], [XYZ, YYZ, YZZ]],
         [[XXZ, XYZ, XZZ], [XYZ, YYZ, YZZ], [XZZ, YZZ, ZZZ]],
     ]
-    if xc_type == "LDA":
-        raise NotImplementedError
     pdrho = np.zeros((natm, 3, 3, XC_NVAR[xc_type], ngrids))
     for C in range(natm):
         _, _, p0, p1 = aoslices[C]
@@ -697,16 +696,17 @@ def _de_becke_atom_expensive(xc_type, ao, ao_dm0, w, vxc, aoslices, natm, ngrids
                 )
                 pdrho[C, s, t, 0] += 2 * term
         # x = k+1 (sigma gradient component); needs 3rd-order AO derivatives
-        for k in range(3):
-            for s in range(3):
-                for t in range(3):
-                    term = (
-                        np.einsum("gu, gu -> g", ao_slc[IDX3[t][s][k]], ao_dm0_slc[O])
-                        + np.einsum("gu, gu -> g", ao_slc[IDX2[s][k]], ao_dm0_slc[t + 1])
-                        + np.einsum("gu, gu -> g", ao_slc[IDX2[t][s]], ao_dm0_slc[k + 1])
-                        + np.einsum("gu, gu -> g", ao_slc[s + 1], ao_dm0_slc[IDX2[t][k]])
-                    )
-                    pdrho[C, s, t, k + 1] += 2 * term
+        if xc_type in ("GGA", "MGGA"):
+            for k in range(3):
+                for s in range(3):
+                    for t in range(3):
+                        term = (
+                            np.einsum("gu, gu -> g", ao_slc[IDX3[t][s][k]], ao_dm0_slc[O])
+                            + np.einsum("gu, gu -> g", ao_slc[IDX2[s][k]], ao_dm0_slc[t + 1])
+                            + np.einsum("gu, gu -> g", ao_slc[IDX2[t][s]], ao_dm0_slc[k + 1])
+                            + np.einsum("gu, gu -> g", ao_slc[s + 1], ao_dm0_slc[IDX2[t][k]])
+                        )
+                        pdrho[C, s, t, k + 1] += 2 * term
         # x = 4 (tau component); needs 3rd-order AO derivatives + 2nd-order ao_dm0.
         # tau does NOT carry the bra<->ket symmetry factor 2 (it is built from the
         # asymmetric (nabla bra).(nabla ket) form), so neither drho[..,4] nor d2rho[..,4] do.
@@ -971,7 +971,7 @@ def _vxc_fock(xc_type, ao, veff, wg):
     Parameters
     ----------
     xc_type : str
-        One of ``"GGA"``, ``"MGGA"``.
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
     ao : np.ndarray
         AO and its derivatives evaluated on the grid, shape
         ``[ncomp, ngrids, nao]`` — only the value/gradient channels
@@ -988,6 +988,10 @@ def _vxc_fock(xc_type, ao, veff, wg):
     """
     wv = wg * veff
     wv[O] *= 0.5
+    if xc_type == "LDA":
+        aow = wv[O][:, None] * ao[O]
+        aow_ao = aow.T @ ao[O]
+        return aow_ao + aow_ao.T
     aow = np.einsum("xg, xgu -> gu", wv[:4], ao[:4])
     aow_ao = aow.T @ ao[O]
     vxc_fock = aow_ao + aow_ao.T
@@ -1026,7 +1030,7 @@ def _vmat_becke_parts(xc_type, ao, vxc, fxc, prho, w, dw, vmat_ip, atm_idx, natm
     Parameters
     ----------
     xc_type : str
-        One of ``"GGA"``, ``"MGGA"`` — the LDA case is not handled.
+        One of ``"LDA"``, ``"GGA"``, ``"MGGA"``.
     ao : np.ndarray
         AO and its derivatives evaluated on the grid, shape
         ``[ncomp, ngrids, nao]`` — only channels 0..3 are read.
@@ -1058,9 +1062,6 @@ def _vmat_becke_parts(xc_type, ao, vxc, fxc, prho, w, dw, vmat_ip, atm_idx, natm
         ``vmat_becke_T1`` filled on all rows, the T2 parts only on row
         ``atm_idx`` (accumulated there by ``make_hessian_setup``).
     """
-    if xc_type == "LDA":
-        raise NotImplementedError
-
     vmat_becke_T1 = np.zeros((natm, 3, nao, nao))
     for A in range(natm):
         for t in range(3):
@@ -1178,7 +1179,7 @@ def make_hessian_setup_batch(
 
     t0 = time.time()
     ao = dft.numint.eval_ao(mol, coords, deriv=XC_AO_DERIV[xc_type])
-    ao_dm0 = ao @ dm0
+    ao_dm0 = ao[: XC_NCOMP_AO_DM0[xc_type]] @ dm0
     rho, exc, vxc, fxc = _eval_rho_exc_vxc_fxc(xc, xc_type, ao, ao_dm0)
     wv = weights * vxc
     wf = weights * fxc
@@ -1568,3 +1569,116 @@ def get_ks_response_bra_naive(
     )
     resp_bra = v1 @ mocc
     return resp_bra.reshape(bra_shape)
+
+
+class RHessKSNaiveBecke(RHessElecInteractAPI):
+    """Naive DFT XC contribution to the RKS Hessian, with Becke grid-shift.
+
+    The grid-shift sibling of ``rks.RHessKSNaive``: same interface and
+    caching semantics, but ``make_skeleton_hess`` returns the skeleton XC
+    Hessian with the ``de_becke_*`` grid-shift parts added
+    (``de_xc_skeleton``), and ``get_deriv1_ao`` returns the skeleton Vxc
+    Fock derivative with the f1ao-level grid-shift increment
+    (``vmat_deriv1_grid``).  Both are translationally invariant (sum over
+    atoms ~1e-12), unlike their grid-fixed counterparts (~1e-5 / ~1e-4).
+
+    The grids must be built with ``sort_grids=False`` so that grids are
+    grouped by atom and ``grids.atm_idx`` / ``grids.quadrature_weights``
+    are available; the Becke ``adjustment_factor`` and per-atom grid
+    boundaries are prepared once in ``__init__``.
+
+    The heavy work is done by ``make_hessian_setup``, called once per
+    ``(mo_coeff, mo_occ)`` and cached in ``self.result``.
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        Molecule.
+    xc : str
+        XC functional, e.g. ``"B3LYP"``.
+    grids : pyscf.dft.Grids
+        Built grids object, constructed with ``sort_grids=False``.
+    nbatch_grids : int, optional
+        Batch size for the grid loop.  Defaults to 16384.
+    hardness : int, optional
+        Becke switch-function iteration count.  Defaults to 3.
+    """
+
+    def __init__(self, mol: gto.Mole, xc: str, grids, nbatch_grids: int = 16384, hardness: int = 3):
+        self.mol = mol
+        self.xc = xc
+        self.grids = grids
+        self.nbatch_grids = nbatch_grids
+        self.hardness = hardness
+        natm = mol.natm
+        becke_scheme = grids.radii_adjust(mol, grids.atomic_radii)
+        self.adjustment_factor = np.array(
+            [becke_scheme(i, j, 0) for i in range(natm) for j in range(natm)]
+        ).reshape(natm, natm)
+        self.atm_quad_split = get_quad_split(grids.atm_idx)
+        self.result = dict()
+        # filled by make_response_preparation
+        self.mo_coeff = None
+        self.mo_occ = None
+        self.dm0 = None
+        self.rho_cached = None
+        self.vxc_cached = None
+        self.fxc_cached = None
+
+    def _run_setup_batched(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+        """Run `make_hessian_setup` over the full grid and store the
+        grid-shift-corrected skeleton / deriv1 quantities in `self.result`.
+
+        No-op if both `de_xc_skeleton` and `de_xc_deriv1_ao` are already cached.
+        """
+        if "de_xc_skeleton" in self.result and "de_xc_deriv1_ao" in self.result:
+            return
+
+        dm0 = get_dm0_restricted(mo_coeff, mo_occ)
+        result = make_hessian_setup(
+            self.mol,
+            self.xc,
+            self.grids.coords,
+            self.grids.weights,
+            dm0,
+            self.atm_quad_split,
+            self.grids.quadrature_weights,
+            self.adjustment_factor,
+            hardness=self.hardness,
+            nbatch_grids=self.nbatch_grids,
+            verbose=False,
+        )
+        self.result = result
+        self.result["de_xc_deriv1_ao"] = result["vmat_deriv1_grid"]
+
+    def make_skeleton_hess(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        if "de_xc_skeleton" not in self.result:
+            self._run_setup_batched(mo_coeff, mo_occ)
+        return self.result["de_xc_skeleton"]
+
+    def get_deriv1_ao(self, mo_coeff: np.ndarray, mo_occ: np.ndarray) -> np.ndarray:
+        if "de_xc_deriv1_ao" not in self.result:
+            self._run_setup_batched(mo_coeff, mo_occ)
+        return self.result["de_xc_deriv1_ao"]
+
+    def make_response_preparation(self, mo_coeff: np.ndarray, mo_occ: np.ndarray):
+        """Cache `(rho, vxc, fxc)` via PySCF's `cache_xc_kernel` so that every
+        subsequent `get_response_bra` call only does the fxc contraction.
+        """
+        self.mo_coeff = mo_coeff
+        self.mo_occ = mo_occ
+        self.dm0 = get_dm0_restricted(mo_coeff, mo_occ)
+
+        ni = dft.numint.NumInt()
+        self.rho_cached, self.vxc_cached, self.fxc_cached = ni.cache_xc_kernel(
+            self.mol, self.grids, self.xc, mo_coeff, mo_occ, spin=0,
+        )
+
+    def get_response_bra(self, bra: np.ndarray) -> np.ndarray:
+        return get_ks_response_bra_naive(
+            self.mol, self.grids, self.xc,
+            self.mo_coeff, self.mo_occ, self.dm0, bra,
+            rho_cached=self.rho_cached,
+            vxc_cached=self.vxc_cached,
+            fxc_cached=self.fxc_cached,
+        )

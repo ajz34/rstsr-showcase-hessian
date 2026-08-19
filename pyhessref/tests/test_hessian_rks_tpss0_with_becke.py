@@ -1,8 +1,7 @@
 import unittest
-from unittest import result
 
 import numpy as np
-from pyscf import gto, scf, lib, dft, df, hessian
+from pyscf import gto, scf, lib, dft
 from pyhessref.nimatmul.rks_with_becke import get_quad_split, make_hessian_setup, RHessKSNaiveBecke
 from pyhessref.rijk.hess_restricted_naive import RHessRIJKNaive
 from pyhessref.hess_scf_restricted import RHessSCF
@@ -23,10 +22,10 @@ def setUpModule():
     H  0.1 0.1 1.2
     """
     PATH_PROTOTYPE = "prototype/"  # assuming run at project root
-    PATH_REF = PATH_PROTOTYPE + "nh3_r_b3lyp_decomp.npz"
+    PATH_REF = PATH_PROTOTYPE + "nh3_r_tpss0_decomp.npz"
 
     mol = gto.Mole(atom=xyz, basis="def2-TZVP", max_memory=8000).build()
-    mf = scf.RKS(mol, xc="B3LYP").density_fit()
+    mf = scf.RKS(mol, xc="TPSS0").density_fit()
     ref_value = np.load(PATH_REF)
     mf.mo_coeff = ref_value["mo_coeff"]
     mf.mo_occ = ref_value["mo_occ"]
@@ -59,10 +58,10 @@ class TestHessianRKS(unittest.TestCase):
         self.assertTrue(np.allclose(result["de_fxc"], ref_value["de_fxc"]))
         self.assertTrue(np.allclose(result["vmat_ip"], ref_value["vmat_ip"]))
         self.assertTrue(np.allclose(result["vmat_deriv1"], ref_value["vmat_deriv1"]))
-        self.assertAlmostEqual(lib.fp(result["de_vxc_diag"]), 49.688766385730304, places=5)
-        self.assertAlmostEqual(lib.fp(result["de_vxc_off"]), -29.337474734527515, places=5)
-        self.assertAlmostEqual(lib.fp(result["de_fxc"]), -21.249874465163057, places=5)
-        self.assertAlmostEqual(lib.fp(result["vmat_deriv1"]), -3.8658927361526123, places=5)
+        self.assertAlmostEqual(lib.fp(result["de_vxc_diag"]), 44.683863589574251, places=5)
+        self.assertAlmostEqual(lib.fp(result["de_vxc_off"]), -16.124876249597346, places=5)
+        self.assertAlmostEqual(lib.fp(result["de_fxc"]), -29.390069496787994, places=5)
+        self.assertAlmostEqual(lib.fp(result["vmat_deriv1"]), -3.418468953177161, places=5)
 
         de_xc_skeleton = result["de_xc_skeleton"]
         print("de_xc_skeleton reduced\n", de_xc_skeleton.sum(axis=(0, 1)))
@@ -70,19 +69,7 @@ class TestHessianRKS(unittest.TestCase):
             np.abs(de_xc_skeleton.sum(axis=(0, 1))).max() < 1e-9
         ), "translational invariance check failed for de_xc_skeleton"
 
-    def test_make_hessian_setup_f1ao_grid(self):
-        natm = mol.natm
-        atm_quad_split = get_quad_split(grids.atm_idx)
-        quadrature_weights = grids.quadrature_weights
-        becke_scheme = grids.radii_adjust(mol, grids.atomic_radii)
-        adjustment_factor = np.array([becke_scheme(i, j, 0) for i in range(natm) for j in range(natm)]).reshape(
-            natm, natm
-        )
-        dm0 = get_dm0_restricted(mf.mo_coeff, mf.mo_occ)
-        result = make_hessian_setup(
-            mol, mf.xc, grids.coords, grids.weights, dm0, atm_quad_split, quadrature_weights, adjustment_factor
-        )
-        # skeleton (grid-fixed) DFT part of f1ao: non-invariant at ~1e-5 level
+        # f1ao (CP-KS RHS) grid-shift: vmat_deriv1_grid sums to ~0 over atoms
         print("vmat_deriv1 (skeleton) sum(A) max:", np.abs(result["vmat_deriv1"].sum(axis=0)).max())
         print("vmat_deriv1_grid sum(A) max:     ", np.abs(result["vmat_deriv1_grid"].sum(axis=0)).max())
         assert (
@@ -92,10 +79,11 @@ class TestHessianRKS(unittest.TestCase):
     def test_make_hess(self):
         """End-to-end RKS Hessian via RHessSCF with the Becke grid-shift KS object.
 
-        Mirrors `test_make_hess` in `test_hessian_rks_b3lyp.py`, but the XC
+        Mirrors `test_make_hess` in `test_hessian_rks_tpss0.py`, but the XC
         skeleton Hessian and the CP-KS right-hand side carry the grid-shift
         increment, so the result is translationally invariant while differing
-        from the (grid-fixed) PySCF reference by the grid-shift magnitude.
+        from the (grid-fixed) PySCF reference by the grid-shift magnitude
+        (~4e-3 for MGGA, ~10x the GGA case, dominated by the tau channel).
         """
         natm = mol.natm
         hyb = float(ref_value["hyb"])
@@ -116,7 +104,7 @@ class TestHessianRKS(unittest.TestCase):
         diff = np.abs(de_hess - ref_value["de_ref"])
         print("max|de_hess - de_ref| (grid-shift corrected vs PySCF ref):", diff.max())
         self.assertTrue(
-            np.allclose(de_hess, ref_value["de_ref"], atol=2e-3, rtol=0),
+            np.allclose(de_hess, ref_value["de_ref"], atol=1e-2, rtol=0),
             msg=f"max abs diff = {diff.max()}",
         )
 
