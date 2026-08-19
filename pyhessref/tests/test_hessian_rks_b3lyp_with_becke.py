@@ -64,3 +64,22 @@ class TestHessianRKS(unittest.TestCase):
         assert (
             np.abs(de_xc_skeleton.sum(axis=(0, 1))).max() < 1e-9
         ), "translational invariance check failed for de_xc_skeleton"
+
+    def test_make_hessian_setup_f1ao_grid(self):
+        natm = mol.natm
+        atm_quad_split = get_quad_split(grids.atm_idx)
+        quadrature_weights = grids.quadrature_weights
+        becke_scheme = grids.radii_adjust(mol, grids.atomic_radii)
+        adjustment_factor = np.array([becke_scheme(i, j, 0) for i in range(natm) for j in range(natm)]).reshape(
+            natm, natm
+        )
+        dm0 = get_dm0_restricted(mf.mo_coeff, mf.mo_occ)
+        result = make_hessian_setup(
+            mol, mf.xc, grids.coords, grids.weights, dm0, atm_quad_split, quadrature_weights, adjustment_factor
+        )
+        # skeleton (grid-fixed) DFT part of f1ao: non-invariant at ~1e-5 level
+        print("vmat_deriv1 (skeleton) sum(A) max:", np.abs(result["vmat_deriv1"].sum(axis=0)).max())
+        print("vmat_deriv1_grid sum(A) max:     ", np.abs(result["vmat_deriv1_grid"].sum(axis=0)).max())
+        assert (
+            np.abs(result["vmat_deriv1_grid"].sum(axis=0)).max() < 1e-9
+        ), "translational invariance check failed for vmat_deriv1_grid (f1ao)"

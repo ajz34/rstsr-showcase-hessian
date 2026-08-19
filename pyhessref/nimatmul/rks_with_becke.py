@@ -4,7 +4,9 @@ RKS Hessian skeleton ingredients with the Becke grid-shift contribution.
 Computes the DFT part of the RKS Hessian decomposition in grid batches,
 adding the ``de_becke_*`` grid-shift terms (from the Becke partition
 weights moving with the atoms) that restore translational invariance of
-the skeleton Hessian.  Only the Becke partitioning scheme is supported.
+the skeleton Hessian, and the analogous f1ao-level ``vmat_becke_*`` terms
+for the skeleton Vxc Fock derivative (``vmat_deriv1_grid``).  Only the
+Becke partitioning scheme is supported.
 """
 
 from pyscf import gto, dft
@@ -957,6 +959,129 @@ def _vmat_deriv1(xc_type, ao, drho, wf, vmat_ip, aoslices, natm, nao):
     }
 
 
+def _vxc_fock(xc_type, ao, veff, wg):
+    """Symmetric Vxc-style Fock from a generic weight and functional field.
+
+    The standard on-grid Vxc matrix build (``nr_vxc`` convention, 0.5
+    factors), with the grid weights ``wg`` and the "vxc-like" functional
+    field ``veff`` as free inputs — used by ``_vmat_becke_parts`` for the
+    weight part (weights = Becke ``dw``) and the fxc part (veff = fxc-folded
+    density derivative) of the f1ao grid-shift.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"GGA"``, ``"MGGA"``.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]`` — only the value/gradient channels
+        (indices 0..3) are read.
+    veff : np.ndarray
+        Functional-derivative field, shape ``[nvar, ngrids]``.
+    wg : np.ndarray
+        Weight field, shape ``[ngrids]``.
+
+    Returns
+    -------
+    vxc_fock : np.ndarray
+        Symmetric Vxc-style Fock matrix, shape ``[nao, nao]``.
+    """
+    wv = wg * veff
+    wv[O] *= 0.5
+    aow = np.einsum("xg, xgu -> gu", wv[:4], ao[:4])
+    aow_ao = aow.T @ ao[O]
+    vxc_fock = aow_ao + aow_ao.T
+    if xc_type == "MGGA":
+        wv[4] *= 0.5
+        for j in range(1, 4):
+            aow = wv[4][:, None] * ao[j]
+            vxc_fock += aow.T @ ao[j]
+    return vxc_fock
+
+
+def _vmat_becke_parts(xc_type, ao, vxc, fxc, prho, w, dw, vmat_ip, atm_idx, natm, nao):
+    """f1ao-level Becke grid-shift parts of the Vxc Fock derivative (T1/T2).
+
+    First-derivative analogue of the ``de_becke_*`` Hessian terms: the
+    grid-shift increment ``Delta = T1 + T2`` that restores translational
+    invariance of the skeleton Vxc Fock derivative ``vmat_deriv1`` (the DFT
+    part of the CP-KS right-hand side f1ao), i.e. ``sum_A
+    vmat_deriv1_grid[A] ~ 0`` for ``vmat_deriv1_grid = vmat_deriv1 +
+    Delta`` (assembled by ``make_hessian_setup``).
+
+    - ``vmat_becke_T1`` (weight part) : Vxc-style Fock built with the
+      Becke-weight derivative ``dw[A, t]`` as the weight field.  Every grid
+      of the batch contributes to every atom's row, so it accumulates
+      across batches by a plain sum.
+    - ``vmat_becke_T2_ipip`` (functional part, ipip) : the batch's gradient
+      Vxc matrix ``vmat_ip`` symmetrised in AO — the batch holds one
+      atom's grids, so ``vmat_ip`` already is the per-grid-atom
+      ``vmat_ip_A`` of the notebook.
+    - ``vmat_becke_T2_fxc`` (functional part, fxc) : the fxc kernel folded
+      with the total spatial density derivative ``prho`` (=
+      ``drho.sum(axis=0)``; in this module's ``_make_drho`` convention
+      ``prho = -d rho / d r``, hence the leading minus), contracted as a
+      Vxc-style Fock on the batch weights.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"GGA"``, ``"MGGA"`` — the LDA case is not handled.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]`` — only channels 0..3 are read.
+    vxc : np.ndarray
+        First functional derivative, shape ``[nvar, ngrids]``.
+    fxc : np.ndarray
+        Second functional derivative, shape ``[nvar, nvar, ngrids]``.
+    prho : np.ndarray
+        Total skeleton density derivative ``drho.sum(axis=0)``, shape
+        ``[3, nvar, ngrids]``.
+    w : np.ndarray
+        Grid weights of the batch, shape ``[ngrids]``.
+    dw : np.ndarray
+        First Becke-weight derivative, shape ``[natm, 3, ngrids]``.
+    vmat_ip : np.ndarray
+        Gradient-level Vxc matrix of the batch from ``_vmat_ip``, shape
+        ``[3, nao, nao]``.
+    atm_idx : int
+        Atom that generated the batch's grids.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+    nao : int
+        Total number of atomic orbitals.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        The three parts above, each of shape ``[natm, 3, nao, nao]``:
+        ``vmat_becke_T1`` filled on all rows, the T2 parts only on row
+        ``atm_idx`` (accumulated there by ``make_hessian_setup``).
+    """
+    if xc_type == "LDA":
+        raise NotImplementedError
+
+    vmat_becke_T1 = np.zeros((natm, 3, nao, nao))
+    for A in range(natm):
+        for t in range(3):
+            vmat_becke_T1[A, t] = _vxc_fock(xc_type, ao, vxc, dw[A, t])
+
+    vmat_becke_T2_ipip = np.zeros((natm, 3, nao, nao))
+    for t in range(3):
+        vmat_becke_T2_ipip[atm_idx, t] = vmat_ip[t] + vmat_ip[t].T
+
+    vmat_becke_T2_fxc = np.zeros((natm, 3, nao, nao))
+    for t in range(3):
+        fxc_prho = np.einsum("xyg, yg -> xg", fxc, prho[t], optimize=True)
+        vmat_becke_T2_fxc[atm_idx, t] = _vxc_fock(xc_type, ao, -fxc_prho, w)
+
+    return {
+        "vmat_becke_T1": vmat_becke_T1,
+        "vmat_becke_T2_ipip": vmat_becke_T2_ipip,
+        "vmat_becke_T2_fxc": vmat_becke_T2_fxc,
+    }
+
+
 def make_hessian_setup_batch(
     mol: gto.Mole,
     xc: str,
@@ -1034,6 +1159,9 @@ def make_hessian_setup_batch(
         - ``vmat_deriv1`` : per-atom skeleton derivative of the Vxc Fock
           matrix, shape ``[natm, 3, nao, nao]``, assembled across the AO
           axes (bra + ket).
+        - ``vmat_becke_T1``/``vmat_becke_T2_ipip``/``vmat_becke_T2_fxc`` :
+          f1ao-level grid-shift parts (T1 on all rows, T2 parts on the
+          ``atm_idx`` row only), each of shape ``[natm, 3, nao, nao]``.
     """
     nao = mol.nao
     atm_list = atm_list if atm_list is not None else list(range(mol.natm))
@@ -1110,6 +1238,10 @@ def make_hessian_setup_batch(
     vmat = _vmat_deriv1(xc_type, ao, drho, wf, vmat_ip, aoslices, natm, nao)
     tic("vmat_deriv1", t0)
 
+    t0 = time.time()
+    vmat_becke_parts = _vmat_becke_parts(xc_type, ao, vxc, fxc, prho, weights, dw, vmat_ip, atm_idx, natm, nao)
+    tic("vmat_becke_parts", t0)
+
     results = {
         "de_vxc_diag": de_vxc_diag,
         "de_vxc_off": de_vxc_off,
@@ -1122,6 +1254,7 @@ def make_hessian_setup_batch(
     results.update(de_becke_full_parts)
     results.update(de_becke_atom_parts)
     results.update(de_becke_vxc_parts)
+    results.update(vmat_becke_parts)
     return results
 
 
@@ -1208,10 +1341,11 @@ def make_hessian_setup(
     on each, and accumulates the per-batch results into full arrays:
 
     - full-grid quantities (``de_vxc_diag``, ``de_vxc_off``, ``de_fxc``,
-      ``vmat_*``, ``de_becke_full_1/2``, ``de_becke_vxc_diag/off``) are
-      summed over all batches;
-    - grid-atom quantities (``de_becke_atom_1/2``) accumulate into the
-      batch's ``atm_idx`` row;
+      ``vmat_*``, ``de_becke_full_1/2``, ``de_becke_vxc_diag/off``,
+      ``vmat_becke_T1``) are summed over all batches;
+    - grid-atom quantities (``de_becke_atom_1/2``,
+      ``vmat_becke_T2_ipip/fxc``) accumulate into the batch's ``atm_idx``
+      row;
     - ``de_becke_atom_3`` accumulates into the ``[atm_idx, atm_idx]``
       diagonal block.
 
@@ -1261,6 +1395,9 @@ def make_hessian_setup(
         - ``de_xc_skeleton`` : with all ``de_becke_*`` grid-shift parts
           added; translationally invariant (sum over (A, B) ~1e-13).
         - ``de_xc_deriv1_ao`` : alias of ``vmat_deriv1``.
+        - ``vmat_deriv1_grid`` : ``vmat_deriv1`` with the f1ao-level
+          grid-shift increment (``vmat_becke_*`` parts) added;
+          translationally invariant (sum over A ~1e-12).
     """
     atm_list = atm_list if atm_list is not None else list(range(mol.natm))
     batches = quad_split_by_atom(atm_quad_split, atm_list, nbatch_grids)
@@ -1281,6 +1418,9 @@ def make_hessian_setup(
         "vmat_fxc": np.zeros((natm, 3, nao, nao)),
         "vmat_vxc": np.zeros((natm, 3, nao, nao)),
         "vmat_deriv1": np.zeros((natm, 3, nao, nao)),
+        "vmat_becke_T1": np.zeros((natm, 3, nao, nao)),
+        "vmat_becke_T2_ipip": np.zeros((natm, 3, nao, nao)),
+        "vmat_becke_T2_fxc": np.zeros((natm, 3, nao, nao)),
     }
     for batch_idx, (atm_idx, start, end) in enumerate(batches):
         if verbose:
@@ -1313,10 +1453,13 @@ def make_hessian_setup(
             "de_becke_full_2",
             "de_becke_vxc_diag",
             "de_becke_vxc_off",
+            "vmat_becke_T1",
         ]:
             result_sum[key] += result_batch[key]
         for key in ["de_becke_atom_1", "de_becke_atom_2"]:
             result_sum[key][atm_idx] += result_batch[key]
+        for key in ["vmat_becke_T2_ipip", "vmat_becke_T2_fxc"]:
+            result_sum[key][atm_idx] += result_batch[key][atm_idx]
         for key in ["de_becke_atom_3"]:
             result_sum[key][atm_idx, atm_idx] += result_batch[key]
 
@@ -1337,6 +1480,14 @@ def make_hessian_setup(
         + result_sum["de_becke_vxc_off"]
     )
     result_sum["de_xc_deriv1_ao"] = result_sum["vmat_deriv1"]
+    # f1ao (CP-KS RHS) with the grid-shift increment Delta = T1 + T2:
+    # sum_A vmat_deriv1_grid[A] ~ 0 (translational invariance).
+    result_sum["vmat_deriv1_grid"] = (
+        result_sum["vmat_deriv1"]
+        + result_sum["vmat_becke_T1"]
+        + result_sum["vmat_becke_T2_ipip"]
+        + result_sum["vmat_becke_T2_fxc"]
+    )
     return result_sum
 
 
