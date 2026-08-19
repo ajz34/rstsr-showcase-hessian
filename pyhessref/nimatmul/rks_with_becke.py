@@ -1,5 +1,10 @@
 """
-Compute Hessian with grid-shift induced contribution (only Becke scheme is supported).
+RKS Hessian skeleton ingredients with the Becke grid-shift contribution.
+
+Computes the DFT part of the RKS Hessian decomposition in grid batches,
+adding the ``de_becke_*`` grid-shift terms (from the Becke partition
+weights moving with the atoms) that restore translational invariance of
+the skeleton Hessian.  Only the Becke partitioning scheme is supported.
 """
 
 from pyscf import gto, dft
@@ -18,7 +23,9 @@ ZX, ZY, ZZ = 6, 8, 9
 XXX, XXY, XXZ, XYY, XYZ, XZZ = 10, 11, 12, 13, 14, 15
 YYY, YYZ, YZZ, ZZZ = 16, 17, 18, 19
 
+# Second-order AO derivative components, indexed [t][s] (d^2/dt ds).
 IDX_AO_DERIV2 = [[XX, XY, XZ], [YX, YY, YZ], [ZX, ZY, ZZ]]
+# Third-order AO derivative triples for the 6 symmetric pairs (xx, xy, xz, yy, yz, zz).
 TRIPLE_SIGMA_DIAG = [
     [XXX, XXY, XXZ],  # xx
     [XXY, XYY, XYZ],  # xy
@@ -36,9 +43,9 @@ TRIPLE_TAU_DIAG = [
 # Symmetric Cartesian pair (t, s) -> the 6-component storage index (xx, xy, xz, yy, yz, zz).
 IDX_PAIR_TS = np.array([[0, 1, 2], [1, 3, 4], [2, 4, 5]])
 
-XC_NVAR = {"LDA": 1, "GGA": 4, "MGGA": 5}
-XC_AO_DERIV = {"LDA": 2, "GGA": 3, "MGGA": 3}
-XC_NCOMP_AO_DM0 = {"LDA": 1, "GGA": 4, "MGGA": 4}
+XC_NVAR = {"LDA": 1, "GGA": 4, "MGGA": 5}  # number of rho components (channels)
+XC_AO_DERIV = {"LDA": 2, "GGA": 3, "MGGA": 3}  # AO derivative order required
+XC_NCOMP_AO_DM0 = {"LDA": 1, "GGA": 4, "MGGA": 4}  # ao_dm0 channels (value + 3 gradients)
 
 
 def _eval_rho_exc_vxc_fxc(xc, xc_type, ao, ao_dm0):
@@ -441,12 +448,93 @@ def _de_vxc_off(dao_vxc_off, dm0, aoslices, natm):
 
 
 def _de_becke_full_parts(dw, ddw, exc, vxc, rho, drho):
+    """Grid-weight parts of the Becke grid-shift Hessian (notebook t1/t2).
+
+    The Hessian analogue of the grid-shift gradient's ``T1`` term: the
+    grid-weight factor ``w_g`` of the XC energy is differentiated instead
+    of the integrand.  Both parts are "full" in the sense that every grid
+    of the batch contributes to every ``(A, B)`` entry (no grid-atom
+    masking), so they accumulate across batches by a plain sum;
+    ``de_becke_full_1`` still needs the ``(A, t) <-> (B, s)`` symmetrisation
+    applied by ``make_hessian_setup``.
+
+    Parameters
+    ----------
+    dw : np.ndarray
+        First Becke-weight derivative, shape ``[natm, 3, ngrids]``.
+    ddw : np.ndarray
+        Second Becke-weight derivative, shape
+        ``[natm, 3, natm, 3, ngrids]``.
+    exc : np.ndarray
+        On-grid XC energy per particle, shape ``[ngrids]``.
+    vxc : np.ndarray
+        First functional derivative, shape ``[nvar, ngrids]``.
+    rho : np.ndarray
+        On-grid density components, shape ``[nvar, ngrids]`` — only the
+        value channel ``rho[0]`` is read (by ``de_becke_full_2``).
+    drho : np.ndarray
+        Skeleton derivative of rho components (output of ``_make_drho``),
+        shape ``[natm, 3, nvar, ngrids]``.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        - ``"de_becke_full_1"`` (t1) : ``dw`` contracted with ``vxc`` and
+          the skeleton derivative ``drho`` — the weight-gradient term
+          differentiated through the AO basis following atom B, shape
+          ``[natm, natm, 3, 3]``.
+        - ``"de_becke_full_2"`` (t2) : ``ddw`` contracted with the on-grid
+          XC energy density ``exc * rho[0]`` — the pure second-order weight
+          term, naturally symmetric under ``(A, t) <-> (B, s)`` (by equality
+          of mixed partials), shape ``[natm, natm, 3, 3]``.
+    """
     t1 = np.einsum("Atg, xg, Bsxg -> ABts", dw, vxc, drho, optimize=True)
     t2 = np.einsum("AtBsg, g, g -> ABts", ddw, exc, rho[0], optimize=True)
     return {"de_becke_full_1": t1, "de_becke_full_2": t2}
 
 
 def _de_becke_atom_parts(w, dw, vxc, fxc, drho, prho):
+    """Grid-atom parts of the Becke grid-shift Hessian (notebook t3/t5/t6).
+
+    The ``dT2`` terms that remain after the t4/t7 -> t8/t9 substitution:
+    each contracts the total skeleton derivative ``prho`` (= ``drho.sum(axis=0)``,
+    the density response to all atoms moving together) against the
+    functional kernel, evaluated on the grids of one atom only (the
+    batch's grid atom).  ``make_hessian_setup`` therefore accumulates
+    ``de_becke_atom_1/2`` into the ``atm_idx`` row and ``de_becke_atom_3``
+    into the ``[atm_idx, atm_idx]`` diagonal block.
+
+    Parameters
+    ----------
+    w : np.ndarray
+        Grid weights of the batch, shape ``[ngrids]``.
+    dw : np.ndarray
+        First Becke-weight derivative, shape ``[natm, 3, ngrids]``.
+    vxc : np.ndarray
+        First functional derivative, shape ``[nvar, ngrids]``.
+    fxc : np.ndarray
+        Second functional derivative, shape ``[nvar, nvar, ngrids]``.
+    drho : np.ndarray
+        Skeleton derivative of rho components (output of ``_make_drho``),
+        shape ``[natm, 3, nvar, ngrids]``.
+    prho : np.ndarray
+        Total skeleton derivative ``drho.sum(axis=0)``, shape
+        ``[3, nvar, ngrids]``.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        - ``"de_becke_atom_1"`` (t3) : ``w * fxc`` contracted between
+          ``prho`` and the per-atom ``drho[B]``, shape ``[natm, 3, 3]``
+          (row for the batch's grid atom).
+        - ``"de_becke_atom_2"`` (t5) : ``dw`` contracted with ``vxc`` and
+          ``prho``, shape ``[natm, 3, 3]`` (row).
+        - ``"de_becke_atom_3"`` (t6) : ``w * fxc`` contracted between
+          ``prho`` and itself, shape ``[3, 3]`` (diagonal block).
+
+    Note the in-body variables ``t1/t2/t3`` are numbered by the return-key
+    order (1/2/3), which is shifted from the notebook terms above.
+    """
     t1 = -np.einsum("g, txg, xyg, Bsyg -> Bts", w, prho, fxc, drho, optimize=True)
     t2 = -np.einsum("Bsg, xg, txg -> Bts", dw, vxc, prho, optimize=True)
     t3 = np.einsum("g, xyg, syg, txg -> ts", w, fxc, prho, prho, optimize=True)
@@ -550,14 +638,40 @@ def _de_becke_atom_expensive(xc_type, ao, ao_dm0, w, vxc, aoslices, natm, ngrids
     """Reference form of the grid-shift terms t4/t7 (NOT used in evaluation).
 
     The d2rho-based counterpart of ``_de_becke_vxc_parts``: builds the
-    second-order skeleton density derivatives ``pdrho``/``pprho`` explicitly
-    and contracts them with ``vxc``.  Superseded by the basis form t8/t9 in
-    ``make_hessian_setup_batch``; kept only as a reference for validating
-    ``t8 + t9 == t4 + t7``.
+    second-order skeleton density derivatives ``pdrho``/``pprho``
+    explicitly and contracts them with ``vxc``.  Superseded by the basis
+    form t8/t9 in ``make_hessian_setup_batch``; kept only as a reference
+    for validating ``t8 + t9 == t4 + t7``.
 
-    Parameters and return keys mirror the previous production signature
-    (``de_becke_atom_expensive_4`` = t4 row for the batch's grid atom,
-    ``de_becke_atom_expensive_5`` = t7 diagonal block).
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"GGA"``, ``"MGGA"`` — the LDA case is not handled.
+    ao : np.ndarray
+        AO and its derivatives evaluated on the grid, shape
+        ``[ncomp, ngrids, nao]`` with 3rd-order channels (indices 0..19).
+    ao_dm0 : np.ndarray
+        Pre-contracted ``ao @ dm0``, shape ``[ncomp_dm0, ngrids, nao]``;
+        the MGGA tau part reads the 2nd-order channels (indices up to 9).
+    w : np.ndarray
+        Grid weights of the batch, shape ``[ngrids]``.
+    vxc : np.ndarray
+        First functional derivative, shape ``[nvar, ngrids]``.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]``.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+    ngrids : int
+        Number of grids in the batch.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        - ``"de_becke_atom_expensive_4"`` (t4) : ``w * vxc`` contracted with
+          the per-atom ``pdrho[B]``, shape ``[natm, 3, 3]`` (row for the
+          batch's grid atom; transpose-symmetrise after accumulation).
+        - ``"de_becke_atom_expensive_5"`` (t7) : ``w * vxc`` contracted with
+          the total ``pprho``, shape ``[3, 3]`` (diagonal block).
     """
     IDX2 = [[XX, XY, XZ], [YX, YY, YZ], [ZX, ZY, ZZ]]
     IDX3 = [
@@ -882,6 +996,15 @@ def make_hessian_setup_batch(
         Grid weights, shape ``[ngrids]``.
     dm0 : np.ndarray
         Reference density matrix in AO basis, shape ``[nao, nao]``.
+    atm_idx : int
+        Atom that generated the batch's grids (the Becke cell centre); all
+        grid-atom-resolved parts are reported in this atom's row/diagonal.
+    quadrature_weights : np.ndarray
+        Original (pre-partition) quadrature weights, shape ``[ngrids]``.
+    adjustment_factor : np.ndarray
+        Anti-symmetric Becke radii-adjustment table, shape ``[natm, natm]``.
+    hardness : int, optional
+        Becke switch-function iteration count.  Defaults to 3.
     atm_list : list[int], optional
         Subset of atom indices to compute the per-atom outputs for.
         Defaults to all atoms.
@@ -909,7 +1032,8 @@ def make_hessian_setup_batch(
         - ``vmat_ip``     : gradient-level Vxc, shape ``[3, nao, nao]``.
         - ``vmat_vxc``/``vmat_fxc`` : the two pieces of ``vmat_deriv1``.
         - ``vmat_deriv1`` : per-atom skeleton derivative of the Vxc Fock
-          matrix, shape ``[natm, 3, nao, nao]``, antisymmetrised in AO.
+          matrix, shape ``[natm, 3, nao, nao]``, assembled across the AO
+          axes (bra + ket).
     """
     nao = mol.nao
     atm_list = atm_list if atm_list is not None else list(range(mol.natm))
@@ -1036,11 +1160,25 @@ def quad_split_by_atom(atm_quad_split: list[int], atm_list: list[int], nbatch_gr
 
 
 def get_quad_split(atm_indices: np.ndarray):
+    """Cumulative grid boundaries per atom, from the per-grid atom indices.
+
+    Grids built with ``sort_grids=False`` are grouped by atom: each atom
+    index appears as exactly one contiguous run.  The boundaries are the
+    positions where the atom index changes.
+
+    Parameters
+    ----------
+    atm_indices : np.ndarray
+        Per-grid atom index, shape ``[ngrids]``, grouped by atom (e.g.
+        ``grids.atm_idx``).
+
+    Returns
+    -------
+    atm_quad_split : list[int]
+        Cumulative grid counts, shape ``[natm + 1]``; atom A's grids are
+        ``[atm_quad_split[A], atm_quad_split[A + 1])``.  Example:
+        ``[0, 0, 1, 1, 1, 2, 2] -> [0, 2, 5, 7]``.
     """
-    Obtain list of index (natm + 1) from the list of atom indices.
-    The list of atom indices is assumed to be sorted and incremental (by one).
-    """
-    # [0, 0, 1, 1, 1, 2, 2] -> [0, 2, 5, 7]
     atm_quad_split = [0]
     for i in range(1, len(atm_indices)):
         if atm_indices[i] != atm_indices[i - 1]:
@@ -1063,7 +1201,67 @@ def make_hessian_setup(
     nbatch_grids: int = 16384,
     verbose: bool = True,
 ):
-    # same to common run_setup_batched, but use `quad_split_by_atom` to split the grid into batches
+    """Batched driver for all DFT skeleton ingredients with the grid-shift.
+
+    Splits the grid into atom-respecting batches of at most ``nbatch_grids``
+    grids (``quad_split_by_atom``), evaluates ``make_hessian_setup_batch``
+    on each, and accumulates the per-batch results into full arrays:
+
+    - full-grid quantities (``de_vxc_diag``, ``de_vxc_off``, ``de_fxc``,
+      ``vmat_*``, ``de_becke_full_1/2``, ``de_becke_vxc_diag/off``) are
+      summed over all batches;
+    - grid-atom quantities (``de_becke_atom_1/2``) accumulate into the
+      batch's ``atm_idx`` row;
+    - ``de_becke_atom_3`` accumulates into the ``[atm_idx, atm_idx]``
+      diagonal block.
+
+    ``de_becke_full_1`` and the ``de_becke_atom_1/2`` rows are then
+    symmetrised under ``(A, t) <-> (B, s)`` — this also accounts for the
+    skeleton gradient moving with the grid (``de_becke_vxc_diag/off`` are
+    already symmetrised per batch inside ``_contract_pvxc``).
+
+    Parameters
+    ----------
+    mol : gto.Mole
+        Molecule.
+    xc : str
+        XC functional name (the grid-shift parts handle GGA/MGGA, not LDA).
+    coords : np.ndarray
+        Grid point coordinates, shape ``[ngrids, 3]``, grouped by atom.
+    weights : np.ndarray
+        Grid weights, shape ``[ngrids]``.
+    dm0 : np.ndarray
+        Reference density matrix in AO basis, shape ``[nao, nao]``.
+    atm_quad_split : list[int]
+        Cumulative grid counts per atom from ``get_quad_split``, shape
+        ``[natm + 1]``.
+    quadrature_weights : np.ndarray
+        Original (pre-partition) quadrature weights, shape ``[ngrids]``.
+    adjustment_factor : np.ndarray
+        Anti-symmetric Becke radii-adjustment table, shape ``[natm, natm]``.
+    hardness : int, optional
+        Becke switch-function iteration count.  Defaults to 3.
+    atm_list : list[int], optional
+        Subset of atom indices for the per-atom outputs.  Defaults to all
+        atoms.
+    nbatch_grids : int, optional
+        Maximum number of grids per batch; an atom's grids are split into
+        several batches when they exceed it.  Defaults to 16384.
+    verbose : bool, optional
+        When True, print per-batch progress.  Defaults to True.
+
+    Returns
+    -------
+    result : dict[str, np.ndarray]
+        All keys of ``make_hessian_setup_batch`` accumulated over batches,
+        plus:
+
+        - ``de_xc_skeleton_no_becke`` : grid-fixed XC skeleton Hessian
+          (``de_vxc_diag + de_vxc_off + de_fxc``).
+        - ``de_xc_skeleton`` : with all ``de_becke_*`` grid-shift parts
+          added; translationally invariant (sum over (A, B) ~1e-13).
+        - ``de_xc_deriv1_ao`` : alias of ``vmat_deriv1``.
+    """
     atm_list = atm_list if atm_list is not None else list(range(mol.natm))
     batches = quad_split_by_atom(atm_quad_split, atm_list, nbatch_grids)
     natm = len(atm_list)
