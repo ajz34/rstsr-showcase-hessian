@@ -33,6 +33,8 @@ TRIPLE_TAU_DIAG = [
     ([XXY, XYY, XYZ, YYY, YYZ, YZZ], 1),
     ([XXZ, XYZ, XZZ, YYZ, YZZ, ZZZ], 2),
 ]
+# Symmetric Cartesian pair (t, s) -> the 6-component storage index (xx, xy, xz, yy, yz, zz).
+IDX_PAIR_TS = np.array([[0, 1, 2], [1, 3, 4], [2, 4, 5]])
 
 XC_NVAR = {"LDA": 1, "GGA": 4, "MGGA": 5}
 XC_AO_DERIV = {"LDA": 2, "GGA": 3, "MGGA": 3}
@@ -235,13 +237,13 @@ def _de_fxc(weights, drho, fxc):
     return np.einsum("g, Atxg, xyg, Bsyg -> ABts", weights, drho, fxc, drho, optimize=True)
 
 
-def _de_vxc_diag(xc_type, ao, ao_dm0, wv, aoslices, natm, nao):
-    """Same-atom (A == B) block of the XC skeleton 2nd derivative.
+def _make_dao_vxc_diag(xc_type, ao, ao_dm0, wv, nao):
+    """Build the AO-resolved diagonal vxc kernel ``dao_vxc_diag[6, nao]``.
 
-    Builds the AO-resolved object ``dao_vxc_diag[6, nao]`` whose 6 components
-    are the symmetric Cartesian pairs ``(xx, xy, xz, yy, yz, zz)``, then
-    contracts with the on-atom slice and re-expands to a dense ``(3, 3)``
-    block per atom.
+    The 6 components are the symmetric Cartesian pairs
+    ``(xx, xy, xz, yy, yz, zz)``.  Both the same-atom Hessian block
+    ``_de_vxc_diag`` and the grid-shift part ``_de_becke_vxc_parts``
+    contract this same kernel, so it is built once per batch and shared.
 
     Parameters
     ----------
@@ -257,20 +259,13 @@ def _de_vxc_diag(xc_type, ao, ao_dm0, wv, aoslices, natm, nao):
         ``[ncomp_dm0, ngrids, nao]`` (1 for LDA, 4 for GGA/MGGA).
     wv : np.ndarray
         Weight-times-vxc, shape ``[nvar, ngrids]``.
-    aoslices : np.ndarray
-        Per-atom AO slices, shape ``[natm, 4]`` — only the last two columns
-        ``[p0, p1)`` are used for the bra-side AO range of each atom.
-    natm : int
-        Number of atoms in the (possibly restricted) atom list.
     nao : int
         Total number of atomic orbitals.
 
     Returns
     -------
-    de_vxc_diag : np.ndarray
-        Same-atom block of the XC skeleton 2nd derivative, shape
-        ``[natm, natm, 3, 3]`` — only the diagonal ``A == B`` blocks are
-        non-zero (off-diagonal blocks are produced by ``_de_vxc_off``).
+    dao_vxc_diag : np.ndarray
+        Diagonal vxc kernel, shape ``[6, nao]``.
     """
     dao_vxc_diag = np.zeros((6, nao))
 
@@ -300,21 +295,47 @@ def _de_vxc_diag(xc_type, ao, ao_dm0, wv, aoslices, natm, nao):
             for idx_ts, i3 in enumerate(trip_idx):
                 dao_vxc_diag[idx_ts] += np.einsum("gu, gu -> u", ao[i3], aow)
 
+    return dao_vxc_diag
+
+
+def _de_vxc_diag(dao_vxc_diag, aoslices, natm):
+    """Same-atom (A == B) block of the XC skeleton 2nd derivative.
+
+    Sums ``dao_vxc_diag`` (from ``_make_dao_vxc_diag``) over each atom's
+    on-atom AO slice and re-expands the 6 symmetric Cartesian pairs into a
+    dense ``(3, 3)`` block per atom.
+
+    Parameters
+    ----------
+    dao_vxc_diag : np.ndarray
+        Diagonal vxc kernel from ``_make_dao_vxc_diag``, shape ``[6, nao]``.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]`` — only the last two columns
+        ``[p0, p1)`` are used for the AO range of each atom.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+
+    Returns
+    -------
+    de_vxc_diag : np.ndarray
+        Same-atom block of the XC skeleton 2nd derivative, shape
+        ``[natm, natm, 3, 3]`` — only the diagonal ``A == B`` blocks are
+        non-zero (off-diagonal blocks are produced by ``_de_vxc_off``).
+    """
     de_vxc_diag = np.zeros((natm, natm, 6))
     for A in range(natm):
         _, _, p0A, p1A = aoslices[A]
         de_vxc_diag[A, A] = np.einsum("Au -> A", dao_vxc_diag[:, p0A:p1A])
-    de_vxc_diag = de_vxc_diag[:, :, [0, 1, 2, 1, 3, 4, 2, 4, 5]].reshape(natm, natm, 3, 3)
-    return de_vxc_diag
+    return de_vxc_diag[:, :, IDX_PAIR_TS]
 
 
-def _de_vxc_off(xc_type, ao, dm0, wv, aoslices, natm, nao):
-    """Two-atom (A != B) block of the XC skeleton 2nd derivative.
+def _make_dao_vxc_off(xc_type, ao, wv, nao):
+    """Build the AO-resolved two-index vxc kernel ``dao_vxc_off[3, 3, nao, nao]``.
 
-    Builds the dense AO-resolved object ``dao_vxc_off[3, 3, nao, nao]`` (so
-    both bra and ket retain their AO indices), symmetrises it under
-    ``[t, s, mu, nu] -> [s, t, nu, mu]``, and contracts each ``(A, B)``
-    block with the corresponding ``dm0[B, A]`` AO slice.
+    Both bra and ket retain their AO indices; the kernel is symmetrised
+    under ``[t, s, mu, nu] -> [s, t, nu, mu]``.  Both the two-atom Hessian
+    block ``_de_vxc_off`` and the grid-shift part ``_de_becke_vxc_parts``
+    contract this same kernel, so it is built once per batch and shared.
 
     Parameters
     ----------
@@ -324,26 +345,16 @@ def _de_vxc_off(xc_type, ao, dm0, wv, aoslices, natm, nao):
         AO and its derivatives evaluated on the grid, shape
         ``[ncomp, ngrids, nao]``.  Indices 0..3 are always read; GGA/MGGA
         also reads the 2nd-order channels (indices 4..9).
-    dm0 : np.ndarray
-        Density matrix in AO basis, shape ``[nao, nao]``.
     wv : np.ndarray
         Weight-times-vxc, shape ``[nvar, ngrids]``.
-    aoslices : np.ndarray
-        Per-atom AO slices, shape ``[natm, 4]``.
-    natm : int
-        Number of atoms in the (possibly restricted) atom list.
     nao : int
         Total number of atomic orbitals.
 
     Returns
     -------
-    de_vxc_off : np.ndarray
-        Two-atom block of the XC skeleton 2nd derivative, shape
-        ``[natm, natm, 3, 3]``.  Both ``A == B`` and ``A != B`` entries are
-        populated; the natural decomposition into "diagonal vs off-diagonal"
-        is by the integral kernel rather than by atom index, so this
-        function's diagonal block is *not* zero — it complements
-        ``de_vxc_diag``.
+    dao_vxc_off : np.ndarray
+        Two-index vxc kernel, shape ``[3, 3, nao, nao]``, symmetrised under
+        ``[t, s, mu, nu] -> [s, t, nu, mu]``.
     """
     dao_vxc_off = np.zeros((3, 3, nao, nao))
 
@@ -383,7 +394,37 @@ def _de_vxc_off(xc_type, ao, dm0, wv, aoslices, natm, nao):
 
     # [t, s] -> [t, s] + [s, t] with AO indices transposed.
     dao_vxc_off += dao_vxc_off.transpose(1, 0, 3, 2)
+    return dao_vxc_off
 
+
+def _de_vxc_off(dao_vxc_off, dm0, aoslices, natm):
+    """Two-atom (A != B) block of the XC skeleton 2nd derivative.
+
+    Contracts each ``(A, B)`` block of ``dao_vxc_off`` (from
+    ``_make_dao_vxc_off``) with the corresponding ``dm0[B, A]`` AO slice.
+
+    Parameters
+    ----------
+    dao_vxc_off : np.ndarray
+        Two-index vxc kernel from ``_make_dao_vxc_off``, shape
+        ``[3, 3, nao, nao]``.
+    dm0 : np.ndarray
+        Density matrix in AO basis, shape ``[nao, nao]``.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]``.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+
+    Returns
+    -------
+    de_vxc_off : np.ndarray
+        Two-atom block of the XC skeleton 2nd derivative, shape
+        ``[natm, natm, 3, 3]``.  Both ``A == B`` and ``A != B`` entries are
+        populated; the natural decomposition into "diagonal vs off-diagonal"
+        is by the integral kernel rather than by atom index, so this
+        function's diagonal block is *not* zero — it complements
+        ``de_vxc_diag``.
+    """
     de_vxc_off = np.zeros((natm, natm, 3, 3))
     for A in range(natm):
         _, _, p0A, p1A = aoslices[A]
@@ -416,7 +457,108 @@ def _de_becke_atom_parts(w, dw, vxc, fxc, drho, prho):
     }
 
 
+def _contract_pvxc(pvxc, atm_idx, aoslices, natm):
+    """Contract a per-grid-atom skeleton-Vxc kernel into Hessian blocks.
+
+    Per-batch (single grid atom ``atm_idx``) form of the notebook's
+    ``contract_pvxc``: the full-AO sum of ``pvxc`` enters the ``A == B``
+    block, the per-atom AO-slice sums enter every ``B`` column of row
+    ``atm_idx``, and the row is symmetrised under ``(A, t) <-> (B, s)`` —
+    the symmetrisation that accounts for the grid moving with the atoms.
+
+    Parameters
+    ----------
+    pvxc : np.ndarray
+        Per-grid-atom skeleton Vxc kernel, shape ``[3, 3, nao]``.
+    atm_idx : int
+        Grid atom the current batch belongs to.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]``.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+
+    Returns
+    -------
+    de_pvxc : np.ndarray
+        Hessian blocks, shape ``[natm, natm, 3, 3]`` — only row ``atm_idx``
+        and its transpose are non-zero.
+    """
+    de_pvxc = np.zeros((natm, natm, 3, 3))
+    de_pvxc[atm_idx, atm_idx] += np.einsum("tsu -> ts", pvxc)
+    for B in range(natm):
+        _, _, p0B, p1B = aoslices[B]
+        de_pvxc[atm_idx, B] -= 2 * np.einsum("tsu -> ts", pvxc[:, :, p0B:p1B])
+    de_pvxc += de_pvxc.transpose(1, 0, 3, 2)
+    return de_pvxc
+
+
+def _de_becke_vxc_parts(xc_type, dao_vxc_diag, dao_vxc_off, dm0, atm_idx, aoslices, natm):
+    """vxc-kernel form of the grid-shift terms t8/t9 (basis form of t4/t7).
+
+    Substitutes the previous ``de_becke_atom_expensive_4/5`` (notebook
+    t4/t7): contracting the per-grid-atom vxc kernels with the density
+    reproduces the same total (``t8 + t9 == t4 + t7``) without building the
+    second-order skeleton density derivatives ``pdrho``/``pprho``.  With
+    this substitution the grid-shift decomposition needs no ``d2rho`` at
+    all — only ``drho``, which enters the other becke parts.
+
+    Since a batch holds the grids of the single atom ``atm_idx``, the
+    batch-wide kernels ``dao_vxc_diag``/``dao_vxc_off`` (shared with
+    ``de_vxc_diag``/``de_vxc_off``) are exactly the per-grid-atom masked
+    kernels of the notebook's t8/t9.
+
+    Parameters
+    ----------
+    xc_type : str
+        One of ``"GGA"``, ``"MGGA"`` — the LDA case is not handled.
+    dao_vxc_diag : np.ndarray
+        Diagonal vxc kernel from ``_make_dao_vxc_diag``, shape ``[6, nao]``.
+    dao_vxc_off : np.ndarray
+        Two-index vxc kernel from ``_make_dao_vxc_off``, shape
+        ``[3, 3, nao, nao]``.
+    dm0 : np.ndarray
+        Density matrix in AO basis, shape ``[nao, nao]``.
+    atm_idx : int
+        Grid atom the current batch belongs to.
+    aoslices : np.ndarray
+        Per-atom AO slices, shape ``[natm, 4]``.
+    natm : int
+        Number of atoms in the (possibly restricted) atom list.
+
+    Returns
+    -------
+    dict[str, np.ndarray]
+        Dictionary with keys:
+
+        - ``"de_becke_vxc_diag"`` (t8) : from ``0.5 * dao_vxc_diag`` expanded
+          to dense ``(3, 3)`` pairs, shape ``[natm, natm, 3, 3]``.
+        - ``"de_becke_vxc_off"`` (t9) : from ``0.5 * dao_vxc_off`` contracted
+          with ``dm0`` on the ket AO index, shape ``[natm, natm, 3, 3]``.
+    """
+    if xc_type == "LDA":
+        raise NotImplementedError
+
+    pvxc_diag = 0.5 * dao_vxc_diag[IDX_PAIR_TS]
+    pvxc_off = 0.5 * np.einsum("tsuv, uv -> tsu", dao_vxc_off, dm0, optimize=True)
+    return {
+        "de_becke_vxc_diag": _contract_pvxc(pvxc_diag, atm_idx, aoslices, natm),
+        "de_becke_vxc_off": _contract_pvxc(pvxc_off, atm_idx, aoslices, natm),
+    }
+
+
 def _de_becke_atom_expensive(xc_type, ao, ao_dm0, w, vxc, aoslices, natm, ngrids):
+    """Reference form of the grid-shift terms t4/t7 (NOT used in evaluation).
+
+    The d2rho-based counterpart of ``_de_becke_vxc_parts``: builds the
+    second-order skeleton density derivatives ``pdrho``/``pprho`` explicitly
+    and contracts them with ``vxc``.  Superseded by the basis form t8/t9 in
+    ``make_hessian_setup_batch``; kept only as a reference for validating
+    ``t8 + t9 == t4 + t7``.
+
+    Parameters and return keys mirror the previous production signature
+    (``de_becke_atom_expensive_4`` = t4 row for the batch's grid atom,
+    ``de_becke_atom_expensive_5`` = t7 diagonal block).
+    """
     IDX2 = [[XX, XY, XZ], [YX, YY, YZ], [ZX, ZY, ZZ]]
     IDX3 = [
         [[XXX, XXY, XXZ], [XXY, XYY, XYZ], [XXZ, XYZ, XZZ]],
@@ -722,7 +864,9 @@ def make_hessian_setup_batch(
     ``de_fxc``) and the CP-KS-side ``vmat_ip``/``vmat_deriv1`` matrices.
 
     The total XC contribution to the skeleton Hessian is
-    ``de_vxc_diag + de_vxc_off + de_fxc``.
+    ``de_vxc_diag + de_vxc_off + de_fxc`` plus the Becke grid-shift parts
+    (``de_becke_full_1/2``, ``de_becke_atom_1/2/3``, ``de_becke_vxc_diag``,
+    ``de_becke_vxc_off``).
 
     Parameters
     ----------
@@ -732,7 +876,8 @@ def make_hessian_setup_batch(
         XC functional name, e.g. ``"SVWN"`` (LDA), ``"B3LYP"`` (GGA), or
         ``"TPSS0"`` (MGGA).
     coords : np.ndarray
-        Grid point coordinates, shape ``[ngrids, 3]``.
+        Grid point coordinates, shape ``[ngrids, 3]`` — the grids of one
+        call must all belong to the single atom ``atm_idx``.
     weights : np.ndarray
         Grid weights, shape ``[ngrids]``.
     dm0 : np.ndarray
@@ -754,7 +899,15 @@ def make_hessian_setup_batch(
           ``[natm, natm, 3, 3]``.
         - ``de_fxc``      : fxc-kernel contribution, shape
           ``[natm, natm, 3, 3]``.
+        - ``de_becke_full_1/2``, ``de_becke_atom_1/2``,
+          ``de_becke_vxc_diag/off`` : Becke grid-shift contributions
+          (notebook terms t1/t2, t3/t5, t8/t9), each of shape
+          ``[natm, natm, 3, 3]`` with only the ``atm_idx`` row (and its
+          transpose, where applicable) populated.
+        - ``de_becke_atom_3`` : diagonal-only grid-shift contribution
+          (notebook t6), shape ``[natm, natm, 3, 3]``.
         - ``vmat_ip``     : gradient-level Vxc, shape ``[3, nao, nao]``.
+        - ``vmat_vxc``/``vmat_fxc`` : the two pieces of ``vmat_deriv1``.
         - ``vmat_deriv1`` : per-atom skeleton derivative of the Vxc Fock
           matrix, shape ``[natm, 3, nao, nao]``, antisymmetrised in AO.
     """
@@ -812,16 +965,18 @@ def make_hessian_setup_batch(
     tic("de_becke_atom_parts", t0)
 
     t0 = time.time()
-    de_becke_atom_expensive = _de_becke_atom_expensive(xc_type, ao, ao_dm0, weights, vxc, aoslices, natm, len(weights))
-    tic("de_becke_atom_expensive", t0)
-
-    t0 = time.time()
-    de_vxc_diag = _de_vxc_diag(xc_type, ao, ao_dm0, wv, aoslices, natm, nao)
+    dao_vxc_diag = _make_dao_vxc_diag(xc_type, ao, ao_dm0, wv, nao)
+    de_vxc_diag = _de_vxc_diag(dao_vxc_diag, aoslices, natm)
     tic("de_vxc_diag", t0)
 
     t0 = time.time()
-    de_vxc_off = _de_vxc_off(xc_type, ao, dm0, wv, aoslices, natm, nao)
+    dao_vxc_off = _make_dao_vxc_off(xc_type, ao, wv, nao)
+    de_vxc_off = _de_vxc_off(dao_vxc_off, dm0, aoslices, natm)
     tic("de_vxc_off", t0)
+
+    t0 = time.time()
+    de_becke_vxc_parts = _de_becke_vxc_parts(xc_type, dao_vxc_diag, dao_vxc_off, dm0, atm_idx, aoslices, natm)
+    tic("de_becke_vxc_parts", t0)
 
     t0 = time.time()
     vmat_ip = _vmat_ip(xc_type, ao, wv, nao)
@@ -842,7 +997,7 @@ def make_hessian_setup_batch(
     }
     results.update(de_becke_full_parts)
     results.update(de_becke_atom_parts)
-    results.update(de_becke_atom_expensive)
+    results.update(de_becke_vxc_parts)
     return results
 
 
@@ -872,7 +1027,7 @@ def quad_split_by_atom(atm_quad_split: list[int], atm_list: list[int], nbatch_gr
             # Split the current batch if it exceeds the maximum size
             while start < end:
                 next_end = min(start + nbatch_grids, end)
-                batches.append((start, next_end))
+                batches.append((A, start, next_end))
                 start = next_end
         else:
             batches.append((A, start, end))
@@ -919,8 +1074,8 @@ def make_hessian_setup(
         "de_becke_atom_1": np.zeros((natm, natm, 3, 3)),
         "de_becke_atom_2": np.zeros((natm, natm, 3, 3)),
         "de_becke_atom_3": np.zeros((natm, natm, 3, 3)),
-        "de_becke_atom_expensive_4": np.zeros((natm, natm, 3, 3)),
-        "de_becke_atom_expensive_5": np.zeros((natm, natm, 3, 3)),
+        "de_becke_vxc_diag": np.zeros((natm, natm, 3, 3)),
+        "de_becke_vxc_off": np.zeros((natm, natm, 3, 3)),
         "de_vxc_diag": np.zeros((natm, natm, 3, 3)),
         "de_vxc_off": np.zeros((natm, natm, 3, 3)),
         "de_fxc": np.zeros((natm, natm, 3, 3)),
@@ -948,17 +1103,28 @@ def make_hessian_setup(
             atm_list=atm_list,
             verbose=False,
         )
-        for key in ["de_vxc_diag", "de_vxc_off", "de_fxc", "vmat_ip", "vmat_fxc", "vmat_vxc", "vmat_deriv1"]:
+        for key in [
+            "de_vxc_diag",
+            "de_vxc_off",
+            "de_fxc",
+            "vmat_ip",
+            "vmat_fxc",
+            "vmat_vxc",
+            "vmat_deriv1",
+            "de_becke_full_1",
+            "de_becke_full_2",
+            "de_becke_vxc_diag",
+            "de_becke_vxc_off",
+        ]:
             result_sum[key] += result_batch[key]
-        for key in ["de_becke_full_1", "de_becke_full_2"]:
-            result_sum[key] += result_batch[key]
-        for key in ["de_becke_atom_1", "de_becke_atom_2", "de_becke_atom_expensive_4"]:
+        for key in ["de_becke_atom_1", "de_becke_atom_2"]:
             result_sum[key][atm_idx] += result_batch[key]
-        for key in ["de_becke_atom_3", "de_becke_atom_expensive_5"]:
+        for key in ["de_becke_atom_3"]:
             result_sum[key][atm_idx, atm_idx] += result_batch[key]
 
-    # symmetrize on the atom indices for the becke parts
-    for key in ["de_becke_full_1", "de_becke_atom_1", "de_becke_atom_2", "de_becke_atom_expensive_4"]:
+    # symmetrize on the atom indices for the becke parts;
+    # de_becke_vxc_diag/off are already symmetrized per batch (in _contract_pvxc)
+    for key in ["de_becke_full_1", "de_becke_atom_1", "de_becke_atom_2"]:
         result_sum[key] += result_sum[key].transpose(1, 0, 3, 2)
 
     result_sum["de_xc_skeleton_no_becke"] = result_sum["de_vxc_diag"] + result_sum["de_vxc_off"] + result_sum["de_fxc"]
@@ -969,8 +1135,8 @@ def make_hessian_setup(
         + result_sum["de_becke_atom_1"]
         + result_sum["de_becke_atom_2"]
         + result_sum["de_becke_atom_3"]
-        + result_sum["de_becke_atom_expensive_4"]
-        + result_sum["de_becke_atom_expensive_5"]
+        + result_sum["de_becke_vxc_diag"]
+        + result_sum["de_becke_vxc_off"]
     )
     result_sum["de_xc_deriv1_ao"] = result_sum["vmat_deriv1"]
     return result_sum
