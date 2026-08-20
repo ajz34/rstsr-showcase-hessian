@@ -98,10 +98,3 @@ pub fn hess_case_b3lyp() -> CaseAmoniaRKSBecke {
 pub fn hess_case_tpss0() -> CaseAmoniaRKSBecke {
     hess_case_becke("tpss0")
 }
-
-/// Maximum absolute entry of a tensor (used for invariance / diff checks with
-/// unambiguous tolerance semantics).
-pub fn max_abs(x: TsrView) -> f64 {
-    use rstsr::prelude::*;
-    x.iter_with_order(TensorIterOrder::F).map(|&v| v.abs()).fold(0.0, f64::max)
-}

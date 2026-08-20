@@ -46,30 +46,30 @@ fn test_setup(hess_case_b3lyp: &CaseAmoniaRKSBecke) {
     // vmat_deriv1)
     for key in ["de_fxc", "de_vxc_diag", "de_vxc_off", "vmat_ip", "vmat_deriv1"] {
         let diff = &becke_obj.intmd[key] - &result_ref[key];
-        let maxdiff = max_abs(diff.view());
+        let maxdiff = diff.abs().max();
         assert!(maxdiff < 1e-8, "key {key}: max diff vs non-becke path = {maxdiff}");
     }
 
     // (2) without-becke parts vs the python reference (grid-order independent sums)
     for key in ["de_fxc", "de_vxc_diag", "de_vxc_off", "vmat_deriv1"] {
         let diff = &becke_obj.intmd[key] - &ref_dict[key].t();
-        let maxdiff = max_abs(diff.view());
+        let maxdiff = diff.abs().max();
         assert!(maxdiff < 1e-4, "key {key}: max diff vs python ref = {maxdiff}");
     }
     {
         let diff = &becke_obj.intmd["vmat_ip"] - &ref_dict["vmat_ip"].transpose([1, 2, 0]);
-        let maxdiff = max_abs(diff.view());
+        let maxdiff = diff.abs().max();
         assert!(maxdiff < 1e-4, "key vmat_ip: max diff vs python ref = {maxdiff}");
     }
 
     // (3) translational invariance of the grid-shifted quantities (< 1e-9)
     let inv1 = becke_obj.intmd["de_xc_skeleton"].view().sum_axes(3).sum_axes(2);
-    let m1 = max_abs(inv1.view());
+    let m1 = inv1.abs().max();
     println!("de_xc_skeleton invariance max: {m1:.3e}");
     assert!(m1 < 1e-9, "de_xc_skeleton translational invariance = {m1}");
 
     let inv2 = becke_obj.intmd["vmat_deriv1_grid"].view().sum_axes(3);
-    let m2 = max_abs(inv2.view());
+    let m2 = inv2.abs().max();
     println!("vmat_deriv1_grid invariance max: {m2:.3e}");
     assert!(m2 < 1e-9, "vmat_deriv1_grid translational invariance = {m2}");
 
