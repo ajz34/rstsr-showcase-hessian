@@ -17,12 +17,10 @@ type f64simd = FpSimd<f64, SIMDD>;
 const SIMDD: usize = 8;
 const INVTOL: f64 = 1e-14;
 
-const SIMD_0: f64simd = f64simd::splat(0.0);
-const SIMD_0_5: f64simd = f64simd::splat(0.5);
-const SIMD_1_0: f64simd = f64simd::splat(1.0);
-const SIMD_1_5: f64simd = f64simd::splat(1.5);
-const SIMD_2_0: f64simd = f64simd::splat(2.0);
-const SIMD_3_0: f64simd = f64simd::splat(3.0);
+/// Create a SIMD register with all lanes set to `x`.
+const fn simd_val(x: f64) -> f64simd {
+    f64simd::splat(x)
+}
 
 /// Output of Becke partitioning function.
 ///
@@ -480,8 +478,8 @@ fn gather_lane_batch(
 ) -> LaneBatch {
     let (g0, g1) = task.range();
     let nlane = (g1 - g0).div_ceil(SIMDD);
-    let mut coords = vec![[SIMD_0; 3]; nlane];
-    let mut wquad = vec![SIMD_0; nlane];
+    let mut coords = vec![[simd_val(0.0); 3]; nlane];
+    let mut wquad = vec![simd_val(0.0); nlane];
 
     match task {
         BatchTask::ByGrid { attribution, .. } => {
@@ -545,8 +543,8 @@ impl TaskBuffers {
             c: ctx.nset_w.map(|n| vec![0.0; n]),
             dc: ctx.nset_dw.map(|n| vec![0.0; natm * 3 * n]),
             ddc: ctx.nset_ddw.map(|n| vec![0.0; natm * 3 * natm * 3 * n]),
-            cw_lanes_dw: ctx.nset_dw.map_or_else(Vec::new, |n| vec![SIMD_0; n]),
-            cw_lanes_ddw: ctx.nset_ddw.map_or_else(Vec::new, |n| vec![SIMD_0; n]),
+            cw_lanes_dw: ctx.nset_dw.map_or_else(Vec::new, |n| vec![simd_val(0.0); n]),
+            cw_lanes_ddw: ctx.nset_ddw.map_or_else(Vec::new, |n| vec![simd_val(0.0); n]),
         }
     }
 
@@ -639,10 +637,10 @@ fn eval_partition(
     let natm = ctx.natm;
 
     // partition output
-    let mut P = vec![SIMD_1_0; natm];
+    let mut P = vec![simd_val(1.0); natm];
 
     // evaluate grid distance to atom
-    let mut dist = vec![SIMD_0; natm];
+    let mut dist = vec![simd_val(0.0); natm];
     for A in 0..natm {
         dist[A] = dist3_hybrid(coords, &ctx.atm_coords[A]);
     }
@@ -656,13 +654,13 @@ fn eval_partition(
                 3 => switch_f3(mu, a_factor),
                 _ => switch_f_hardness(mu, a_factor, ctx.hardness),
             };
-            P[A] *= SIMD_0_5 * (SIMD_1_0 - f3);
-            P[B] *= SIMD_0_5 * (SIMD_1_0 + f3);
+            P[A] *= simd_val(0.5) * (simd_val(1.0) - f3);
+            P[B] *= simd_val(0.5) * (simd_val(1.0) + f3);
         }
     }
 
     // compute partition function and weights
-    let mut Z = SIMD_0;
+    let mut Z = simd_val(0.0);
     for A in 0..natm {
         Z += P[A];
     }
@@ -670,7 +668,7 @@ fn eval_partition(
     // lane-wise mask over the per-grid indices for ByGrid)
     let Pg = match attr {
         LaneAttrib::ByGrid(atm_idx) => {
-            let mut Pg = SIMD_0;
+            let mut Pg = simd_val(0.0);
             for A in 0..natm {
                 Pg = P[A].mask_select(atm_idx.map(|a| a == A), Pg);
             }
@@ -716,7 +714,7 @@ fn eval_switch_pair_pass(
     let dR_atm_dist = ctx.dR_atm_dist.as_ref().unwrap();
 
     // evaluate derivative of grid distance to atom
-    let mut dR_dist = vec![[SIMD_0; 3]; natm];
+    let mut dR_dist = vec![[simd_val(0.0); 3]; natm];
     for A in 0..natm {
         for t in 0..3 {
             dR_dist[A][t] = (-coords[t] + ctx.atm_coords[A][t]) / dist[A];
@@ -724,26 +722,26 @@ fn eval_switch_pair_pass(
     }
 
     // partition output
-    let mut dR_Z = vec![[SIMD_0; 3]; natm];
-    let mut dR_Pg = vec![[SIMD_0; 3]; natm];
+    let mut dR_Z = vec![[simd_val(0.0); 3]; natm];
+    let mut dR_Pg = vec![[simd_val(0.0); 3]; natm];
 
     // 2nd-order intermediates (only materialized for deriv >= 2).  See [`LaneDerivPass`]
     // for the indexing conventions.
     let do_deriv2 = ctx.do_deriv2;
-    let mut dR_log_P = do_deriv2.then(|| vec![vec![[SIMD_0; 3]; natm]; natm]); // [M][A][t]
-    let mut ddR_Z = do_deriv2.then(|| vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]); // [A][B][t][s]
-    let mut ddR_Pg = do_deriv2.then(|| vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]); // [A][B][t][s]
+    let mut dR_log_P = do_deriv2.then(|| vec![vec![[simd_val(0.0); 3]; natm]; natm]); // [M][A][t]
+    let mut ddR_Z = do_deriv2.then(|| vec![vec![[[simd_val(0.0); 3]; 3]; natm]; natm]); // [A][B][t][s]
+    let mut ddR_Pg = do_deriv2.then(|| vec![vec![[[simd_val(0.0); 3]; 3]; natm]; natm]); // [A][B][t][s]
 
     // per-atom projection matrix PrM[M] = Proj(r_M)/|r_M| (depends only on the atom,
     // not the pair partner, so precomputed once per batch instead of per pair).
     let PrM: Option<Vec<[[f64simd; 3]; 3]>> = do_deriv2.then(|| {
         (0..natm)
             .map(|M| {
-                let inv_d = SIMD_1_0 / dist[M];
-                let mut pm = [[SIMD_0; 3]; 3];
+                let inv_d = simd_val(1.0) / dist[M];
+                let mut pm = [[simd_val(0.0); 3]; 3];
                 for t in 0..3 {
                     for s in 0..3 {
-                        let delta = if t == s { SIMD_1_0 } else { SIMD_0 };
+                        let delta = if t == s { simd_val(1.0) } else { simd_val(0.0) };
                         pm[t][s] = (delta - dR_dist[M][t] * dR_dist[M][s]) * inv_d;
                     }
                 }
@@ -773,11 +771,11 @@ fn eval_switch_pair_pass(
                 };
                 (f3, df3, None)
             };
-            let sA = SIMD_0_5 * (SIMD_1_0 - f3);
-            let sB = SIMD_0_5 * (SIMD_1_0 + f3);
-            let dmu_nu = SIMD_1_0 - SIMD_2_0 * mu * a_factor;
-            let dmu_sA = -SIMD_0_5 * df3 * dmu_nu;
-            let dmu_sB = SIMD_0_5 * df3 * dmu_nu;
+            let sA = simd_val(0.5) * (simd_val(1.0) - f3);
+            let sB = simd_val(0.5) * (simd_val(1.0) + f3);
+            let dmu_nu = simd_val(1.0) - simd_val(2.0) * mu * a_factor;
+            let dmu_sA = -simd_val(0.5) * df3 * dmu_nu;
+            let dmu_sB = simd_val(0.5) * df3 * dmu_nu;
             let sA_safe = sA.max_compare(INVTOL);
             let sB_safe = sB.max_compare(INVTOL);
             let dmu_log_sA = dmu_sA / sA_safe;
@@ -786,10 +784,11 @@ fn eval_switch_pair_pass(
             let common_Z = P[A] * dmu_log_sA + P[B] * dmu_log_sB;
             // only the pair member that generated the grid point contributes to the Pg
             // numerator (lane-wise mask for ByGrid; definite atom for ByAtom)
-            let common_Pg = attr.select(A, P[A] * dmu_log_sA, SIMD_0) + attr.select(B, P[B] * dmu_log_sB, SIMD_0);
+            let common_Pg =
+                attr.select(A, P[A] * dmu_log_sA, simd_val(0.0)) + attr.select(B, P[B] * dmu_log_sB, simd_val(0.0));
 
-            let mut dR_mu_roleA = [SIMD_0; 3];
-            let mut dR_mu_roleB = [SIMD_0; 3];
+            let mut dR_mu_roleA = [simd_val(0.0); 3];
+            let mut dR_mu_roleB = [simd_val(0.0); 3];
             let dR_atm_dist_AB = dR_atm_dist[A][B];
             for t in 0..3 {
                 dR_mu_roleA[t] = (dR_dist[A][t] - mu * dR_atm_dist_AB[t]) * inv_atm_dist_AB;
@@ -809,8 +808,8 @@ fn eval_switch_pair_pass(
                 let ddR_Pg = ddR_Pg.as_mut().unwrap();
 
                 // 2nd mu-derivatives of s(mu); ddmu_sB = -ddmu_sA (s_BA = 1 - s_AB)
-                let ddmu_nu = -SIMD_2_0 * a_factor; // nu'' = -2a
-                let ddmu_sA = -SIMD_0_5 * ddf3 * dmu_nu * dmu_nu - SIMD_0_5 * df3 * ddmu_nu;
+                let ddmu_nu = -simd_val(2.0) * a_factor; // nu'' = -2a
+                let ddmu_sA = -simd_val(0.5) * ddf3 * dmu_nu * dmu_nu - simd_val(0.5) * df3 * ddmu_nu;
                 let ddmu_sB = -ddmu_sA;
                 // ddmu_log_s = s''/s - (s'/s)^2
                 let ddmu_log_sA = ddmu_sA / sA_safe - dmu_log_sA * dmu_log_sA;
@@ -830,10 +829,10 @@ fn eval_switch_pair_pass(
                 // PrA/PrB are per-atom (precomputed in PrM above); only PU is per-pair.
                 let PrA = PrM.as_ref().unwrap()[A];
                 let PrB = PrM.as_ref().unwrap()[B];
-                let mut PU = [[SIMD_0; 3]; 3];
+                let mut PU = [[simd_val(0.0); 3]; 3];
                 for t in 0..3 {
                     for s in 0..3 {
-                        let delta = if t == s { SIMD_1_0 } else { SIMD_0 };
+                        let delta = if t == s { simd_val(1.0) } else { simd_val(0.0) };
                         PU[t][s] = (delta - Uvec[t] * Uvec[s]) * inv_atm_dist_AB;
                     }
                 }
@@ -841,7 +840,7 @@ fn eval_switch_pair_pass(
                 let f_ab = dist[A] - dist[B]; // f = |r_A| - |r_B| (= mu * g_ab)
                 let inv_g2 = inv_atm_dist_AB * inv_atm_dist_AB;
                 let inv_g3 = inv_g2 * inv_atm_dist_AB;
-                let zero_ts = [[SIMD_0; 3]; 3];
+                let zero_ts = [[simd_val(0.0); 3]; 3];
                 let nrB = neg3(rB);
                 let nUv = neg3(Uvec);
                 let nPrB = neg33(PrB);
@@ -854,13 +853,13 @@ fn eval_switch_pair_pass(
                             gY: &[f64simd; 3],
                             gXY: &[[f64simd; 3]; 3]|
                  -> [[f64simd; 3]; 3] {
-                    let mut out = [[SIMD_0; 3]; 3];
+                    let mut out = [[simd_val(0.0); 3]; 3];
                     for t in 0..3 {
                         for s in 0..3 {
                             let ofg = fX[t] * gY[s] + gX[t] * fY[s];
                             let ogg = gX[t] * gY[s];
-                            out[t][s] =
-                                (fXY[t][s] * g_ab - ofg - f_ab * gXY[t][s]) * inv_g2 + SIMD_2_0 * f_ab * ogg * inv_g3;
+                            out[t][s] = (fXY[t][s] * g_ab - ofg - f_ab * gXY[t][s]) * inv_g2
+                                + simd_val(2.0) * f_ab * ogg * inv_g3;
                         }
                     }
                     out
@@ -869,7 +868,7 @@ fn eval_switch_pair_pass(
                 let ddR_mu_roleAB = d2mu(&rA, &nrB, &zero_ts, &Uvec, &nUv, &nPU);
                 let ddR_mu_roleBB = d2mu(&nrB, &nrB, &nPrB, &nUv, &nUv, &PU);
                 // role BA = role AB transposed in (t, s)
-                let mut ddR_mu_roleBA = [[SIMD_0; 3]; 3];
+                let mut ddR_mu_roleBA = [[simd_val(0.0); 3]; 3];
                 for t in 0..3 {
                     for s in 0..3 {
                         ddR_mu_roleBA[t][s] = ddR_mu_roleAB[s][t];
@@ -890,8 +889,8 @@ fn eval_switch_pair_pass(
                 // vectors rA/rB).  The 4 role outer products are formed once per (t,s)
                 // and reused for both ddR_Z and ddR_Pg.
                 let common_dd = P[A] * ddmu_log_sA + P[B] * ddmu_log_sB;
-                let coef_A = attr.select(A, P[A], SIMD_0);
-                let coef_B = attr.select(B, P[B], SIMD_0);
+                let coef_A = attr.select(A, P[A], simd_val(0.0));
+                let coef_B = attr.select(B, P[B], simd_val(0.0));
                 let c1_Pg = coef_A * dmu_log_sA + coef_B * dmu_log_sB;
                 let cdd_Pg = coef_A * ddmu_log_sA + coef_B * ddmu_log_sB;
                 for t in 0..3 {
@@ -928,8 +927,8 @@ fn eval_lane_dw(
     let natm = ctx.natm;
 
     // fill derivatives
-    let mut dw = vec![[SIMD_0; 3]; natm];
-    let inv_Z = SIMD_1_0 / part.Z;
+    let mut dw = vec![[simd_val(0.0); 3]; natm];
+    let inv_Z = simd_val(1.0) / part.Z;
     for A in 0..natm {
         for t in 0..3 {
             dw[A][t] = wquad * inv_Z * (dpass.dR_Pg[A][t] - part.Pg * inv_Z * dpass.dR_Z[A][t]);
@@ -937,10 +936,10 @@ fn eval_lane_dw(
     }
 
     // apply translation invariance
-    let mut dw_neg_sum = [SIMD_0; 3];
+    let mut dw_neg_sum = [simd_val(0.0); 3];
     match attr {
         LaneAttrib::ByGrid(atm_idx) => {
-            let mut dw_g = [SIMD_0; 3];
+            let mut dw_g = [simd_val(0.0); 3];
             for A in 0..natm {
                 let mask = atm_idx.map(|a| a == A);
                 for t in 0..3 {
@@ -994,19 +993,19 @@ fn eval_lane_ddw(
 
     // gather M = A_g for the ddR_Pg cross term (dlog_Ag[A][t], P_Ag) first, so the
     // two independent cross-term accumulations below can share one (A,B,t,s) loop.
-    let mut dlog_Ag = vec![[SIMD_0; 3]; natm]; // [A][t]
+    let mut dlog_Ag = vec![[simd_val(0.0); 3]; natm]; // [A][t]
     let P_Ag = match attr {
         LaneAttrib::ByGrid(atm_idx) => {
             for A in 0..natm {
                 for t in 0..3 {
-                    let mut v = SIMD_0;
+                    let mut v = simd_val(0.0);
                     for M in 0..natm {
                         v = dR_log_P[M][A][t].mask_select(atm_idx.map(|a| a == M), v);
                     }
                     dlog_Ag[A][t] = v;
                 }
             }
-            let mut P_Ag = SIMD_0;
+            let mut P_Ag = simd_val(0.0);
             for A in 0..natm {
                 P_Ag = P[A].mask_select(atm_idx.map(|a| a == A), P_Ag);
             }
@@ -1029,7 +1028,7 @@ fn eval_lane_ddw(
         for B in 0..natm {
             for t in 0..3 {
                 for s in 0..3 {
-                    let mut acc = SIMD_0;
+                    let mut acc = simd_val(0.0);
                     for M in 0..natm {
                         acc += P[M] * dR_log_P[M][A][t] * dR_log_P[M][B][s];
                     }
@@ -1042,9 +1041,9 @@ fn eval_lane_ddw(
 
     // quotient rule for ddw (r_g fixed): q = Pg / Z,
     //   d2q = (ddR_Pg - (dq_B)(dZ_A) - q ddR_Z) / Z - (dq_A)(dZ_B) / Z
-    let inv_Z = SIMD_1_0 / part.Z;
+    let inv_Z = simd_val(1.0) / part.Z;
     let q = part.Pg * inv_Z;
-    let mut dq = vec![[SIMD_0; 3]; natm]; // [A][t]
+    let mut dq = vec![[simd_val(0.0); 3]; natm]; // [A][t]
     for A in 0..natm {
         for t in 0..3 {
             dq[A][t] = (dpass.dR_Pg[A][t] - q * dpass.dR_Z[A][t]) * inv_Z;
@@ -1053,10 +1052,10 @@ fn eval_lane_ddw(
     // ddw_partial[A][B][t][s] = wquad * d2q; the translation-invariance axis sums
     // (fullA = sum_A, fullB = sum_B, fullAB = sum_{A,B}) are accumulated in the
     // same pass over (A,B,t,s) so no separate sum loop is needed.
-    let mut ddw = vec![vec![[[SIMD_0; 3]; 3]; natm]; natm]; // [A][B][t][s]
-    let mut fullA = vec![[[SIMD_0; 3]; 3]; natm]; // [B][t][s] = sum_A ddw[A][B][t][s]
-    let mut fullB = vec![[[SIMD_0; 3]; 3]; natm]; // [A][t][s] = sum_B ddw[A][B][t][s]
-    let mut fullAB = [[SIMD_0; 3]; 3]; // [t][s] = sum_A sum_B ddw[A][B][t][s]
+    let mut ddw = vec![vec![[[simd_val(0.0); 3]; 3]; natm]; natm]; // [A][B][t][s]
+    let mut fullA = vec![[[simd_val(0.0); 3]; 3]; natm]; // [B][t][s] = sum_A ddw[A][B][t][s]
+    let mut fullB = vec![[[simd_val(0.0); 3]; 3]; natm]; // [A][t][s] = sum_B ddw[A][B][t][s]
+    let mut fullAB = [[simd_val(0.0); 3]; 3]; // [t][s] = sum_A sum_B ddw[A][B][t][s]
     for A in 0..natm {
         for B in 0..natm {
             for t in 0..3 {
@@ -1299,7 +1298,7 @@ fn neg33(m: [[f64simd; 3]; 3]) -> [[f64simd; 3]; 3] {
 /// `SIMDD` at the final grid batch).
 #[inline(always)]
 fn load_simd_pad(slc: &[f64]) -> f64simd {
-    let mut s = SIMD_0;
+    let mut s = simd_val(0.0);
     for i in 0..slc.len() {
         s[i] = slc[i];
     }
@@ -1327,41 +1326,41 @@ fn sum_lanes(s: f64simd, n: usize) -> f64 {
 /* #region switch function utilities */
 
 fn switch_f3(mu: f64simd, a_factor: f64) -> f64simd {
-    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
-    let f1 = (SIMD_1_5 - SIMD_0_5 * nu * nu) * nu; // eq (19)
-    let f2 = (SIMD_1_5 - SIMD_0_5 * f1 * f1) * f1; // eq (19)
-    let f3 = (SIMD_1_5 - SIMD_0_5 * f2 * f2) * f2; // eq (19)
+    let nu = mu + (simd_val(1.0) - mu * mu) * a_factor; // eq (A2)
+    let f1 = (simd_val(1.5) - simd_val(0.5) * nu * nu) * nu; // eq (19)
+    let f2 = (simd_val(1.5) - simd_val(0.5) * f1 * f1) * f1; // eq (19)
+    let f3 = (simd_val(1.5) - simd_val(0.5) * f2 * f2) * f2; // eq (19)
     f3
 }
 
 fn switch_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> f64simd {
-    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
+    let nu = mu + (simd_val(1.0) - mu * mu) * a_factor; // eq (A2)
     let mut f = nu;
     for _ in 0..hardness {
-        f = (SIMD_1_5 - SIMD_0_5 * f * f) * f; // eq (19)
+        f = (simd_val(1.5) - simd_val(0.5) * f * f) * f; // eq (19)
     }
     f
 }
 
 fn switch_dnu_f3(mu: f64simd, a_factor: f64) -> (f64simd, f64simd) {
-    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
-    let f1 = (SIMD_1_5 - SIMD_0_5 * nu * nu) * nu; // eq (19)
-    let f2 = (SIMD_1_5 - SIMD_0_5 * f1 * f1) * f1; // eq (19)
-    let f3 = (SIMD_1_5 - SIMD_0_5 * f2 * f2) * f2; // eq (19)
+    let nu = mu + (simd_val(1.0) - mu * mu) * a_factor; // eq (A2)
+    let f1 = (simd_val(1.5) - simd_val(0.5) * nu * nu) * nu; // eq (19)
+    let f2 = (simd_val(1.5) - simd_val(0.5) * f1 * f1) * f1; // eq (19)
+    let f3 = (simd_val(1.5) - simd_val(0.5) * f2 * f2) * f2; // eq (19)
 
-    let df1 = SIMD_1_5 * (SIMD_1_0 - nu * nu);
-    let df2 = SIMD_1_5 * (SIMD_1_0 - f1 * f1) * df1;
-    let df3 = SIMD_1_5 * (SIMD_1_0 - f2 * f2) * df2;
+    let df1 = simd_val(1.5) * (simd_val(1.0) - nu * nu);
+    let df2 = simd_val(1.5) * (simd_val(1.0) - f1 * f1) * df1;
+    let df3 = simd_val(1.5) * (simd_val(1.0) - f2 * f2) * df2;
     (f3, df3)
 }
 
 fn switch_dnu_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> (f64simd, f64simd) {
-    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
+    let nu = mu + (simd_val(1.0) - mu * mu) * a_factor; // eq (A2)
     let mut f = nu;
-    let mut df = SIMD_1_0;
+    let mut df = simd_val(1.0);
     for _ in 0..hardness {
-        df = SIMD_1_5 * (SIMD_1_0 - f * f) * df;
-        f = (SIMD_1_5 - SIMD_0_5 * f * f) * f; // eq (19)
+        df = simd_val(1.5) * (simd_val(1.0) - f * f) * df;
+        f = (simd_val(1.5) - simd_val(0.5) * f * f) * f; // eq (19)
     }
     (f, df)
 }
@@ -1372,16 +1371,16 @@ fn switch_dnu_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> (f64sim
 /// With `g_i = p'(f_{i-1})` (`f_0 = nu`), `p'(x) = 3/2(1 − x^2)`, `p''(x) = −3x`:
 /// `f3'(nu) = g2 g1 g0`, `f3''(nu) = −3 [f2 (g1 g0)^2 + f1 g2 g0^2 + nu g2 g1]`.
 fn switch_d2nu_f3(mu: f64simd, a_factor: f64) -> (f64simd, f64simd, f64simd) {
-    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
-    let f1 = (SIMD_1_5 - SIMD_0_5 * nu * nu) * nu; // eq (19)
-    let f2 = (SIMD_1_5 - SIMD_0_5 * f1 * f1) * f1; // eq (19)
-    let f3 = (SIMD_1_5 - SIMD_0_5 * f2 * f2) * f2; // eq (19)
+    let nu = mu + (simd_val(1.0) - mu * mu) * a_factor; // eq (A2)
+    let f1 = (simd_val(1.5) - simd_val(0.5) * nu * nu) * nu; // eq (19)
+    let f2 = (simd_val(1.5) - simd_val(0.5) * f1 * f1) * f1; // eq (19)
+    let f3 = (simd_val(1.5) - simd_val(0.5) * f2 * f2) * f2; // eq (19)
 
-    let g0 = SIMD_1_5 * (SIMD_1_0 - nu * nu);
-    let g1 = SIMD_1_5 * (SIMD_1_0 - f1 * f1);
-    let g2 = SIMD_1_5 * (SIMD_1_0 - f2 * f2);
+    let g0 = simd_val(1.5) * (simd_val(1.0) - nu * nu);
+    let g1 = simd_val(1.5) * (simd_val(1.0) - f1 * f1);
+    let g2 = simd_val(1.5) * (simd_val(1.0) - f2 * f2);
     let f3p = g2 * g1 * g0;
-    let f3pp = -SIMD_3_0 * (f2 * (g1 * g0) * (g1 * g0) + f1 * g2 * g0 * g0 + nu * g2 * g1);
+    let f3pp = -simd_val(3.0) * (f2 * (g1 * g0) * (g1 * g0) + f1 * g2 * g0 * g0 + nu * g2 * g1);
     (f3, f3p, f3pp)
 }
 
@@ -1389,15 +1388,15 @@ fn switch_d2nu_f3(mu: f64simd, a_factor: f64) -> (f64simd, f64simd, f64simd) {
 /// `f = p^hardness(nu)`. Loop recurrence (compute `ddf` first with old `f, df`, then `df`,
 /// then `f`), `g = p'(f) = 3/2(1 − f^2)`, `p''(x) = −3x`: `ddf = −3 f df^2 + g ddf`.
 fn switch_d2nu_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> (f64simd, f64simd, f64simd) {
-    let nu = mu + (SIMD_1_0 - mu * mu) * a_factor; // eq (A2)
+    let nu = mu + (simd_val(1.0) - mu * mu) * a_factor; // eq (A2)
     let mut f = nu;
-    let mut df = SIMD_1_0;
-    let mut ddf = SIMD_0;
+    let mut df = simd_val(1.0);
+    let mut ddf = simd_val(0.0);
     for _ in 0..hardness {
-        let g = SIMD_1_5 * (SIMD_1_0 - f * f);
-        ddf = -SIMD_3_0 * f * df * df + g * ddf; // f'' recurrence (old f, df, ddf)
+        let g = simd_val(1.5) * (simd_val(1.0) - f * f);
+        ddf = -simd_val(3.0) * f * df * df + g * ddf; // f'' recurrence (old f, df, ddf)
         df = g * df; // f'  recurrence (old df)
-        f = (SIMD_1_5 - SIMD_0_5 * f * f) * f; // f = p(f) (old f)
+        f = (simd_val(1.5) - simd_val(0.5) * f * f) * f; // f = p(f) (old f)
     }
     (f, df, ddf)
 }
