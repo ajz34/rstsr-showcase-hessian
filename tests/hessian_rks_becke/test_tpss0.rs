@@ -63,12 +63,12 @@ fn test_setup(hess_case_tpss0: &CaseAmoniaRKSBecke) {
     }
 
     // (3) translational invariance of the grid-shifted quantities (< 1e-9)
-    let inv1 = becke_obj.intmd["de_xc_skeleton"].view().sum_axes(3).sum_axes(2);
+    let inv1 = becke_obj.intmd["de_xc_skeleton"].sum_axes([-1, -2]);
     let m1 = inv1.abs().max();
     println!("de_xc_skeleton invariance max: {m1:.3e}");
     assert!(m1 < 1e-9, "de_xc_skeleton translational invariance = {m1}");
 
-    let inv2 = becke_obj.intmd["vmat_deriv1_grid"].view().sum_axes(3);
+    let inv2 = becke_obj.intmd["vmat_deriv1_grid"].sum_axes(-1);
     let m2 = inv2.abs().max();
     println!("vmat_deriv1_grid invariance max: {m2:.3e}");
     assert!(m2 < 1e-9, "vmat_deriv1_grid translational invariance = {m2}");
@@ -146,7 +146,7 @@ fn test_make_hess(hess_case_tpss0: &CaseAmoniaRKSBecke) {
     assert!(maxdiff < 1e-2, "max abs diff = {maxdiff}");
 
     // full Hessian translational invariance (< 1e-7)
-    let inv = de_hess.view().sum_axes(3).sum_axes(2);
+    let inv = de_hess.sum_axes([-1, -2]);
     let m = inv.abs().max();
     println!("full Hessian translational invariance max: {m:.3e}");
     assert!(m < 1e-7, "translational invariance = {m}");
