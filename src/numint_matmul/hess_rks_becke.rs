@@ -155,7 +155,7 @@ pub fn get_rho_exc_vxc_fxc(
         *&mut fxc.i_mut((.., ..nvar_i, ..nvar_i)) += *scale * fxc_i;
     }
 
-    (exc, rho, vxc, fxc)
+    (rho, exc, vxc, fxc)
 }
 
 pub fn get_drho(xc_type: XCDenType, ao: TsrView, ao_dm0: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
@@ -476,36 +476,6 @@ pub fn get_vmat_deriv1(
 
 /* #region becke grid-shift parts: skeleton hessian */
 
-/// `de_becke_full_1` (notebook t1): `einsum("Atg, xg, Bsxg -> ABts", dw, vxc, drho)`.
-///
-/// - `dw`: grid-first becke `dw`, `[ngrids, 3, natm]` (the C-order `[A, t, g]` output buffer of
-///   `becke_partition` read as column-major).
-/// - `vxc`, `drho`: `[ngrids, nvar]`, `[ngrids, nvar, 3, natm]`.
-///
-/// Returns `[3, 3, natm, natm]` (tsAB); the `(A, t) <-> (B, s)` symmetrisation is
-/// applied later by the batched driver.
-pub fn get_de_becke_full_1(dw: TsrView, vxc: TsrView, drho: TsrView) -> Tsr {
-    // vxc_drho [g, s, B] = sum_x vxc[g, x] drho[g, x, s, B]
-    let vxc_drho = (drho * vxc.i((.., .., None, None))).sum_axes(1);
-
-    // t1 [t, A, s, B] = sum_g dw[g, t, A] vxc_drho[g, s, B]
-    let t1 = (dw.i((.., .., .., None, None)) * vxc_drho.i((.., None, None, .., ..))).sum_axes(0);
-    t1.transpose([0, 2, 1, 3]).into_contig(ColMajor)
-}
-
-/// `de_becke_full_2` (notebook t2): `einsum("AtBsg, g, g -> ABts", ddw, exc, rho[0])`,
-/// obtained from the contracted `ddc` output of `becke_partition`
-/// (`contract_ddw = [exc * rho[0]]`, nset = 1).
-///
-/// - `ddc`: flat C-order `[A, t, B, s, iset]` (nset = 1).
-///
-/// Returns `[3, 3, natm, natm]`, naturally symmetric.
-pub fn get_de_becke_full_2(ddc: Vec<f64>, natm: usize, device: &DeviceTsr) -> Tsr {
-    // C-order [A, t, B, s, iset] == Fortran-order [iset, s, B, t, A]
-    let ddc = rt::asarray((ddc, [1, 3, natm, 3, natm].f(), device));
-    ddc.i((0, .., .., .., ..)).transpose([2, 0, 3, 1]).into_contig(ColMajor)
-}
-
 /// `de_becke_atom_1` (notebook t3): `-einsum("g, txg, xyg, Bsyg -> Bts", w, prho, fxc, drho)`,
 /// evaluated on the batch's grids only — the result fills the batch atom's row.
 ///
@@ -525,7 +495,8 @@ pub fn get_de_becke_atom_1(w: TsrView, prho: TsrView, fxc: TsrView, drho: TsrVie
 
 /// `de_becke_atom_2` (notebook t5): `-einsum("Bsg, xg, txg -> Bts", dw, vxc, prho)`.
 ///
-/// - `dw`: grid-first becke `dw`, `[ngrids, 3, natm]` (same as [`get_de_becke_full_1`]).
+/// - `dw`: grid-first becke `dw`, `[ngrids, 3, natm]` (Fortran-order wrap of the C-order `[A, t,
+///   g]` becke output buffer; see `make_hessian_setup_batch_becke`).
 ///
 /// Returns `[3, 3, natm]` (tsB) for the row of the batch's grid atom.
 pub fn get_de_becke_atom_2(dw: TsrView, vxc: TsrView, prho: TsrView) -> Tsr {
@@ -639,7 +610,8 @@ pub fn vxc_fock(xc_type: XCDenType, ao: TsrView, veff: TsrView, wg: TsrView) -> 
 /// f1ao-level Becke grid-shift parts (T1/T2_ipip/T2_fxc of
 /// `_vmat_becke_parts` in the pyhessref reference).
 ///
-/// - `dw`: grid-first becke `dw`, `[ngrids, 3, natm]` (same as [`get_de_becke_full_1`]).
+/// - `dw`: grid-first becke `dw`, `[ngrids, 3, natm]` (Fortran-order wrap of the C-order `[A, t,
+///   g]` becke output buffer; see `make_hessian_setup_batch_becke`).
 /// - `prho`: `[ngrids, nvar, 3]`, `w`: `[ngrids]`, `vmat_ip`: `[nao, nao, 3]`.
 ///
 /// Returns the three parts, each `[nao, nao, 3, natm]`: `vmat_becke_T1` filled on
@@ -729,7 +701,7 @@ pub fn make_hessian_setup_batch_becke(
     let ao = ni.get_cached_ao(get_hess_ao_deriv(xc_type));
     let ncomp_ao_dm0 = get_hess_ncomp_ao_dm0(xc_type);
     let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % &dm0;
-    let (exc, rho, vxc, fxc) = get_rho_exc_vxc_fxc(xc_func_list, ao.view(), ao_dm0.view());
+    let (rho, exc, vxc, fxc) = get_rho_exc_vxc_fxc(xc_func_list, ao.view(), ao_dm0.view());
 
     let weights = rt::asarray((weights_data, &device));
     let wv = &weights * &vxc;
@@ -786,8 +758,20 @@ pub fn make_hessian_setup_batch_becke(
 
     // --- becke grid-shift parts --- //
 
-    let de_becke_full_1 = get_de_becke_full_1(dw.view(), vxc.view(), drho.view());
-    let de_becke_full_2 = get_de_becke_full_2(becke_result.ddc.unwrap(), natm, &device);
+    // de_becke_full_1 (notebook t1): einsum("Atg, xg, Bsxg -> ABts", dw, vxc, drho);
+    let de_becke_full_1 = {
+        // vxc_drho [g, s, B] = sum_x vxc[g, x] drho[g, x, s, B]
+        let vxc_drho = rt::vecdot(drho.view(), vxc.view(), 1);
+        // t1 [s, t, B, A] = sum_g dw[g, t, A] vxc_drho[g, s, B]
+        rt::vecdot(dw.i((.., None, .., None, ..)), vxc_drho.i((.., .., None, .., None)), 0)
+    };
+
+    // de_becke_full_2 (notebook t2): einsum("AtBsg, g, g -> ABts", ddw, exc, rho[0]) via
+    // the cddw contraction above (nset = 1), naturally symmetric;
+    // ddc flat is C-order [A, t, B, s, iset] == Fortran-order [iset, s, B, t, A]
+    let de_becke_full_2 = rt::asarray((becke_result.ddc.unwrap(), [3, natm, 3, natm].f(), &device))
+        .transpose([2, 0, 3, 1])
+        .into_contig(ColMajor);
 
     let de_becke_atom_1 = {
         let t3 = get_de_becke_atom_1(weights.view(), prho.view(), fxc.view(), drho.view());
