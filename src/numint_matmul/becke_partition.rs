@@ -251,8 +251,8 @@ struct BeckePartitionContext<'a> {
     atm_coords: &'a [[f64; 3]],
     /// grid attribution scheme (see [`AtmIndices`]).
     atm_indices: AtmIndices<'a>,
-    /// `A`-th row of the column-major `(natm, natm)` adjustment-factor matrix (copied
-    /// from the input slice), so that `adjustment_factor[B][A]` reads entry `(A, B)`.
+    /// `A`-th row of the `(natm, natm)` adjustment-factor matrix, transposed from the
+    /// column-major input slice, so that `adjustment_factor[A][B]` reads entry `(A, B)`.
     adjustment_factor: Vec<Vec<f64>>,
     /// interatomic distances `[A][B]`; the diagonal is `INFINITY`.
     atm_dist: Vec<Vec<f64>>,
@@ -309,8 +309,12 @@ impl<'a> BeckePartitionContext<'a> {
         let deriv_arg = deriv_arg.unwrap_or_default();
         assert!(deriv <= 2, "deriv must be 0, 1, or 2 at current time");
 
-        let adjustment_factor: Vec<Vec<f64>> =
-            adjustment_factor.chunks_exact(natm).map(|row| row.to_vec()).collect_vec();
+        // the input slice is the column-major `(natm, natm)` matrix; transpose it here
+        // so that the nested storage is row-major and the rest of the program indexes
+        // `adjustment_factor[A][B]` for entry `(A, B)` directly.
+        let adjustment_factor: Vec<Vec<f64>> = (0..natm)
+            .map(|a| (0..natm).map(|b| adjustment_factor[b * natm + a]).collect_vec())
+            .collect_vec();
 
         // check if contraction is requested, and split the contraction weights into
         // per-set grid slices (shape `(nset, ngrids)` row-major).  Done before
@@ -648,7 +652,7 @@ fn eval_partition(
     // 1st pass of switch function (without derivative)
     for A in 0..natm {
         for B in 0..A {
-            let a_factor = ctx.adjustment_factor[B][A]; // column-major order
+            let a_factor = ctx.adjustment_factor[A][B];
             let mu = (dist[A] - dist[B]) / ctx.atm_dist[A][B];
             let f3 = match ctx.hardness {
                 3 => switch_f3(mu, a_factor),
@@ -752,7 +756,7 @@ fn eval_switch_pair_pass(
 
     for A in 0..natm {
         for B in 0..A {
-            let a_factor = ctx.adjustment_factor[B][A]; // column-major order
+            let a_factor = ctx.adjustment_factor[A][B];
             let inv_atm_dist_AB = 1.0 / ctx.atm_dist[A][B];
             let mu = (dist[A] - dist[B]) * inv_atm_dist_AB;
             // switch value + 1st nu-deriv always; the 2nd nu-deriv (f3pp) is only
