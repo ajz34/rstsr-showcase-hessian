@@ -173,7 +173,6 @@ pub fn get_vmat_fxc_uks(
     let mut vmatβ_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], device));
 
     for A in 0..natm {
-
         if matches!(xc_type, RHO) {
             // LDA: fxc is [G, 1, 2, 1, 2], extract scalar spin blocks
             // Alpha output (s2=α): fxc_αα @ drho_α + fxc_βα @ drho_β

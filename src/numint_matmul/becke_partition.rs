@@ -312,9 +312,8 @@ impl<'a> BeckePartitionContext<'a> {
         // the input slice is the column-major `(natm, natm)` matrix; transpose it here
         // so that the nested storage is row-major and the rest of the program indexes
         // `adjustment_factor[A][B]` for entry `(A, B)` directly.
-        let adjustment_factor: Vec<Vec<f64>> = (0..natm)
-            .map(|a| (0..natm).map(|b| adjustment_factor[b * natm + a]).collect_vec())
-            .collect_vec();
+        let adjustment_factor: Vec<Vec<f64>> =
+            (0..natm).map(|a| (0..natm).map(|b| adjustment_factor[b * natm + a]).collect_vec()).collect_vec();
 
         // check if contraction is requested, and split the contraction weights into
         // per-set grid slices (shape `(nset, ngrids)` row-major).  Done before

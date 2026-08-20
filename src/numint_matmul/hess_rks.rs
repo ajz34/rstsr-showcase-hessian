@@ -491,13 +491,7 @@ pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
     &vmat_vxc + vmat_vxc.swapaxes(0, 1)
 }
 
-pub fn get_vmat_fxc(
-    xc_type: XCDenType,
-    ao: TsrView,
-    drho: TsrView,
-    wf: TsrView,
-    aoslices: &[[usize; 4]],
-) -> Tsr {
+pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
     // direct transformation of `pyhessref/nimatmul/rks.py`, function `_vmat_fxc`
     //
     // fxc contribution to the per-atom skeleton derivative of the Vxc Fock

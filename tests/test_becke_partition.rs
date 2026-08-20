@@ -124,10 +124,7 @@ pub fn test_becke_partition_by_atom() {
         while end < ngrids && atm_indices[end] == atm {
             end += 1;
         }
-        assert!(
-            end == ngrids || atm_indices[end] == atm + 1,
-            "grids not grouped by atom in atom order"
-        );
+        assert!(end == ngrids || atm_indices[end] == atm + 1, "grids not grouped by atom in atom order");
         split.push(end);
     }
     assert_eq!(split[natm], ngrids);
