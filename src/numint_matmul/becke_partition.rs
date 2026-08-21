@@ -643,14 +643,14 @@ fn process_lane(
     // --- deriv 1 --- //
 
     if ctx.deriv >= 1 {
-        let mut dpass = eval_switch_pair_pass(ctx, coords, attr, &part);
+        let dpass = eval_switch_pair_pass(ctx, coords, attr, &part);
         let dw = eval_lane_dw(ctx, wquad, attr, &part, &dpass);
         store_lane_dw(ctx, buffers, &dw, g_start, g_end);
 
         // --- deriv 2 --- //
 
         if ctx.do_deriv2 {
-            let ddw = eval_lane_ddw(ctx, wquad, attr, &part, &mut dpass);
+            let ddw = eval_lane_ddw(ctx, wquad, attr, &part, &dpass);
             store_lane_ddw(ctx, buffers, &ddw, g_start, g_end);
         }
     }
@@ -1032,12 +1032,14 @@ fn eval_lane_dw(
 }
 
 /// Deriv-2 finalize: cross terms, quotient rule, and translation-invariance
-/// fix for `ddw`.
+/// fix for `ddw`, fused into one sweep over the rows `(A, t)`.
 ///
-/// Takes `dpass` mutably because the `ddR_Z`/`ddR_Pg` accumulators from the
-/// pair pass are completed here with the cross-term contributions — those need
-/// the fully accumulated `dR_log_P`, so they cannot be folded into the pair
-/// loop.
+/// The cross terms need the fully accumulated `dR_log_P`, so they cannot be
+/// folded into the pair loop; here they are computed row-by-row as rank-1
+/// updates — the column `P[M] dlog[M][A][t]` is gathered once and each `M`
+/// row of `dR_log_P` is added in one `[B][s]` pass — and folded into the
+/// quotient rule and the axis sums in the same sweep, so `ddR_Z`/`ddR_Pg`
+/// are consumed read-only and read exactly once.
 ///
 /// # Returns
 ///
@@ -1047,16 +1049,15 @@ fn eval_lane_ddw(
     wquad: f64simd,
     attr: LaneAttrib,
     part: &LanePartition,
-    dpass: &mut LaneDerivPass,
+    dpass: &LaneDerivPass,
 ) -> Vec<Vec<[[f64simd; 3]; 3]>> {
     let natm = ctx.natm;
     let P = &part.P;
     let dR_log_P = dpass.dR_log_P.as_ref().unwrap();
-    let ddR_Z = dpass.ddR_Z.as_mut().unwrap();
-    let ddR_Pg = dpass.ddR_Pg.as_mut().unwrap();
+    let ddR_Z = dpass.ddR_Z.as_ref().unwrap();
+    let ddR_Pg = dpass.ddR_Pg.as_ref().unwrap();
 
-    // gather M = A_g for the ddR_Pg cross term (dlog_Ag[A][t], P_Ag) first, so the
-    // two independent cross-term accumulations below can share one (A,B,t,s) loop.
+    // gather M = A_g for the ddR_Pg cross term (dlog_Ag[A][t], P_Ag) first
     let mut dlog_Ag = vec![[simd_val(0.0); 3]; natm]; // [A][t]
     let P_Ag = match attr {
         LaneAttrib::ByGrid(atm_idx) => {
@@ -1085,23 +1086,6 @@ fn eval_lane_ddw(
             P[atm_g]
         },
     };
-    // cross terms (one shared (A,B,t,s) loop):
-    //   ddR_Z  += sum_M P_M (dlog_M_A)(dlog_M_B)
-    //   ddR_Pg += P_Ag (dlog_Ag_A)(dlog_Ag_B)
-    for A in 0..natm {
-        for B in 0..natm {
-            for t in 0..3 {
-                for s in 0..3 {
-                    let mut acc = simd_val(0.0);
-                    for M in 0..natm {
-                        acc += P[M] * dR_log_P[M][A][t] * dR_log_P[M][B][s];
-                    }
-                    ddR_Z[A][B][t][s] += acc;
-                    ddR_Pg[A][B][t][s] += P_Ag * dlog_Ag[A][t] * dlog_Ag[B][s];
-                }
-            }
-        }
-    }
 
     // quotient rule for ddw (r_g fixed): q = Pg / Z,
     //   d2q = (ddR_Pg - (dq_B)(dZ_A) - q ddR_Z) / Z - (dq_A)(dZ_B) / Z
@@ -1113,26 +1097,60 @@ fn eval_lane_ddw(
             dq[A][t] = (dpass.dR_Pg[A][t] - q * dpass.dR_Z[A][t]) * inv_Z;
         }
     }
+
     // ddw_partial[A][B][t][s] = wquad * d2q; the translation-invariance axis sums
     // (fullA = sum_A, fullB = sum_B, fullAB = sum_{A,B}) are accumulated in the
-    // same pass over (A,B,t,s) so no separate sum loop is needed.
+    // same sweep so no separate sum loop is needed.
     let mut ddw = vec![vec![[[simd_val(0.0); 3]; 3]; natm]; natm]; // [A][B][t][s]
     let mut fullA = vec![[[simd_val(0.0); 3]; 3]; natm]; // [B][t][s] = sum_A ddw[A][B][t][s]
     let mut fullB = vec![[[simd_val(0.0); 3]; 3]; natm]; // [A][t][s] = sum_B ddw[A][B][t][s]
     let mut fullAB = [[simd_val(0.0); 3]; 3]; // [t][s] = sum_A sum_B ddw[A][B][t][s]
+    let mut col = vec![simd_val(0.0); natm]; // [M] gathered column of the current row
+    let mut row_acc = vec![[simd_val(0.0); 3]; natm]; // [B][s] cross-term row of the current (A, t)
     for A in 0..natm {
-        for B in 0..natm {
-            for t in 0..3 {
+        for t in 0..3 {
+            // gather the (A, t) column of P[M] dlog[M][A][t]
+            for M in 0..natm {
+                col[M] = P[M] * dR_log_P[M][A][t];
+            }
+            // row_acc[B][s] = sum_M col[M] dlog[M][B][s]; the first M row
+            // assigns, so row_acc needs no zeroing pass
+            for B in 0..natm {
                 for s in 0..3 {
-                    let term1 = dq[B][s] * dpass.dR_Z[A][t];
-                    let term2 = dq[A][t] * dpass.dR_Z[B][s];
-                    let d2q = (ddR_Pg[A][B][t][s] - term1 - q * ddR_Z[A][B][t][s]) * inv_Z - term2 * inv_Z;
+                    row_acc[B][s] = col[0] * dR_log_P[0][B][s];
+                }
+            }
+            for M in 1..natm {
+                let c = col[M];
+                let row = &dR_log_P[M];
+                for B in 0..natm {
+                    for s in 0..3 {
+                        row_acc[B][s] += c * row[B][s];
+                    }
+                }
+            }
+            // finalize the row; cross terms:
+            //   ddZ  = ddR_Z  + sum_M P_M (dlog_M A t)(dlog_M B s)
+            //   ddPg = ddR_Pg + P_Ag (dlog_Ag A t)(dlog_Ag B s)
+            let dA_At = dlog_Ag[A][t];
+            let dq_At = dq[A][t];
+            let dZ_At = dpass.dR_Z[A][t];
+            let mut fs = [simd_val(0.0); 3];
+            for B in 0..natm {
+                for s in 0..3 {
+                    let ddZ = ddR_Z[A][B][t][s] + row_acc[B][s];
+                    let ddPg = ddR_Pg[A][B][t][s] + P_Ag * dA_At * dlog_Ag[B][s];
+                    let d2q = (ddPg - dq[B][s] * dZ_At - q * ddZ) * inv_Z - dq_At * dpass.dR_Z[B][s] * inv_Z;
                     let v = wquad * d2q;
                     ddw[A][B][t][s] = v;
                     fullA[B][t][s] += v;
-                    fullB[A][t][s] += v;
-                    fullAB[t][s] += v;
+                    fs[s] += v;
                 }
+            }
+            // fs[s] = sum_B v is exactly the fullB block of (A, t)
+            fullB[A][t].copy_from_slice(&fs);
+            for s in 0..3 {
+                fullAB[t][s] += fs[s];
             }
         }
     }
@@ -1145,7 +1163,6 @@ fn eval_lane_ddw(
     //   col : ddw[A, t, A_g, s]   = -sum_{B'!=A_g} = -fullB[A,t,s] + ddw_partial[A,A_g,t,s]
     //   corner: ddw[A_g,t,A_g,s] =  sum_{A'!=A_g,B'!=A_g}
     //                            = fullAB - fullB[A_g] - fullA[A_g] + ddw_partial[A_g,A_g]
-    // write back only the A=A_g row and B=A_g column
     match attr {
         LaneAttrib::ByGrid(atm_idx) => {
             for g in 0..SIMDD {
