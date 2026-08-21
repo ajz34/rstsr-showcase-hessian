@@ -16,6 +16,9 @@ type f64simd = FpSimd<f64, SIMDD>;
 
 const SIMDD: usize = 8;
 const INVTOL: f64 = 1e-14;
+/// Side length (in f64simd elements) of the L1-resident accumulator tiles of
+/// the deriv-2 rank-1 cross-term matrix; see [`eval_lane_ddw`].
+const CROSS_CB: usize = 12;
 
 /// Create a SIMD register with all lanes set to `x`.
 const fn simd_val(x: f64) -> f64simd {
@@ -301,17 +304,22 @@ pub fn becke_partition_with_tables<'a>(
     // par-iter over grid coordinates in batches.  Each task accumulates its
     // contraction partials privately (see [`TaskBuffers`]) and takes this lock
     // once for the reduction; w/dw/ddw write disjoint grid ranges and need no
-    // lock.
+    // lock.  `for_each_init` allocates the task buffers (including the large
+    // per-lane scratch) once per worker thread, not once per task.
     let contract_guard = Mutex::new(());
-    tasks.into_par_iter().for_each(|task| {
-        let (g0, g1) = task.range();
-        let lanes = gather_lane_batch(grid_coords, quadrature_weights, &task, ctx.natm);
-        let mut buffers = TaskBuffers::new(&ctx);
-        for ilane in 0..lanes.coords.len() {
-            process_lane(&ctx, &lanes, ilane, &mut buffers, g0, g1);
-        }
-        buffers.reduce(&ctx, &contract_guard);
-    });
+    tasks.into_par_iter().for_each_init(
+        || TaskBuffers::new(&ctx),
+        |buffers, task| {
+            let (g0, g1) = task.range();
+            let lanes = gather_lane_batch(grid_coords, quadrature_weights, &task, ctx.natm);
+            for ilane in 0..lanes.coords.len() {
+                process_lane(&ctx, &lanes, ilane, buffers, g0, g1);
+            }
+            // reduce() also resets the contraction partials, since the worker's
+            // next task reuses the same buffers
+            buffers.contraction.reduce(&ctx, &contract_guard);
+        },
+    );
 
     ctx.into_output()
 }
@@ -564,7 +572,7 @@ fn gather_lane_batch(
     }
 }
 
-/// Per-task private buffers.
+/// Contraction partials of one task.
 ///
 /// `c`/`dc`/`ddc` hold this task's contraction partials (sums over the task's
 /// grid range), reduced into the shared output by [`Self::reduce`] under the
@@ -574,7 +582,7 @@ fn gather_lane_batch(
 /// `cw_lanes_dw`/`cw_lanes_ddw` are per-lane scratch (one SIMD register per
 /// contraction set), refilled each lane so the dc/ddc contraction allocates
 /// nothing inside the lane loop.
-struct TaskBuffers {
+struct TaskContraction {
     /// shape `[nset_w]`: contraction partial of `w`.
     c: Option<Vec<f64>>,
     /// shape `[natm * 3 * nset_dw]`, C-order `(A, t, iset)`.
@@ -587,7 +595,7 @@ struct TaskBuffers {
     cw_lanes_ddw: Vec<f64simd>,
 }
 
-impl TaskBuffers {
+impl TaskContraction {
     fn new(ctx: &BeckePartitionContext<'_>) -> Self {
         let natm = ctx.natm;
         Self {
@@ -600,20 +608,112 @@ impl TaskBuffers {
     }
 
     /// Add this task's contraction partials into the shared output buffers,
-    /// under the task mutex (c/dc/ddc are grid sums written by every task).
-    fn reduce(&self, ctx: &BeckePartitionContext<'_>, guard: &Mutex<()>) {
+    /// under the task mutex (c/dc/ddc are grid sums written by every task), and
+    /// reset them: the buffers are owned by the worker thread (see
+    /// `for_each_init`) and reused by its next task, so the partials must not
+    /// survive past the reduction.
+    fn reduce(&mut self, ctx: &BeckePartitionContext<'_>, guard: &Mutex<()>) {
         if self.c.is_none() && self.dc.is_none() && self.ddc.is_none() {
             return;
         }
         let _guard = guard.lock().unwrap();
-        for (buf, partial) in [(&ctx.output.c, &self.c), (&ctx.output.dc, &self.dc), (&ctx.output.ddc, &self.ddc)] {
+        for (buf, partial) in
+            [(&ctx.output.c, &mut self.c), (&ctx.output.dc, &mut self.dc), (&ctx.output.ddc, &mut self.ddc)]
+        {
             if let (Some(buf), Some(partial)) = (buf, partial) {
                 // SAFETY: exclusive access granted by the task mutex
                 let slc = unsafe { cast_mut_slice(buf) };
-                for (o, v) in slc.iter_mut().zip(partial.iter()) {
-                    *o += v;
+                for (o, v) in slc.iter_mut().zip(partial.iter_mut()) {
+                    *o += *v;
+                    *v = 0.0;
                 }
             }
+        }
+    }
+}
+
+/// Per-worker-thread buffers: the task's contraction partials plus the
+/// flattened per-lane scratch (see [`LaneScratch`]), allocated once by
+/// `for_each_init` and reused across all tasks handled by the worker.
+struct TaskBuffers {
+    contraction: TaskContraction,
+    lane: LaneScratch,
+}
+
+impl TaskBuffers {
+    fn new(ctx: &BeckePartitionContext<'_>) -> Self {
+        Self { contraction: TaskContraction::new(ctx), lane: LaneScratch::new(ctx.natm, ctx.deriv, ctx.do_deriv2) }
+    }
+}
+
+/// Flattened per-lane scratch, reused across lanes and tasks.
+///
+/// All multi-dimensional lane tensors flatten the (atom, cartesian) axes into
+/// one row index: `[A][t]` becomes `r = 3A + t` (length `3 * natm`), and
+/// `[A][B][t][s]` becomes the row/column pair `(r, c)` with `c = 3B + s`
+/// (per-row length `3 * natm`).  Only the pair-accumulated diagonal
+/// entries/blocks are re-zeroed per lane; every other element is fully
+/// assigned/overwritten by its unique writer (see [`eval_switch_pair_pass`]
+/// and [`eval_lane_ddw`]).
+struct LaneScratch {
+    /// `[A]`: switch-product numerators `P_A` (overwritten, initialized to 1).
+    P: Vec<f64simd>,
+    /// `[A]`: grid-atom distances (overwritten).
+    dist: Vec<f64simd>,
+    /// `[r]`: `d|A - g| / dR_A[t]` unit vectors (overwritten).
+    dR_dist: Vec<f64simd>,
+    /// `[M * 9 + t * 3 + s]`: projection matrices `Proj(r_M)/|r_M|` (overwritten;
+    /// deriv 2 only).
+    PrM: Vec<f64simd>,
+    /// `[r]`: `dZ / dR_A[t]` (pair-accumulated, re-zeroed).
+    dR_Z: Vec<f64simd>,
+    /// `[r]`: `dPg / dR_A[t]` (pair-accumulated, re-zeroed).
+    dR_Pg: Vec<f64simd>,
+    /// `[M][c]` rows of length `3 * natm`: `dlog P_M / dR_C[t]` (deriv 2 only;
+    /// off-diagonal `c` assigned by their unique pair, diagonal re-zeroed).
+    dR_log_P: Vec<f64simd>,
+    /// `[r][c]` rows of length `3 * natm`: `d2Z / (dR_A[t] dR_B[s])` (deriv 2
+    /// only; off-diagonal `c` entries assigned by their unique pair, diagonal
+    /// entries pair-accumulated and re-zeroed).
+    ddR_Z: Vec<f64simd>,
+    /// same layout as `ddR_Z` for `d2Pg` (deriv 2 only).
+    ddR_Pg: Vec<f64simd>,
+    /// `[r]`: quotient-rule 1st derivative of `q` (overwritten; deriv 2 only).
+    dq: Vec<f64simd>,
+    /// `[r]`: gathered `dlog P_{A_g} / dR_A[t]` row (overwritten; deriv 2 only).
+    dlog_Ag: Vec<f64simd>,
+    /// `[r][c]` rows of length `3 * natm`: the finalized `ddw` (fully
+    /// overwritten; deriv 2 only).
+    ddw: Vec<f64simd>,
+    /// `[B * 9 + t * 3 + s]`: `sum_A ddw[A][B][t][s]` (accumulated, re-zeroed;
+    /// deriv 2 only).
+    fullA: Vec<f64simd>,
+    /// `[A * 9 + t * 3 + s]`: `sum_B ddw[A][B][t][s]` (per-row assignment; deriv 2 only).
+    fullB: Vec<f64simd>,
+    /// `[r]`: the translation-invariance-fixed `dw` (overwritten).
+    dw: Vec<f64simd>,
+}
+
+impl LaneScratch {
+    fn new(natm: usize, deriv: usize, do_deriv2: bool) -> Self {
+        let z = |n: usize| vec![simd_val(0.0); n];
+        let d2 = do_deriv2 as usize;
+        Self {
+            P: z(natm),
+            dist: z(natm),
+            dR_dist: z(3 * natm),
+            PrM: z(9 * natm * d2),
+            dR_Z: if deriv >= 1 { z(3 * natm) } else { Vec::new() },
+            dR_Pg: if deriv >= 1 { z(3 * natm) } else { Vec::new() },
+            dR_log_P: z(natm * 3 * natm * d2),
+            ddR_Z: z(natm * natm * 9 * d2),
+            ddR_Pg: z(natm * natm * 9 * d2),
+            dq: z(3 * natm * d2),
+            dlog_Ag: z(3 * natm * d2),
+            ddw: z(3 * natm * 3 * natm * d2),
+            fullA: z(9 * natm * d2),
+            fullB: z(9 * natm * d2),
+            dw: if deriv >= 1 { z(3 * natm) } else { Vec::new() },
         }
     }
 }
@@ -635,23 +735,27 @@ fn process_lane(
     let g_start = g0 + ilane * SIMDD;
     let g_end = (g_start + SIMDD).min(g1);
 
+    // split the per-worker buffers into the (disjoint) contraction partials and
+    // lane scratch so the stores can borrow one while the lane eval holds the other
+    let TaskBuffers { contraction, lane } = buffers;
+
     // --- deriv 0 --- //
 
-    let part = eval_partition(ctx, coords, wquad, attr);
-    store_lane_w(ctx, buffers, part.w, g_start, g_end);
+    let part = eval_partition(ctx, coords, wquad, attr, lane);
+    store_lane_w(ctx, contraction, part.w, g_start, g_end);
 
     // --- deriv 1 --- //
 
     if ctx.deriv >= 1 {
-        let dpass = eval_switch_pair_pass(ctx, coords, attr, &part);
-        let dw = eval_lane_dw(ctx, wquad, attr, &part, &dpass);
-        store_lane_dw(ctx, buffers, &dw, g_start, g_end);
+        eval_switch_pair_pass(ctx, coords, attr, lane);
+        eval_lane_dw(ctx, wquad, attr, &part, lane);
+        store_lane_dw(ctx, contraction, &lane.dw, g_start, g_end);
 
         // --- deriv 2 --- //
 
         if ctx.do_deriv2 {
-            let ddw = eval_lane_ddw(ctx, wquad, attr, &part, &dpass);
-            store_lane_ddw(ctx, buffers, &ddw, g_start, g_end);
+            eval_lane_ddw(ctx, wquad, attr, &part, lane);
+            store_lane_ddw(ctx, contraction, &lane.ddw, g_start, g_end);
         }
     }
 }
@@ -660,12 +764,10 @@ fn process_lane(
 
 /* #region per-lane evaluation */
 
-/// Deriv-0 lane intermediates from [`eval_partition`], also consumed by the deriv-1/2 passes.
+/// Deriv-0 lane intermediates from [`eval_partition`], also consumed by the deriv-1/2
+/// passes.  The per-atom arrays `P`/`dist` live in the lane scratch (see
+/// [`LaneScratch`]); only the lane registers are returned.
 struct LanePartition {
-    /// switch-function product per atom (unnormalized partition numerator), length `natm`.
-    P: Vec<f64simd>,
-    /// grid-point distance to each atom, length `natm`.
-    dist: Vec<f64simd>,
     /// partition weight numerator selected by the generating atom, and the normalizing sum.
     Pg: f64simd,
     Z: f64simd,
@@ -680,36 +782,34 @@ fn eval_partition(
     coords: &[f64simd; 3],
     wquad: f64simd,
     attr: LaneAttrib,
+    scr: &mut LaneScratch,
 ) -> LanePartition {
     let natm = ctx.natm;
 
-    // partition output
-    let mut P = vec![simd_val(1.0); natm];
-
     // evaluate grid distance to atom
-    let mut dist = vec![simd_val(0.0); natm];
     for A in 0..natm {
-        dist[A] = dist3_hybrid(coords, &ctx.tables.atm_coords[A]);
+        scr.dist[A] = dist3_hybrid(coords, &ctx.tables.atm_coords[A]);
     }
 
     // 1st pass of switch function (without derivative)
+    scr.P.fill(simd_val(1.0));
     for A in 0..natm {
         for B in 0..A {
             let a_factor = ctx.tables.adjustment_factor[A][B];
-            let mu = (dist[A] - dist[B]) / ctx.tables.atm_dist[A][B];
+            let mu = (scr.dist[A] - scr.dist[B]) / ctx.tables.atm_dist[A][B];
             let f3 = match ctx.hardness {
                 3 => switch_f3(mu, a_factor),
                 _ => switch_f_hardness(mu, a_factor, ctx.hardness),
             };
-            P[A] *= simd_val(0.5) * (simd_val(1.0) - f3);
-            P[B] *= simd_val(0.5) * (simd_val(1.0) + f3);
+            scr.P[A] *= simd_val(0.5) * (simd_val(1.0) - f3);
+            scr.P[B] *= simd_val(0.5) * (simd_val(1.0) + f3);
         }
     }
 
     // compute partition function and weights
     let mut Z = simd_val(0.0);
     for A in 0..natm {
-        Z += P[A];
+        Z += scr.P[A];
     }
     // partition numerator: the generating atom's P (a definite atom for ByAtom; a
     // lane-wise mask over the per-grid indices for ByGrid)
@@ -717,91 +817,77 @@ fn eval_partition(
         LaneAttrib::ByGrid(atm_idx) => {
             let mut Pg = simd_val(0.0);
             for A in 0..natm {
-                Pg = P[A].mask_select(atm_idx.map(|a| a == A), Pg);
+                Pg = scr.P[A].mask_select(atm_idx.map(|a| a == A), Pg);
             }
             Pg
         },
-        LaneAttrib::ByAtom(atm_g) => P[atm_g],
+        LaneAttrib::ByAtom(atm_g) => scr.P[atm_g],
     };
     let partition = Pg / Z;
     let w = wquad * partition;
 
-    LanePartition { P, dist, Pg, Z, w }
+    LanePartition { Pg, Z, w }
 }
 
-/// Derivative intermediates from [`eval_switch_pair_pass`].
-///
-/// The 1st-order accumulators `dR_Z`/`dR_Pg` are indexed `[A][t]`.  The
-/// remaining fields are only materialized for deriv 2: `dR_log_P` (4D) is the
-/// minimal cross-term intermediate; the 6D `ddR_log_P`/`ddR_P` of the
-/// vectorized reference are never materialized — the 2nd log-deriv (L2)
-/// contributions are accumulated pair-by-pair directly into the 5D
-/// `ddR_Z`/`ddR_Pg`.
-struct LaneDerivPass {
-    /// `dZ / dR_A[t]`, shape `[natm][3]`.
-    dR_Z: Vec<[f64simd; 3]>,
-    /// `dPg / dR_A[t]`, shape `[natm][3]`.
-    dR_Pg: Vec<[f64simd; 3]>,
-    /// `dlog P_M / dR_A[t]`, shape `[natm][natm][3]` (deriv 2 only).
-    dR_log_P: Option<Vec<Vec<[f64simd; 3]>>>,
-    /// `d2Z / (dR_A[t] dR_B[s])`, shape `[natm][natm][3][3]` (deriv 2 only).
-    ddR_Z: Option<Vec<Vec<[[f64simd; 3]; 3]>>>,
-    /// `d2Pg / (dR_A[t] dR_B[s])`, shape `[natm][natm][3][3]` (deriv 2 only).
-    ddR_Pg: Option<Vec<Vec<[[f64simd; 3]; 3]>>>,
-}
-
-/// 2nd pass of the switch function (with 1st derivative), over all atom pairs.
+/// 2nd pass of the switch function (with 1st derivative), over all atom pairs,
+/// accumulating the flattened derivative tensors of [`LaneScratch`].
 ///
 /// Variable `P` is required to be generated in the 1st pass (see [`eval_partition`]), so two passes
 /// cannot merge for first derivative.  For deriv 2, the per-pair 2nd-order (L2) contributions are
 /// accumulated in the same pair loop.
+///
+/// Zero-init discipline: the `[M][M]`/`[A][A]`/`[B][B]` diagonal entries/blocks of
+/// `dR_log_P`/`ddR_Z`/`ddR_Pg` receive `+=` contributions from several pairs and are
+/// re-zeroed per lane (O(natm) elements); every off-diagonal entry/block is touched
+/// by exactly one pair `(A, B)` and is plain-assigned, so the large O(natm^2)
+/// buffers never need a zero fill.
 fn eval_switch_pair_pass(
     ctx: &BeckePartitionContext<'_>,
     coords: &[f64simd; 3],
     attr: LaneAttrib,
-    part: &LanePartition,
-) -> LaneDerivPass {
+    scr: &mut LaneScratch,
+) {
     let natm = ctx.natm;
-    let P = &part.P;
-    let dist = &part.dist;
+    let n3 = 3 * natm;
+    let do_deriv2 = ctx.do_deriv2;
     let dR_atm_dist = ctx.tables.dR_atm_dist.as_ref().unwrap();
 
-    // evaluate derivative of grid distance to atom
-    let mut dR_dist = vec![[simd_val(0.0); 3]; natm];
+    // evaluate derivative of grid distance to atom (flat [A * 3 + t])
     for A in 0..natm {
         for t in 0..3 {
-            dR_dist[A][t] = (-coords[t] + ctx.tables.atm_coords[A][t]) / dist[A];
+            scr.dR_dist[A * 3 + t] = (-coords[t] + ctx.tables.atm_coords[A][t]) / scr.dist[A];
         }
     }
 
-    // partition output
-    let mut dR_Z = vec![[simd_val(0.0); 3]; natm];
-    let mut dR_Pg = vec![[simd_val(0.0); 3]; natm];
+    // 1st-order accumulators start from zero each lane
+    scr.dR_Z.fill(simd_val(0.0));
+    scr.dR_Pg.fill(simd_val(0.0));
 
-    // 2nd-order intermediates (only materialized for deriv >= 2).  See [`LaneDerivPass`]
-    // for the indexing conventions.
-    let do_deriv2 = ctx.do_deriv2;
-    let mut dR_log_P = do_deriv2.then(|| vec![vec![[simd_val(0.0); 3]; natm]; natm]); // [M][A][t]
-    let mut ddR_Z = do_deriv2.then(|| vec![vec![[[simd_val(0.0); 3]; 3]; natm]; natm]); // [A][B][t][s]
-    let mut ddR_Pg = do_deriv2.then(|| vec![vec![[[simd_val(0.0); 3]; 3]; natm]; natm]); // [A][B][t][s]
-
-    // per-atom projection matrix PrM[M] = Proj(r_M)/|r_M| (depends only on the atom,
-    // not the pair partner, so precomputed once per batch instead of per pair).
-    let PrM: Option<Vec<[[f64simd; 3]; 3]>> = do_deriv2.then(|| {
-        (0..natm)
-            .map(|M| {
-                let inv_d = simd_val(1.0) / dist[M];
-                let mut pm = [[simd_val(0.0); 3]; 3];
-                for t in 0..3 {
-                    for s in 0..3 {
-                        let delta = if t == s { simd_val(1.0) } else { simd_val(0.0) };
-                        pm[t][s] = (delta - dR_dist[M][t] * dR_dist[M][s]) * inv_d;
-                    }
+    // 2nd-order intermediates (only materialized for deriv >= 2): re-zero the
+    // pair-accumulated diagonals, and precompute the per-atom projection
+    // matrices PrM[M] = Proj(r_M)/|r_M| flat as [M * 9 + t * 3 + s] (they depend
+    // only on the atom, not the pair partner).
+    if do_deriv2 {
+        for M in 0..natm {
+            let c0 = M * n3 + 3 * M;
+            scr.dR_log_P[c0..c0 + 3].fill(simd_val(0.0));
+            for t in 0..3 {
+                let r0 = (M * 3 + t) * n3 + M * 3;
+                scr.ddR_Z[r0..r0 + 3].fill(simd_val(0.0));
+                scr.ddR_Pg[r0..r0 + 3].fill(simd_val(0.0));
+            }
+            let inv_d = simd_val(1.0) / scr.dist[M];
+            for t in 0..3 {
+                for s in 0..3 {
+                    let delta = if t == s { simd_val(1.0) } else { simd_val(0.0) };
+                    scr.PrM[M * 9 + t * 3 + s] = (delta - scr.dR_dist[M * 3 + t] * scr.dR_dist[M * 3 + s]) * inv_d;
                 }
-                pm
-            })
-            .collect_vec()
-    });
+            }
+        }
+    }
+
+    let P = &scr.P;
+    let dist = &scr.dist;
 
     for A in 0..natm {
         for B in 0..A {
@@ -843,22 +929,20 @@ fn eval_switch_pair_pass(
             let mut dR_mu_roleA = [simd_val(0.0); 3];
             let mut dR_mu_roleB = [simd_val(0.0); 3];
             let dR_atm_dist_AB = dR_atm_dist[A][B];
+            let (ia, ib) = (A * 3, B * 3);
             for t in 0..3 {
-                dR_mu_roleA[t] = (dR_dist[A][t] - mu * dR_atm_dist_AB[t]) * inv_atm_dist_AB;
-                dR_mu_roleB[t] = (-dR_dist[B][t] + mu * dR_atm_dist_AB[t]) * inv_atm_dist_AB;
-                dR_Z[A][t] += common_Z * dR_mu_roleA[t];
-                dR_Z[B][t] += common_Z * dR_mu_roleB[t];
-                dR_Pg[A][t] += common_Pg * dR_mu_roleA[t];
-                dR_Pg[B][t] += common_Pg * dR_mu_roleB[t];
+                dR_mu_roleA[t] = (scr.dR_dist[ia + t] - mu * dR_atm_dist_AB[t]) * inv_atm_dist_AB;
+                dR_mu_roleB[t] = (-scr.dR_dist[ib + t] + mu * dR_atm_dist_AB[t]) * inv_atm_dist_AB;
+                scr.dR_Z[ia + t] += common_Z * dR_mu_roleA[t];
+                scr.dR_Z[ib + t] += common_Z * dR_mu_roleB[t];
+                scr.dR_Pg[ia + t] += common_Pg * dR_mu_roleA[t];
+                scr.dR_Pg[ib + t] += common_Pg * dR_mu_roleB[t];
             }
 
             // --- deriv 2 (per-pair L2 accumulation) --- //
 
             if do_deriv2 {
                 let ddf3 = ddf3.unwrap();
-                let dR_log_P = dR_log_P.as_mut().unwrap();
-                let ddR_Z = ddR_Z.as_mut().unwrap();
-                let ddR_Pg = ddR_Pg.as_mut().unwrap();
 
                 // 2nd mu-derivatives of s(mu); ddmu_sB = -ddmu_sA (s_BA = 1 - s_AB)
                 let ddmu_nu = -simd_val(2.0) * a_factor; // nu'' = -2a
@@ -872,16 +956,24 @@ fn eval_switch_pair_pass(
                 //   d2(f/g) = [f_xy g - (f_x g_y + g_x f_y) - f g_xy]/g^2 + 2 f g_x g_y/g^3
                 // rA, rB = unit vec (R_atom - r_g)/|r|; Uvec = unit vec (R_A - R_B)/|R_AB|;
                 // PrA = Proj(rA)/|r_A|, PrB = Proj(rB)/|r_B|, PU = Proj(Uvec)/|R_AB|.
-                let rA = dR_dist[A];
-                let rB = dR_dist[B];
+                let mut rA = [simd_val(0.0); 3];
+                let mut rB = [simd_val(0.0); 3];
+                let mut PrA = [[simd_val(0.0); 3]; 3];
+                let mut PrB = [[simd_val(0.0); 3]; 3];
+                for t in 0..3 {
+                    rA[t] = scr.dR_dist[ia + t];
+                    rB[t] = scr.dR_dist[ib + t];
+                    for s in 0..3 {
+                        PrA[t][s] = scr.PrM[A * 9 + t * 3 + s];
+                        PrB[t][s] = scr.PrM[B * 9 + t * 3 + s];
+                    }
+                }
                 let Uvec = [
                     f64simd::splat(dR_atm_dist_AB[0]),
                     f64simd::splat(dR_atm_dist_AB[1]),
                     f64simd::splat(dR_atm_dist_AB[2]),
                 ];
                 // PrA/PrB are per-atom (precomputed in PrM above); only PU is per-pair.
-                let PrA = PrM.as_ref().unwrap()[A];
-                let PrB = PrM.as_ref().unwrap()[B];
                 let mut PU = [[simd_val(0.0); 3]; 3];
                 for t in 0..3 {
                     for s in 0..3 {
@@ -928,68 +1020,79 @@ fn eval_switch_pair_pass(
                     }
                 }
 
-                // accumulate dR_log_P (4D): convention dmu_log_sA = +nat[A,B],
-                // dmu_log_sB = -nat[B,A]; all contributions below are plus.
-                for t in 0..3 {
-                    dR_log_P[A][A][t] += dmu_log_sA * dR_mu_roleA[t]; // M=A, role A
-                    dR_log_P[A][B][t] += dmu_log_sA * dR_mu_roleB[t]; // M=A, role B
-                    dR_log_P[B][A][t] += dmu_log_sB * dR_mu_roleA[t]; // M=B, role B
-                    dR_log_P[B][B][t] += dmu_log_sB * dR_mu_roleB[t]; // M=B, role A
+                // accumulate dR_log_P, flat rows [M * n3 + C * 3 + t]; convention
+                // dmu_log_sA = +nat[A,B], dmu_log_sB = -nat[B,A]; all contributions
+                // below are plus.  Off-diagonal entries have exactly one writer
+                // (this pair), so they are assigned, not accumulated.
+                {
+                    // rows M = A and M = B of dR_log_P (B < A, so row B lies in the
+                    // part before row A; both slices are disjoint by construction)
+                    let (head, tail) = scr.dR_log_P.split_at_mut(A * n3);
+                    let rowA = &mut tail[..n3];
+                    let rowB = &mut head[B * n3..(B + 1) * n3];
+                    for t in 0..3 {
+                        rowA[A * 3 + t] += dmu_log_sA * dR_mu_roleA[t]; // M=A, role A (diag)
+                        rowA[B * 3 + t] = dmu_log_sA * dR_mu_roleB[t]; // M=A, role B (off)
+                        rowB[A * 3 + t] = dmu_log_sB * dR_mu_roleA[t]; // M=B, role B (off)
+                        rowB[B * 3 + t] += dmu_log_sB * dR_mu_roleB[t]; // M=B, role A (diag)
+                    }
                 }
 
-                // L2 (2nd log-deriv) into ddR_Z and ddR_Pg.  The w*(d_A mu)(d_B mu)
-                // term uses the FIRST role derivatives dR_mu_roleA/B (NOT the unit
-                // vectors rA/rB).  The 4 role outer products are formed once per (t,s)
-                // and reused for both ddR_Z and ddR_Pg.
+                // L2 (2nd log-deriv) into ddR_Z and ddR_Pg, flat rows
+                // [(3A + t) * n3 + 3B + s].  The w*(d_a mu)(d_b mu) term uses the
+                // FIRST role derivatives dR_mu_roleA/B (NOT the unit vectors
+                // rA/rB).  The 4 role outer products are formed once per (t,s)
+                // and reused for both ddR_Z and ddR_Pg.  Per (t, s) the four
+                // blocks write the rows 3A+t / 3B+t at columns 3A+s / 3B+s; the
+                // row groups of A and B are disjoint (B < A).
                 let common_dd = P[A] * ddmu_log_sA + P[B] * ddmu_log_sB;
                 let coef_A = attr.select(A, P[A], simd_val(0.0));
                 let coef_B = attr.select(B, P[B], simd_val(0.0));
                 let c1_Pg = coef_A * dmu_log_sA + coef_B * dmu_log_sB;
                 let cdd_Pg = coef_A * ddmu_log_sA + coef_B * ddmu_log_sB;
-                for t in 0..3 {
-                    for s in 0..3 {
-                        let ooAA = dR_mu_roleA[t] * dR_mu_roleA[s];
-                        let ooAB = dR_mu_roleA[t] * dR_mu_roleB[s];
-                        let ooBA = dR_mu_roleB[t] * dR_mu_roleA[s];
-                        let ooBB = dR_mu_roleB[t] * dR_mu_roleB[s];
-                        ddR_Z[A][A][t][s] += common_dd * ooAA + common_Z * ddR_mu_roleAA[t][s];
-                        ddR_Z[A][B][t][s] += common_dd * ooAB + common_Z * ddR_mu_roleAB[t][s];
-                        ddR_Z[B][A][t][s] += common_dd * ooBA + common_Z * ddR_mu_roleBA[t][s];
-                        ddR_Z[B][B][t][s] += common_dd * ooBB + common_Z * ddR_mu_roleBB[t][s];
-                        ddR_Pg[A][A][t][s] += cdd_Pg * ooAA + c1_Pg * ddR_mu_roleAA[t][s];
-                        ddR_Pg[A][B][t][s] += cdd_Pg * ooAB + c1_Pg * ddR_mu_roleAB[t][s];
-                        ddR_Pg[B][A][t][s] += cdd_Pg * ooBA + c1_Pg * ddR_mu_roleBA[t][s];
-                        ddR_Pg[B][B][t][s] += cdd_Pg * ooBB + c1_Pg * ddR_mu_roleBB[t][s];
+                for (buf, coef1, coefdd) in [(&mut scr.ddR_Z, common_Z, common_dd), (&mut scr.ddR_Pg, c1_Pg, cdd_Pg)] {
+                    let (head, tail) = buf.split_at_mut(A * 3 * n3);
+                    let grpA = &mut tail[..3 * n3]; // rows 3A .. 3A+3
+                    let grpB = &mut head[B * 3 * n3..(B * 3 + 3) * n3]; // rows 3B .. 3B+3
+                    for t in 0..3 {
+                        let rowA = &mut grpA[t * n3..(t + 1) * n3];
+                        let rowB = &mut grpB[t * n3..(t + 1) * n3];
+                        for s in 0..3 {
+                            let ooAA = dR_mu_roleA[t] * dR_mu_roleA[s];
+                            let ooAB = dR_mu_roleA[t] * dR_mu_roleB[s];
+                            let ooBA = dR_mu_roleB[t] * dR_mu_roleA[s];
+                            let ooBB = dR_mu_roleB[t] * dR_mu_roleB[s];
+                            // diagonal entries accumulate, off-diagonal entries
+                            // are written exactly once by this pair
+                            rowA[A * 3 + s] += coefdd * ooAA + coef1 * ddR_mu_roleAA[t][s];
+                            rowA[B * 3 + s] = coefdd * ooAB + coef1 * ddR_mu_roleAB[t][s];
+                            rowB[A * 3 + s] = coefdd * ooBA + coef1 * ddR_mu_roleBA[t][s];
+                            rowB[B * 3 + s] += coefdd * ooBB + coef1 * ddR_mu_roleBB[t][s];
+                        }
                     }
                 }
             }
         }
     }
-
-    LaneDerivPass { dR_Z, dR_Pg, dR_log_P, ddR_Z, ddR_Pg }
 }
 
 /// Deriv-1 finalize: quotient rule for `dw` followed by the
-/// translation-invariance fix.
-///
-/// # Returns
-///
-/// - `dw` : shape `[natm][3]` (A, t), one SIMD register per entry.
+/// translation-invariance fix, writing the flat `dw` row of [`LaneScratch`].
 fn eval_lane_dw(
     ctx: &BeckePartitionContext<'_>,
     wquad: f64simd,
     attr: LaneAttrib,
     part: &LanePartition,
-    dpass: &LaneDerivPass,
-) -> Vec<[f64simd; 3]> {
+    scr: &mut LaneScratch,
+) {
     let natm = ctx.natm;
 
-    // fill derivatives
-    let mut dw = vec![[simd_val(0.0); 3]; natm];
+    // fill derivatives (flat [A * 3 + t])
     let inv_Z = simd_val(1.0) / part.Z;
     for A in 0..natm {
         for t in 0..3 {
-            dw[A][t] = wquad * inv_Z * (dpass.dR_Pg[A][t] - part.Pg * inv_Z * dpass.dR_Z[A][t]);
+            let r = A * 3 + t;
+            scr.dw[r] = wquad * inv_Z * (scr.dR_Pg[r] - part.Pg * inv_Z * scr.dR_Z[r]);
         }
     }
 
@@ -1001,15 +1104,15 @@ fn eval_lane_dw(
             for A in 0..natm {
                 let mask = atm_idx.map(|a| a == A);
                 for t in 0..3 {
-                    dw_neg_sum[t] -= dw[A][t];
-                    dw_g[t] = dw[A][t].mask_select(mask, dw_g[t]);
+                    dw_neg_sum[t] -= scr.dw[A * 3 + t];
+                    dw_g[t] = scr.dw[A * 3 + t].mask_select(mask, dw_g[t]);
                 }
             }
             for g in 0..SIMDD {
                 let atm_g = atm_idx[g];
                 if atm_g < natm {
                     for t in 0..3 {
-                        dw[atm_g][t][g] = dw_neg_sum[t][g] + dw_g[t][g];
+                        scr.dw[atm_g * 3 + t][g] = dw_neg_sum[t][g] + dw_g[t][g];
                     }
                 }
             }
@@ -1019,56 +1122,58 @@ fn eval_lane_dw(
             // per-lane atom check degenerates to one uniform row update
             for A in 0..natm {
                 for t in 0..3 {
-                    dw_neg_sum[t] -= dw[A][t];
+                    dw_neg_sum[t] -= scr.dw[A * 3 + t];
                 }
             }
             for t in 0..3 {
-                dw[atm_g][t] += dw_neg_sum[t];
+                scr.dw[atm_g * 3 + t] += dw_neg_sum[t];
             }
         },
     }
-
-    dw
 }
 
 /// Deriv-2 finalize: cross terms, quotient rule, and translation-invariance
-/// fix for `ddw`, fused into one sweep over the rows `(A, t)`.
+/// fix for `ddw`.
 ///
 /// The cross terms need the fully accumulated `dR_log_P`, so they cannot be
-/// folded into the pair loop; here they are computed row-by-row as rank-1
-/// updates — the column `P[M] dlog[M][A][t]` is gathered once and each `M`
-/// row of `dR_log_P` is added in one `[B][s]` pass — and folded into the
-/// quotient rule and the axis sums in the same sweep, so `ddR_Z`/`ddR_Pg`
-/// are consumed read-only and read exactly once.
+/// folded into the pair loop.  The symmetric rank-1 form
+/// `C[r][c] = sum_M P[M] dlog[M][r] dlog[M][c]` is evaluated first, tile by
+/// tile over `CROSS_CB x CROSS_CB` blocks with the `M` loop innermost: each
+/// tile keeps a `CROSS_CB x CROSS_CB` accumulator (L1-resident) and streams
+/// only the two `dR_log_P` row slices it needs, so `dR_log_P` is re-read
+/// `3 * natm / CROSS_CB` times instead of once per output row.  Symmetry
+/// (`C[r][c] == C[c][r]` bitwise, both summed over `M` in the same order)
+/// halves the tile count; only the upper-triangle tiles are evaluated and
+/// mirrored on store.  `C` is materialized in the `ddw` buffer itself; the
+/// quotient sweep then transforms each row in place.
 ///
-/// # Returns
-///
-/// - `ddw` : shape `[natm][natm][3][3]` (A, B, t, s), one SIMD register per entry.
+/// The quotient sweep also accumulates the translation-invariance axis sums
+/// (fullA = sum_A, fullB = sum_B, fullAB = sum_{A,B}) in the same pass, so
+/// `ddR_Z`/`ddR_Pg` are consumed read-only and read exactly once, and the flat
+/// `ddw` rows are fully overwritten (no zero fill).
 fn eval_lane_ddw(
     ctx: &BeckePartitionContext<'_>,
     wquad: f64simd,
     attr: LaneAttrib,
     part: &LanePartition,
-    dpass: &LaneDerivPass,
-) -> Vec<Vec<[[f64simd; 3]; 3]>> {
+    scr: &mut LaneScratch,
+) {
     let natm = ctx.natm;
-    let P = &part.P;
-    let dR_log_P = dpass.dR_log_P.as_ref().unwrap();
-    let ddR_Z = dpass.ddR_Z.as_ref().unwrap();
-    let ddR_Pg = dpass.ddR_Pg.as_ref().unwrap();
+    let n3 = 3 * natm;
+    let P = &scr.P;
+    let dR_log_P = &scr.dR_log_P[..];
+    let ddR_Z = &scr.ddR_Z[..];
+    let ddR_Pg = &scr.ddR_Pg[..];
 
-    // gather M = A_g for the ddR_Pg cross term (dlog_Ag[A][t], P_Ag) first
-    let mut dlog_Ag = vec![[simd_val(0.0); 3]; natm]; // [A][t]
+    // gather M = A_g for the ddR_Pg cross term (dlog_Ag[r], P_Ag) first
     let P_Ag = match attr {
         LaneAttrib::ByGrid(atm_idx) => {
-            for A in 0..natm {
-                for t in 0..3 {
-                    let mut v = simd_val(0.0);
-                    for M in 0..natm {
-                        v = dR_log_P[M][A][t].mask_select(atm_idx.map(|a| a == M), v);
-                    }
-                    dlog_Ag[A][t] = v;
+            for r in 0..n3 {
+                let mut v = simd_val(0.0);
+                for M in 0..natm {
+                    v = dR_log_P[M * n3 + r].mask_select(atm_idx.map(|a| a == M), v);
                 }
+                scr.dlog_Ag[r] = v;
             }
             let mut P_Ag = simd_val(0.0);
             for A in 0..natm {
@@ -1078,11 +1183,8 @@ fn eval_lane_ddw(
         },
         // definite generating atom: direct index instead of the mask gathers
         LaneAttrib::ByAtom(atm_g) => {
-            for A in 0..natm {
-                for t in 0..3 {
-                    dlog_Ag[A][t] = dR_log_P[atm_g][A][t];
-                }
-            }
+            let row = &dR_log_P[atm_g * n3..(atm_g + 1) * n3];
+            scr.dlog_Ag.copy_from_slice(row);
             P[atm_g]
         },
     };
@@ -1091,64 +1193,77 @@ fn eval_lane_ddw(
     //   d2q = (ddR_Pg - (dq_B)(dZ_A) - q ddR_Z) / Z - (dq_A)(dZ_B) / Z
     let inv_Z = simd_val(1.0) / part.Z;
     let q = part.Pg * inv_Z;
-    let mut dq = vec![[simd_val(0.0); 3]; natm]; // [A][t]
-    for A in 0..natm {
-        for t in 0..3 {
-            dq[A][t] = (dpass.dR_Pg[A][t] - q * dpass.dR_Z[A][t]) * inv_Z;
-        }
+    let dq = &mut scr.dq;
+    let dR_Z = &scr.dR_Z;
+    let dR_Pg = &scr.dR_Pg;
+    for r in 0..n3 {
+        dq[r] = (dR_Pg[r] - q * dR_Z[r]) * inv_Z;
     }
 
-    // ddw_partial[A][B][t][s] = wquad * d2q; the translation-invariance axis sums
-    // (fullA = sum_A, fullB = sum_B, fullAB = sum_{A,B}) are accumulated in the
-    // same sweep so no separate sum loop is needed.
-    let mut ddw = vec![vec![[[simd_val(0.0); 3]; 3]; natm]; natm]; // [A][B][t][s]
-    let mut fullA = vec![[[simd_val(0.0); 3]; 3]; natm]; // [B][t][s] = sum_A ddw[A][B][t][s]
-    let mut fullB = vec![[[simd_val(0.0); 3]; 3]; natm]; // [A][t][s] = sum_B ddw[A][B][t][s]
-    let mut fullAB = [[simd_val(0.0); 3]; 3]; // [t][s] = sum_A sum_B ddw[A][B][t][s]
-    let mut col = vec![simd_val(0.0); natm]; // [M] gathered column of the current row
-    let mut row_acc = vec![[simd_val(0.0); 3]; natm]; // [B][s] cross-term row of the current (A, t)
-    for A in 0..natm {
-        for t in 0..3 {
-            // gather the (A, t) column of P[M] dlog[M][A][t]
+    // rank-1 cross-term matrix C, tiled into the ddw buffer (upper-triangle
+    // tiles, mirrored on store); see the function doc for the blocking
+    let ddw = &mut scr.ddw[..];
+    for rb in (0..n3).step_by(CROSS_CB) {
+        let rlen = CROSS_CB.min(n3 - rb);
+        for cb in (rb..n3).step_by(CROSS_CB) {
+            let clen = CROSS_CB.min(n3 - cb);
+            let mut acc = [[simd_val(0.0); CROSS_CB]; CROSS_CB];
             for M in 0..natm {
-                col[M] = P[M] * dR_log_P[M][A][t];
-            }
-            // row_acc[B][s] = sum_M col[M] dlog[M][B][s]; the first M row
-            // assigns, so row_acc needs no zeroing pass
-            for B in 0..natm {
-                for s in 0..3 {
-                    row_acc[B][s] = col[0] * dR_log_P[0][B][s];
-                }
-            }
-            for M in 1..natm {
-                let c = col[M];
-                let row = &dR_log_P[M];
-                for B in 0..natm {
-                    for s in 0..3 {
-                        row_acc[B][s] += c * row[B][s];
+                let pM = P[M];
+                let row = &dR_log_P[M * n3..M * n3 + n3];
+                for i in 0..rlen {
+                    let xri = pM * row[rb + i];
+                    let arri = &mut acc[i];
+                    for j in 0..clen {
+                        arri[j] += xri * row[cb + j];
                     }
                 }
             }
+            for i in 0..rlen {
+                for j in 0..clen {
+                    let v = acc[i][j];
+                    ddw[(rb + i) * n3 + cb + j] = v;
+                    ddw[(cb + j) * n3 + rb + i] = v;
+                }
+            }
+        }
+    }
+
+    // quotient sweep over the flat rows r = 3A + t: ddw_partial[r][c] =
+    // wquad * d2q, transforming the C row in place; the translation-invariance
+    // axis sums are accumulated in the same sweep (fullB per row in fs
+    // registers, so only fullA needs a zero fill).
+    scr.fullA.fill(simd_val(0.0));
+    let mut fullAB = [[simd_val(0.0); 3]; 3]; // [t][s] = sum_A sum_B ddw
+    let dlog_Ag = &scr.dlog_Ag[..];
+    for A in 0..natm {
+        for t in 0..3 {
+            let r = A * 3 + t;
             // finalize the row; cross terms:
-            //   ddZ  = ddR_Z  + sum_M P_M (dlog_M A t)(dlog_M B s)
-            //   ddPg = ddR_Pg + P_Ag (dlog_Ag A t)(dlog_Ag B s)
-            let dA_At = dlog_Ag[A][t];
-            let dq_At = dq[A][t];
-            let dZ_At = dpass.dR_Z[A][t];
+            //   ddZ  = ddR_Z  + C[r][c]           (C still stored in ddw row r)
+            //   ddPg = ddR_Pg + P_Ag (dlog_Ag r)(dlog_Ag c)
+            let dA_r = dlog_Ag[r];
+            let dq_r = dq[r];
+            let dZ_r = dR_Z[r];
+            let ts = t * 3;
             let mut fs = [simd_val(0.0); 3];
+            let ddw_row = &mut ddw[r * n3..(r + 1) * n3];
+            let ddz_row = &ddR_Z[r * n3..(r + 1) * n3];
+            let ddp_row = &ddR_Pg[r * n3..(r + 1) * n3];
             for B in 0..natm {
                 for s in 0..3 {
-                    let ddZ = ddR_Z[A][B][t][s] + row_acc[B][s];
-                    let ddPg = ddR_Pg[A][B][t][s] + P_Ag * dA_At * dlog_Ag[B][s];
-                    let d2q = (ddPg - dq[B][s] * dZ_At - q * ddZ) * inv_Z - dq_At * dpass.dR_Z[B][s] * inv_Z;
+                    let c = B * 3 + s;
+                    let ddZ = ddz_row[c] + ddw_row[c];
+                    let ddPg = ddp_row[c] + P_Ag * dA_r * dlog_Ag[c];
+                    let d2q = (ddPg - dq[c] * dZ_r - q * ddZ) * inv_Z - dq_r * dR_Z[c] * inv_Z;
                     let v = wquad * d2q;
-                    ddw[A][B][t][s] = v;
-                    fullA[B][t][s] += v;
+                    ddw_row[c] = v;
+                    scr.fullA[B * 9 + ts + s] += v;
                     fs[s] += v;
                 }
             }
             // fs[s] = sum_B v is exactly the fullB block of (A, t)
-            fullB[A][t].copy_from_slice(&fs);
+            scr.fullB[A * 9 + ts..A * 9 + ts + 3].copy_from_slice(&fs);
             for s in 0..3 {
                 fullAB[t][s] += fs[s];
             }
@@ -1163,6 +1278,9 @@ fn eval_lane_ddw(
     //   col : ddw[A, t, A_g, s]   = -sum_{B'!=A_g} = -fullB[A,t,s] + ddw_partial[A,A_g,t,s]
     //   corner: ddw[A_g,t,A_g,s] =  sum_{A'!=A_g,B'!=A_g}
     //                            = fullAB - fullB[A_g] - fullA[A_g] + ddw_partial[A_g,A_g]
+    let ddw = &mut scr.ddw[..];
+    let fullA = &scr.fullA[..];
+    let fullB = &scr.fullB[..];
     match attr {
         LaneAttrib::ByGrid(atm_idx) => {
             for g in 0..SIMDD {
@@ -1175,11 +1293,12 @@ fn eval_lane_ddw(
                 for B in 0..natm {
                     for t in 0..3 {
                         for s in 0..3 {
-                            ddw[atm_g][B][t][s][g] = if B == atm_g {
-                                fullAB[t][s][g] - fullB[atm_g][t][s][g] - fullA[atm_g][t][s][g]
-                                    + ddw[atm_g][atm_g][t][s][g]
+                            let idx = (atm_g * 3 + t) * n3 + B * 3 + s;
+                            ddw[idx][g] = if B == atm_g {
+                                fullAB[t][s][g] - fullB[atm_g * 9 + t * 3 + s][g] - fullA[atm_g * 9 + t * 3 + s][g]
+                                    + ddw[(atm_g * 3 + t) * n3 + atm_g * 3 + s][g]
                             } else {
-                                -fullA[B][t][s][g] + ddw[atm_g][B][t][s][g]
+                                -fullA[B * 9 + t * 3 + s][g] + ddw[idx][g]
                             };
                         }
                     }
@@ -1193,7 +1312,7 @@ fn eval_lane_ddw(
                     }
                     for t in 0..3 {
                         for s in 0..3 {
-                            ddw[A][atm_g][t][s][g] -= fullB[A][t][s][g];
+                            ddw[(A * 3 + t) * n3 + atm_g * 3 + s][g] -= fullB[A * 9 + t * 3 + s][g];
                         }
                     }
                 }
@@ -1205,10 +1324,12 @@ fn eval_lane_ddw(
             for B in 0..natm {
                 for t in 0..3 {
                     for s in 0..3 {
-                        ddw[atm_g][B][t][s] = if B == atm_g {
-                            fullAB[t][s] - fullB[atm_g][t][s] - fullA[atm_g][t][s] + ddw[atm_g][atm_g][t][s]
+                        let idx = (atm_g * 3 + t) * n3 + B * 3 + s;
+                        ddw[idx] = if B == atm_g {
+                            fullAB[t][s] - fullB[atm_g * 9 + t * 3 + s] - fullA[atm_g * 9 + t * 3 + s]
+                                + ddw[(atm_g * 3 + t) * n3 + atm_g * 3 + s]
                         } else {
-                            -fullA[B][t][s] + ddw[atm_g][B][t][s]
+                            -fullA[B * 9 + t * 3 + s] + ddw[idx]
                         };
                     }
                 }
@@ -1219,14 +1340,12 @@ fn eval_lane_ddw(
                 }
                 for t in 0..3 {
                     for s in 0..3 {
-                        ddw[A][atm_g][t][s] -= fullB[A][t][s];
+                        ddw[(A * 3 + t) * n3 + atm_g * 3 + s] -= fullB[A * 9 + t * 3 + s];
                     }
                 }
             }
         },
     }
-
-    ddw
 }
 
 /* #endregion */
@@ -1238,7 +1357,13 @@ fn eval_lane_ddw(
 ///
 /// - `w` : the lane's partition weight register.
 /// - `g_start`/`g_end` : the lane's grid range within `[0, ngrids)`.
-fn store_lane_w(ctx: &BeckePartitionContext<'_>, buffers: &mut TaskBuffers, w: f64simd, g_start: usize, g_end: usize) {
+fn store_lane_w(
+    ctx: &BeckePartitionContext<'_>,
+    contraction: &mut TaskContraction,
+    w: f64simd,
+    g_start: usize,
+    g_end: usize,
+) {
     let nlane_g = g_end - g_start;
     if let Some(w_buf) = ctx.output.w.as_ref() {
         // SAFETY: tasks own disjoint grid ranges
@@ -1248,7 +1373,7 @@ fn store_lane_w(ctx: &BeckePartitionContext<'_>, buffers: &mut TaskBuffers, w: f
 
     // contract w -> c:  c[iset] += sum_g contract_w[iset, g] * w[g]
     if let Some(cw) = ctx.contract_w.as_ref() {
-        let cp = buffers.c.as_mut().unwrap();
+        let cp = contraction.c.as_mut().unwrap();
         for iset in 0..ctx.nset_w.unwrap() {
             let cw_lane = load_simd_pad(&cw[iset][g_start..g_end]);
             cp[iset] += sum_lanes(w * cw_lane, nlane_g);
@@ -1259,11 +1384,11 @@ fn store_lane_w(ctx: &BeckePartitionContext<'_>, buffers: &mut TaskBuffers, w: f
 /// Write one lane of `dw` to the output buffer and accumulate the `dc`
 /// contraction partial.
 ///
-/// - `dw` : shape `[natm][3]` (A, t), the lane's `dw` registers.
+/// - `dw` : flat `[A * 3 + t]`, the lane's `dw` registers.
 fn store_lane_dw(
     ctx: &BeckePartitionContext<'_>,
-    buffers: &mut TaskBuffers,
-    dw: &[[f64simd; 3]],
+    contraction: &mut TaskContraction,
+    dw: &[f64simd],
     g_start: usize,
     g_end: usize,
 ) {
@@ -1276,24 +1401,24 @@ fn store_lane_dw(
         for A in 0..natm {
             for t in 0..3 {
                 let base = A * 3 * ngrids + t * ngrids + g_start;
-                dweights[base..base + nlane_g].copy_from_slice(&dw[A][t].0[..nlane_g]);
+                dweights[base..base + nlane_g].copy_from_slice(&dw[A * 3 + t].0[..nlane_g]);
             }
         }
     }
 
     // contract dw -> dc:  dc[A, t, iset] += sum_g contract_dw[iset, g] * dw[A, t, g]
     if let Some(cdw) = ctx.contract_dw.as_ref() {
-        let dcp = buffers.dc.as_mut().unwrap();
+        let dcp = contraction.dc.as_mut().unwrap();
         let nset = ctx.nset_dw.unwrap();
         // load this lane's contraction weights once per set, reuse across (A, t)
         for iset in 0..nset {
-            buffers.cw_lanes_dw[iset] = load_simd_pad(&cdw[iset][g_start..g_end]);
+            contraction.cw_lanes_dw[iset] = load_simd_pad(&cdw[iset][g_start..g_end]);
         }
         for A in 0..natm {
             for t in 0..3 {
-                let dwv = dw[A][t];
+                let dwv = dw[A * 3 + t];
                 for iset in 0..nset {
-                    dcp[(A * 3 + t) * nset + iset] += sum_lanes(dwv * buffers.cw_lanes_dw[iset], nlane_g);
+                    dcp[(A * 3 + t) * nset + iset] += sum_lanes(dwv * contraction.cw_lanes_dw[iset], nlane_g);
                 }
             }
         }
@@ -1303,16 +1428,18 @@ fn store_lane_dw(
 /// Write one lane of `ddw` to the output buffer and accumulate the `ddc`
 /// contraction partial.
 ///
-/// - `ddw` : shape `[natm][natm][3][3]` (A, B, t, s), the lane's `ddw` registers.  The flat
-///   output/contraction index is C-order for `[A, t, B, s, (g|iset)]`.
+/// - `ddw` : flat rows `[r][c]` with `r = 3A + t`, `c = 3B + s` (per-row length `3 * natm`), the
+///   lane's `ddw` registers.  The flat output/contraction index is C-order for `[A, t, B, s,
+///   (g|iset)]`.
 fn store_lane_ddw(
     ctx: &BeckePartitionContext<'_>,
-    buffers: &mut TaskBuffers,
-    ddw: &[Vec<[[f64simd; 3]; 3]>],
+    contraction: &mut TaskContraction,
+    ddw: &[f64simd],
     g_start: usize,
     g_end: usize,
 ) {
     let natm = ctx.natm;
+    let n3 = 3 * natm;
     let ngrids = ctx.ngrids;
     let nlane_g = g_end - g_start;
 
@@ -1324,7 +1451,8 @@ fn store_lane_ddw(
                 for B in 0..natm {
                     for s in 0..3 {
                         let base = ((A * 3 + t) * natm + B) * (3 * ngrids) + s * ngrids + g_start;
-                        ddweights[base..base + nlane_g].copy_from_slice(&ddw[A][B][t][s].0[..nlane_g]);
+                        ddweights[base..base + nlane_g]
+                            .copy_from_slice(&ddw[(A * 3 + t) * n3 + B * 3 + s].0[..nlane_g]);
                     }
                 }
             }
@@ -1334,20 +1462,20 @@ fn store_lane_ddw(
     // contract ddw -> ddc:
     //   ddc[A, t, B, s, iset] += sum_g contract_ddw[iset, g] * ddw[A, t, B, s, g]
     if let Some(cddw) = ctx.contract_ddw.as_ref() {
-        let ddcp = buffers.ddc.as_mut().unwrap();
+        let ddcp = contraction.ddc.as_mut().unwrap();
         let nset = ctx.nset_ddw.unwrap();
         // load this lane's contraction weights once per set, reuse across (A, t, B, s)
         for iset in 0..nset {
-            buffers.cw_lanes_ddw[iset] = load_simd_pad(&cddw[iset][g_start..g_end]);
+            contraction.cw_lanes_ddw[iset] = load_simd_pad(&cddw[iset][g_start..g_end]);
         }
         for A in 0..natm {
             for t in 0..3 {
                 for B in 0..natm {
                     for s in 0..3 {
-                        let ddwv = ddw[A][B][t][s];
+                        let ddwv = ddw[(A * 3 + t) * n3 + B * 3 + s];
                         for iset in 0..nset {
                             ddcp[((A * 3 + t) * natm + B) * 3 * nset + s * nset + iset] +=
-                                sum_lanes(ddwv * buffers.cw_lanes_ddw[iset], nlane_g);
+                                sum_lanes(ddwv * contraction.cw_lanes_ddw[iset], nlane_g);
                         }
                     }
                 }
