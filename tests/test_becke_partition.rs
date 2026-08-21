@@ -14,7 +14,12 @@ pub fn test_becke_partition_0() {
     let atm_indices = d["atm_indices"].to_owned().mapv(|i| i as usize).into_vec();
     let quadrature_weights = d["wquad"].to_owned().into_vec();
     // be careful about col/row-major order; adjustment_factor is anti-symmetric.
-    let adjustment_factor = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    // `into_shape(-1)` flattens the C-order table column-major; un-transpose it to
+    // row-major rows (rows[A][B] = table entry (A, B)).
+    let natm = atm_coords.len();
+    let radii_flat = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    let adjustment_factor: Vec<Vec<f64>> =
+        (0..natm).map(|a| (0..natm).map(|b| radii_flat[b * natm + a]).collect()).collect();
     let w_ref = d["weights"].to_owned();
     let dw_ref = d["dw_ref"].to_owned();
     let device = w_ref.device().clone();
@@ -53,7 +58,12 @@ pub fn test_becke_partition_2() {
     let atm_indices = d["atm_indices"].to_owned().mapv(|i| i as usize).into_vec();
     let quadrature_weights = d["wquad"].to_owned().into_vec();
     // be careful about col/row-major order; adjustment_factor is anti-symmetric.
-    let adjustment_factor = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    // `into_shape(-1)` flattens the C-order table column-major; un-transpose it to
+    // row-major rows (rows[A][B] = table entry (A, B)).
+    let natm = atm_coords.len();
+    let radii_flat = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    let adjustment_factor: Vec<Vec<f64>> =
+        (0..natm).map(|a| (0..natm).map(|b| radii_flat[b * natm + a]).collect()).collect();
     let w_ref = d["weights"].to_owned();
     let dw_ref = d["dw_ref"].to_owned();
     // 2nd-order analytical reference (produced by 10-5-becke_rsprep_deriv2.ipynb)
@@ -78,7 +88,6 @@ pub fn test_becke_partition_2() {
     let ddw = res.ddw.unwrap();
     println!("becke_partition (deriv=2) time: {:?}", time.elapsed());
 
-    let natm = atm_coords.len();
     let ngrids = grid_coords.len();
     let w = rt::asarray((w, &device));
     let dw = rt::asarray((dw, [natm, 3, ngrids].c(), &device));
@@ -107,13 +116,17 @@ pub fn test_becke_partition_by_atom() {
     let grid_coords = d["grids"].to_owned().into_pack_array::<3>(-1).into_vec();
     let atm_indices = d["atm_indices"].to_owned().mapv(|i| i as usize).into_vec();
     let quadrature_weights = d["wquad"].to_owned().into_vec();
-    let adjustment_factor = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    // `into_shape(-1)` flattens the C-order table column-major; un-transpose it to
+    // row-major rows (rows[A][B] = table entry (A, B)).
+    let natm = atm_coords.len();
+    let radii_flat = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    let adjustment_factor: Vec<Vec<f64>> =
+        (0..natm).map(|a| (0..natm).map(|b| radii_flat[b * natm + a]).collect()).collect();
     let w_ref = d["weights"].to_owned();
     let dw_ref = d["dw_ref"].to_owned();
     let ddw_ref = read_npz_dict("becke_deriv2_dict.npz")["ddw_ref"].to_owned();
     let device = w_ref.device().clone();
 
-    let natm = atm_coords.len();
     let ngrids = grid_coords.len();
 
     // per-grid indices -> cumulative per-atom boundaries (cf get_quad_split); also
@@ -180,7 +193,7 @@ pub fn test_becke_partition_by_atom_validation() {
     let atm_coords = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
     let grid_coords = vec![[0.0f64; 3]; 8];
     let quadrature_weights = vec![1.0f64; 8];
-    let adjustment_factor = vec![0.0f64; 4];
+    let adjustment_factor = vec![vec![0.0f64; 2]; 2];
     // ngrids == 8, but atom 1's interval claims grids [9, 8)
     let bad_split = vec![0usize, 9, 8];
 

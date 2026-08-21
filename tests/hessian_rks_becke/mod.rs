@@ -21,7 +21,7 @@ pub struct CaseAmoniaRKSBecke {
     pub grid_weights: Vec<f64>,
     pub quadrature_weights: Vec<f64>,
     pub atm_quad_split: Vec<usize>,
-    pub adjustment_factor: Vec<f64>,
+    pub adjustment_factor: Vec<Vec<f64>>,
     pub xc: String,
     pub ref_dict: HashMap<String, Tsr>,
 }
@@ -63,7 +63,12 @@ pub fn hess_case_becke(xc: &str) -> CaseAmoniaRKSBecke {
     }
     atm_quad_split.push(atm_idx.len());
     // be careful about col/row-major order; adjustment_factor is anti-symmetric.
-    let adjustment_factor = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    // `into_shape(-1)` flattens the C-order table column-major; un-transpose it to
+    // row-major rows (rows[A][B] = table entry (A, B)).
+    let natm = mol.natm();
+    let radii_flat = d["radii_table"].to_owned().into_shape(-1).into_vec();
+    let adjustment_factor: Vec<Vec<f64>> =
+        (0..natm).map(|a| (0..natm).map(|b| radii_flat[b * natm + a]).collect()).collect();
 
     CaseAmoniaRKSBecke {
         mol,

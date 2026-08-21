@@ -12,9 +12,10 @@
 // (`de_becke_full_2`) contracts `ddw` with `exc * rho[0]` over the grid, which
 // is exactly the `contract_ddw` channel of `becke_partition` with `nset = 1`.
 
-use super::becke_partition::{becke_partition, AtmIndices, BeckeDerivArg};
+use super::becke_partition::{becke_partition_with_tables, AtmIndices, BeckeDerivArg, BeckeMolTables};
 use super::hess_rks::get_rks_response_bra_batched;
 use super::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /* #region const dimensions/indices definition */
 
@@ -82,10 +83,10 @@ macro_rules! index_mut {
 
 /* #region basic pure functions of skeleton hessian evaluation */
 
-/// Becke grid-attribution boundaries for a batch that holds only atom `atm_idx`'s
-/// grids: atoms before `atm_idx` get the empty interval `[0, 0)`, atom `atm_idx`
-/// owns `[0, n)`, and atoms after own the empty `[n, n)`.
-pub fn by_atom_batch(natm: usize, atm_idx: usize, n: usize) -> Vec<usize> {
+/// Becke grid-attribution boundaries for a grid range (chunk) that holds only atom
+/// `atm_idx`'s grids: atoms before `atm_idx` get the empty interval `[0, 0)`, atom
+/// `atm_idx` owns `[0, n)`, and atoms after own the empty `[n, n)`.
+pub fn by_atom_chunk(natm: usize, atm_idx: usize, n: usize) -> Vec<usize> {
     let mut v = vec![0; natm + 1];
     for x in v.iter_mut().skip(atm_idx + 1) {
         *x = n;
@@ -93,20 +94,28 @@ pub fn by_atom_batch(natm: usize, atm_idx: usize, n: usize) -> Vec<usize> {
     v
 }
 
-/// Split the grid into batches of at most `nbatch_grids` grids, respecting atom
-/// boundaries (`quad_split_by_atom` in the pyhessref reference).
-pub fn quad_split_by_atom(atm_quad_split: &[usize], nbatch_grids: usize, natm: usize) -> Vec<(usize, usize, usize)> {
-    let mut batches = Vec::new();
+/// Split the atom-grouped grid into pieces of at most `nsplit` grids, respecting
+/// atom boundaries (`quad_split_by_atom` in the pyhessref reference), so every
+/// piece carries one definite generating atom.  The number of atoms is
+/// `atm_quad_split.len() - 1`.
+///
+/// The driver uses this at chunk granularity (`nsplit = nchunk`): the returned
+/// `(atm_idx, start, end)` triples are the parallel work units of a single flat
+/// chunk-level par_iter.
+pub fn quad_split_by_atom(atm_quad_split: &[usize], nsplit: usize) -> Vec<(usize, usize, usize)> {
+    assert!(!atm_quad_split.is_empty(), "atm_quad_split must have length natm + 1");
+    let natm = atm_quad_split.len() - 1;
+    let mut pieces = Vec::new();
     for A in 0..natm {
         let mut start = atm_quad_split[A];
         let end = atm_quad_split[A + 1];
         while start < end {
-            let next_end = (start + nbatch_grids).min(end);
-            batches.push((A, start, next_end));
+            let next_end = (start + nsplit).min(end);
+            pieces.push((A, start, next_end));
             start = next_end;
         }
     }
-    batches
+    pieces
 }
 
 /// Same as [`super::hess_rks::get_rho_vxc_fxc`], but also returns the per-particle
@@ -477,20 +486,20 @@ pub fn get_vmat_deriv1(
 /* #region becke grid-shift parts: skeleton hessian */
 
 /// `de_becke_atom_1` (notebook t3): `-einsum("g, txg, xyg, Bsyg -> Bts", w, prho, fxc, drho)`,
-/// evaluated on the batch's grids only, with the free direction axes `s`/`t`
+/// evaluated on the chunk's grids only, with the free direction axes `s`/`t`
 /// interchanged (equivalent under the driver's symmetrisation).
 ///
-/// - `w`: `[ngrids]` grid weights of the batch.
+/// - `w`: `[ngrids]` grid weights of the chunk.
 /// - `prho`: `[ngrids, nvar, 3]` total skeleton derivative.
 ///
-/// Returns `[3, 3, natm]` (tsA): the batch atom's contribution, ordered for a
+/// Returns `[3, 3, natm]` (tsA): the chunk atom's contribution, ordered for a
 /// direct scatter into the last (B) axis of the `[3, 3, natm, natm]`
 /// accumulator; the (A, t) <-> (B, s) symmetrisation applied by the driver
 /// after the accumulation restores the row semantics.
 pub fn get_de_becke_atom_1(w: TsrView, prho: TsrView, fxc: TsrView, drho: TsrView) -> Tsr {
     // fxc_drho [g, x, t, A] = sum_y fxc[g, x, y] drho[g, y, t, A]
     let fxc_drho = rt::vecdot(fxc.i((.., .., .., None, None)), drho.i((.., None, .., .., ..)), 2);
-    // fold in the batch grid weights
+    // fold in the chunk grid weights
     let fxc_drho = fxc_drho * w.i((.., None, None, None));
     // t3 [t, s, A] = -sum_{g, x} fxc_drho[g, x, t, A] prho[g, x, s]
     -rt::vecdot(fxc_drho.i((.., .., .., None, ..)), prho.i((.., .., None, .., None)), ([0, 1], [0, 1]))
@@ -501,9 +510,9 @@ pub fn get_de_becke_atom_1(w: TsrView, prho: TsrView, fxc: TsrView, drho: TsrVie
 /// under the driver's symmetrisation).
 ///
 /// - `dw`: grid-first becke `dw`, `[ngrids, 3, natm]` (Fortran-order wrap of the C-order `[A, t,
-///   g]` becke output buffer; see `make_hessian_setup_batch_becke`).
+///   g]` becke output buffer; see [`make_hessian_setup_chunk_becke`]).
 ///
-/// Returns `[3, 3, natm]` (tsA): the batch atom's contribution, ordered for a
+/// Returns `[3, 3, natm]` (tsA): the chunk atom's contribution, ordered for a
 /// direct scatter into the last (B) axis of the `[3, 3, natm, natm]`
 /// accumulator (see [`get_de_becke_atom_1`]).
 pub fn get_de_becke_atom_2(dw: TsrView, vxc: TsrView, prho: TsrView) -> Tsr {
@@ -514,7 +523,7 @@ pub fn get_de_becke_atom_2(dw: TsrView, vxc: TsrView, prho: TsrView) -> Tsr {
 }
 
 /// `de_becke_atom_3` (notebook t6): `einsum("g, xyg, syg, txg -> ts", w, fxc, prho, prho)`,
-/// evaluated on the batch's grids only — fills the `[atm_idx, atm_idx]` diagonal block.
+/// evaluated on the chunk's grids only — fills the `[atm_idx, atm_idx]` diagonal block.
 ///
 /// Returns `[3, 3]` (ts).
 pub fn get_de_becke_atom_3(w: TsrView, prho: TsrView, fxc: TsrView) -> Tsr {
@@ -526,13 +535,13 @@ pub fn get_de_becke_atom_3(w: TsrView, prho: TsrView, fxc: TsrView) -> Tsr {
     rt::vecdot(fp.i((.., .., None, ..)), wprho.i((.., .., .., None)), ([0, 1], [0, 1]))
 }
 
-/// Contract a per-grid-atom skeleton-Vxc kernel into the batch atom's
+/// Contract a per-grid-atom skeleton-Vxc kernel into the chunk atom's
 /// Hessian column chunk (`_contract_pvxc` in the pyhessref reference, with
 /// the free direction axes interchanged).
 ///
 /// - `pvxc`: `[3, 3, nao]`, the `(s, t)`-interchanged kernel.
 ///
-/// Returns `[3, 3, natm]` (tsA): the batch atom's contribution, ordered for a
+/// Returns `[3, 3, natm]` (tsA): the chunk atom's contribution, ordered for a
 /// direct scatter into the last (B) axis of the `[3, 3, natm, natm]`
 /// accumulator; the (A, t) <-> (B, s) symmetrisation applied by the driver
 /// after the accumulation restores the row semantics.
@@ -550,9 +559,9 @@ pub fn contract_pvxc(pvxc: TsrView, atm_idx: usize, aoslices: &[[usize; 4]]) -> 
 }
 
 /// `de_becke_vxc_diag` (t8) / `de_becke_vxc_off` (t9): the basis form of t4/t7,
-/// contracting the per-batch `dao_vxc_*` kernels (shared with `de_vxc_*`).
+/// contracting the per-chunk `dao_vxc_*` kernels (shared with `de_vxc_*`).
 ///
-/// Returns both parts, each the batch atom's `[3, 3, natm]` (tsA) contribution
+/// Returns both parts, each the chunk atom's `[3, 3, natm]` (tsA) contribution
 /// for the last (B) axis scatter (see [`contract_pvxc`]).
 pub fn get_de_becke_vxc_parts(
     dao_vxc_diag: TsrView,
@@ -585,7 +594,7 @@ pub fn get_de_becke_vxc_parts(
 /// (`_vxc_fock` in the pyhessref reference).
 ///
 /// - `veff`: `[ngrids, nvar]` functional-derivative field.
-/// - `wg`: `[ngrids]` weight field (becke `dw[A, t]` row for T1, batch weights for T2_fxc).
+/// - `wg`: `[ngrids]` weight field (becke `dw[A, t]` row for T1, chunk weights for T2_fxc).
 pub fn vxc_fock(xc_type: XCDenType, ao: TsrView, veff: TsrView, wg: TsrView) -> Tsr {
     let mut wv = &veff * &wg;
     *&mut wv.i_mut((.., O)) *= 0.5;
@@ -615,12 +624,12 @@ pub fn vxc_fock(xc_type: XCDenType, ao: TsrView, veff: TsrView, wg: TsrView) -> 
 /// `_vmat_becke_parts` in the pyhessref reference).
 ///
 /// - `dw`: grid-first becke `dw`, `[ngrids, 3, natm]` (Fortran-order wrap of the C-order `[A, t,
-///   g]` becke output buffer; see `make_hessian_setup_batch_becke`).
+///   g]` becke output buffer; see [`make_hessian_setup_chunk_becke`]).
 /// - `prho`: `[ngrids, nvar, 3]`, `w`: `[ngrids]`, `vmat_ip`: `[nao, nao, 3]`.
 ///
 /// Returns `vmat_becke_T1` `[nao, nao, 3, natm]` (filled on all rows) and the
-/// T2 parts `[nao, nao, 3]` — the batch atom's row, scattered into the
-/// `[nao, nao, 3, natm]` accumulators by the batched driver.
+/// T2 parts `[nao, nao, 3]` — the chunk atom's row, scattered into the
+/// `[nao, nao, 3, natm]` accumulators by the parallel driver.
 #[allow(clippy::too_many_arguments)]
 pub fn get_vmat_becke_parts(
     xc_type: XCDenType,
@@ -645,10 +654,10 @@ pub fn get_vmat_becke_parts(
         }
     }
 
-    // T2_ipip: batch's vmat_ip symmetrised in AO
+    // T2_ipip: chunk's vmat_ip symmetrised in AO
     let vmat_becke_t2_ipip = &vmat_ip + vmat_ip.swapaxes(0, 1);
 
-    // T2_fxc: fxc folded with prho[t], contracted on the batch weights
+    // T2_fxc: fxc folded with prho[t], contracted on the chunk weights
     let mut vmat_becke_t2_fxc = rt::zeros(([nao, nao, 3], &device));
     let ngrids = fxc.shape()[0];
     let nvar = fxc.shape()[1];
@@ -666,28 +675,29 @@ pub fn get_vmat_becke_parts(
 
 /* #endregion */
 
-/* #region per-batch evaluation */
+/* #region per-chunk evaluation */
 
-/// Per-batch evaluation of all skeleton ingredients with the grid-shift
-/// (`make_hessian_setup_batch` in the pyhessref reference).  The batch must hold
-/// grids of the single atom `atm_idx` (ByAtom attribution).
+/// Per-chunk evaluation of all skeleton ingredients with the grid-shift
+/// (`make_hessian_setup_batch` in the pyhessref reference).  The chunk must hold
+/// grids of the single atom `atm_idx` (ByAtom attribution), and computes its own
+/// AO integrals through `ni.get_cached_ao`.
 ///
 /// Full-grid outputs (`[3, 3, natm, natm]` for the skeleton parts, `[nao, nao,
-/// 3, natm]` for `vmat_becke_T1`) accumulate across batches by a plain sum.
-/// The grid-atom outputs carry only the batch atom's contribution and are
+/// 3, natm]` for `vmat_becke_T1`) accumulate across chunks by a plain sum.
+/// The grid-atom outputs carry only the chunk atom's contribution and are
 /// scattered into the full accumulators by [`make_hessian_setup_becke`]:
 /// `de_becke_atom_1/2` and `de_becke_vxc_diag/off` as `[3, 3, natm]` column
 /// chunks (direction axes interchanged), `de_becke_atom_3` as the `[3, 3]`
 /// diagonal block, and `vmat_becke_T2_*` as `[nao, nao, 3]`.
 #[allow(clippy::too_many_arguments)]
-pub fn make_hessian_setup_batch_becke(
+pub fn make_hessian_setup_chunk_becke(
     mol: &CInt,
     xc_func_list: &[(f64, LibXCFunctional)],
     ni: &mut NIMatmul,
     dm0: TsrView,
     atm_idx: usize,
     quadrature_weights: &[f64],
-    adjustment_factor: &[f64],
+    tables: &BeckeMolTables,
     hardness: usize,
 ) -> HashMap<&'static str, Tsr> {
     let natm = mol.natm();
@@ -735,8 +745,7 @@ pub fn make_hessian_setup_batch_becke(
     // cddw (nset = 1): the only ddw consumer is de_becke_full_2 = ddw . (exc * rho0)
     let cddw = (&exc * rho.i((.., 0))).into_vec();
 
-    let atm_coords = mol.atom_coords();
-    let boundaries = by_atom_batch(natm, atm_idx, ngrids);
+    let boundaries = by_atom_chunk(natm, atm_idx, ngrids);
     let deriv_arg = BeckeDerivArg {
         output_w: false,
         output_dw: true,
@@ -745,12 +754,11 @@ pub fn make_hessian_setup_batch_becke(
         contract_dw: None,
         contract_ddw: Some(&cddw),
     };
-    let becke_result = becke_partition(
+    let becke_result = becke_partition_with_tables(
+        tables,
         &grid_coords,
-        &atm_coords,
         AtmIndices::ByAtom(&boundaries),
         quadrature_weights,
-        adjustment_factor,
         hardness,
         1024,
         2,
@@ -777,7 +785,7 @@ pub fn make_hessian_setup_batch_becke(
         .transpose([2, 0, 3, 1])
         .into_contig(ColMajor);
 
-    // grid-atom parts: compact tensors for the batch atom's row (resp.
+    // grid-atom parts: compact tensors for the chunk atom's row (resp.
     // diagonal block); the scatter into `[3, 3, natm, natm]` is done by
     // `make_hessian_setup_becke`
     let de_becke_atom_1 = get_de_becke_atom_1(weights.view(), prho.view(), fxc.view(), drho.view());
@@ -822,7 +830,7 @@ pub fn make_hessian_setup_batch_becke(
 
 /* #endregion */
 
-/* #region batched driver */
+/* #region parallel driver */
 
 /// `x + x.transpose(1, 0, 3, 2)` on a `[3, 3, natm, natm]` (tsAB) tensor: the
 /// `(A, t) <-> (B, s)` symmetrisation of the pyhessref reference.
@@ -830,15 +838,21 @@ fn symmetrize_ts_ab(x: Tsr) -> Tsr {
     &x + x.transpose([1, 0, 3, 2])
 }
 
-/// Batched driver for all DFT skeleton ingredients with the grid-shift
+/// Parallel driver for all DFT skeleton ingredients with the grid-shift
 /// (`make_hessian_setup` in the pyhessref reference).
 ///
-/// Splits the (atom-grouped) grid into batches of at most `nbatch_grids` grids
-/// that never cross an atom boundary, evaluates
-/// [`make_hessian_setup_batch_becke`] on each, and accumulates: the full-grid
-/// keys by a plain sum, the grid-atom keys (`de_becke_atom_1/2`,
-/// `de_becke_vxc_diag/off`, `vmat_becke_T2_ipip/fxc` as rows,
-/// `de_becke_atom_3` as the diagonal block) by scattering into the batch
+/// Unlike [`super::hess_rks::make_hessian_setup_batched`] (two-level: serial
+/// batch-level AO evaluation + chunk-level parallel), the atom-grouped grid is
+/// parallelized at chunk level only: [`quad_split_by_atom`] at `nchunk`
+/// granularity produces `(atm_idx, start, end)` work units that never cross an
+/// atom boundary, and each unit evaluates [`make_hessian_setup_chunk_becke`]
+/// (its own AO integrals included) inside one flat par_iter.  Atom grid sizes
+/// differ, so atom-aligned batches would be neither uniform nor guaranteed to
+/// fill the thread pool; uniform chunks over the whole grid are.
+///
+/// Accumulation: the full-grid keys by a plain sum, the grid-atom keys
+/// (`de_becke_atom_1/2`, `de_becke_vxc_diag/off`, `vmat_becke_T2_ipip/fxc` as
+/// rows, `de_becke_atom_3` as the diagonal block) by scattering into the chunk
 /// atom's column of the last (B) axis (the chunks are evaluated with the free
 /// direction axes interchanged, so no transposes are needed; the
 /// `[nao, nao, 3, natm]` vmat parts carry the atom axis last already).  The
@@ -846,7 +860,7 @@ fn symmetrize_ts_ab(x: Tsr) -> Tsr {
 /// under `(A, t) <-> (B, s)`, restoring the row semantics;
 /// `de_becke_full_2` is naturally symmetric.
 ///
-/// Returns all keys of the per-batch function accumulated over batches, plus
+/// Returns all keys of the per-chunk function accumulated over chunks, plus
 /// `de_xc_skeleton_no_becke`, `de_xc_skeleton`, and `vmat_deriv1_grid` (=
 /// `vmat_deriv1` + T1 + T2_ipip + T2_fxc).
 #[allow(clippy::too_many_arguments)]
@@ -857,9 +871,8 @@ pub fn make_hessian_setup_becke(
     dm0: TsrView,
     atm_quad_split: &[usize],
     quadrature_weights: &[f64],
-    adjustment_factor: &[f64],
+    adjustment_factor: &[Vec<f64>],
     hardness: usize,
-    nbatch_grids: usize,
     atm_list: Option<&[usize]>,
     verbose: bool,
 ) -> (HashMap<&'static str, Tsr>, IndexMap<&'static str, f64>) {
@@ -874,11 +887,14 @@ pub fn make_hessian_setup_becke(
     let nchunk = ni.nchunk;
     let xc_type = determine_den_type_from_list(&xc_func_list.iter().map(|(_, f)| f).collect_vec());
     let nvar = xc_type.num_nvar();
-    let deriv_level = get_hess_ao_deriv(xc_type);
     let device = dm0.device().clone();
 
-    let batches = quad_split_by_atom(atm_quad_split, nbatch_grids, natm);
-    let nbatches = batches.len();
+    // molecular tables of the becke partition, built once and borrowed by every
+    // chunk (the per-chunk context skips the molecular precomputation)
+    let tables = BeckeMolTables::new(&mol.atom_coords(), adjustment_factor, 2);
+
+    let chunks = quad_split_by_atom(atm_quad_split, nchunk);
+    let nchunks = chunks.len();
 
     let fxc_full: Tsr = rt::zeros(([ngrids, nvar, nvar], &device));
     let de_fxc: Tsr = rt::zeros(([3, 3, natm, natm], &device));
@@ -905,70 +921,67 @@ pub fn make_hessian_setup_becke(
     // atomic guard to avoid racing write
     let guard = Mutex::new(());
 
-    for (ibatch, (atm_idx, start_batch, end_batch)) in batches.into_iter().enumerate() {
-        // handle AO integral at batch level
-        let mut ni_batch = ni.split_batch(start_batch, end_batch);
-        ni_batch.get_cached_ao(deriv_level);
+    // single-level parallelization by chunk; `ni` is only read (split_batch),
+    // each chunk task owns its `ni_chunk` and its AO evaluation
+    let ni = &*ni;
+    let progress = AtomicUsize::new(0);
 
-        // other parts can be parallelized by chunk, with atomic guard for reduction
-        (start_batch..end_batch).into_par_iter().step_by(nchunk).for_each(|start| {
-            let end = (start + nchunk).min(end_batch);
-            let mut ni_chunk = ni_batch.split_batch(start - start_batch, end - start_batch);
-            let result_chunk = make_hessian_setup_batch_becke(
-                mol,
-                xc_func_list,
-                &mut ni_chunk,
-                dm0.view(),
-                atm_idx,
-                &quadrature_weights[start..end],
-                adjustment_factor,
-                hardness,
-            );
-            // fill fxc (disjoint grid ranges, no guard needed)
-            unsafe {
-                let fxc_slc = fxc_full.i(start..end);
-                let mut fxc_slc = fxc_slc.force_mut();
-                fxc_slc.assign(&result_chunk["fxc"]);
-            }
-            // add up other tensors
-            unsafe {
-                let _lock = guard.lock().unwrap();
-                *&mut de_fxc.force_mut() += &result_chunk["de_fxc"];
-                *&mut de_vxc_diag.force_mut() += &result_chunk["de_vxc_diag"];
-                *&mut de_vxc_off.force_mut() += &result_chunk["de_vxc_off"];
-                *&mut vmat_ip.force_mut() += &result_chunk["vmat_ip"];
-                *&mut vmat_fxc.force_mut() += &result_chunk["vmat_fxc"];
-                *&mut vmat_vxc.force_mut() += &result_chunk["vmat_vxc"];
-                *&mut vmat_deriv1.force_mut() += &result_chunk["vmat_deriv1"];
-                *&mut de_becke_full_1.force_mut() += &result_chunk["de_becke_full_1"];
-                *&mut de_becke_full_2.force_mut() += &result_chunk["de_becke_full_2"];
-                *&mut vmat_becke_t1.force_mut() += &result_chunk["vmat_becke_T1"];
-                // grid-atom parts: scatter the batch atom's compact contribution
-                // into its column of the last (B) axis — the de_* chunks are
-                // evaluated with the free direction axes interchanged, so the
-                // (A, t) <-> (B, s) symmetrisation after the accumulation
-                // restores the row semantics (the vmat parts carry the atom axis
-                // last already)
-                *&mut de_becke_atom_1.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_atom_1"];
-                *&mut de_becke_atom_2.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_atom_2"];
-                *&mut de_becke_atom_3.i((Ellipsis, atm_idx, atm_idx)).force_mut() += &result_chunk["de_becke_atom_3"];
-                *&mut de_becke_vxc_diag.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_vxc_diag"];
-                *&mut de_becke_vxc_off.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_vxc_off"];
-                *&mut vmat_becke_t2_ipip.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_ipip"];
-                *&mut vmat_becke_t2_fxc.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_fxc"];
-            }
-        });
-
+    chunks.into_par_iter().for_each(|(atm_idx, start, end)| {
+        let mut ni_chunk = ni.split_batch(start, end);
+        let result_chunk = make_hessian_setup_chunk_becke(
+            mol,
+            xc_func_list,
+            &mut ni_chunk,
+            dm0.view(),
+            atm_idx,
+            &quadrature_weights[start..end],
+            &tables,
+            hardness,
+        );
+        // fill fxc (disjoint grid ranges, no guard needed)
+        unsafe {
+            let fxc_slc = fxc_full.i(start..end);
+            let mut fxc_slc = fxc_slc.force_mut();
+            fxc_slc.assign(&result_chunk["fxc"]);
+        }
+        // add up other tensors
+        unsafe {
+            let _lock = guard.lock().unwrap();
+            *&mut de_fxc.force_mut() += &result_chunk["de_fxc"];
+            *&mut de_vxc_diag.force_mut() += &result_chunk["de_vxc_diag"];
+            *&mut de_vxc_off.force_mut() += &result_chunk["de_vxc_off"];
+            *&mut vmat_ip.force_mut() += &result_chunk["vmat_ip"];
+            *&mut vmat_fxc.force_mut() += &result_chunk["vmat_fxc"];
+            *&mut vmat_vxc.force_mut() += &result_chunk["vmat_vxc"];
+            *&mut vmat_deriv1.force_mut() += &result_chunk["vmat_deriv1"];
+            *&mut de_becke_full_1.force_mut() += &result_chunk["de_becke_full_1"];
+            *&mut de_becke_full_2.force_mut() += &result_chunk["de_becke_full_2"];
+            *&mut vmat_becke_t1.force_mut() += &result_chunk["vmat_becke_T1"];
+            // grid-atom parts: scatter the chunk atom's compact contribution
+            // into its column of the last (B) axis — the de_* chunks are
+            // evaluated with the free direction axes interchanged, so the
+            // (A, t) <-> (B, s) symmetrisation after the accumulation
+            // restores the row semantics (the vmat parts carry the atom axis
+            // last already)
+            *&mut de_becke_atom_1.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_atom_1"];
+            *&mut de_becke_atom_2.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_atom_2"];
+            *&mut de_becke_atom_3.i((Ellipsis, atm_idx, atm_idx)).force_mut() += &result_chunk["de_becke_atom_3"];
+            *&mut de_becke_vxc_diag.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_vxc_diag"];
+            *&mut de_becke_vxc_off.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_vxc_off"];
+            *&mut vmat_becke_t2_ipip.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_ipip"];
+            *&mut vmat_becke_t2_fxc.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_fxc"];
+        }
+        let ichunk = progress.fetch_add(1, Ordering::Relaxed);
         timing.lock().unwrap().insert("total", time_total.elapsed().as_secs_f64());
         if verbose {
             println!(
-                "In make_hessian_setup_becke, batch {}/{} (atom {atm_idx}): grids {start_batch}..{end_batch}",
-                ibatch + 1,
-                nbatches,
+                "In make_hessian_setup_becke, chunk {}/{} (atom {atm_idx}): grids {start}..{end}",
+                ichunk + 1,
+                nchunks,
             );
             println!("  Elapsed time from start (Wall time): {:.4} sec", timing.lock().unwrap()["total"]);
         }
-    }
+    });
 
     // symmetrize on the atom indices for the becke parts (the grid-atom keys
     // were accumulated as unsymmetrized rows; de_becke_full_2 is naturally
@@ -1028,8 +1041,9 @@ pub fn make_hessian_setup_becke(
 ///
 /// Grids must be atom-grouped (`sort_grids=False` in pyscf; the ByAtom
 /// attribution scheme of `becke_partition`).  `adjustment_factor` is the
-/// antisymmetric radii table flattened in column-major `(natm, natm)` order
-/// (the convention of [`super::becke_partition::becke_partition`]).
+/// antisymmetric radii table as row-major `(natm, natm)` rows
+/// (`adjustment_factor[A][B]` = entry `(A, B)`; the convention of
+/// [`super::becke_partition::BeckeMolTables`]).
 pub struct RHessKSNIMatmulBecke<'a> {
     pub mol: CInt,
     pub xc_func_list: &'a [(f64, LibXCFunctional)],
@@ -1037,9 +1051,8 @@ pub struct RHessKSNIMatmulBecke<'a> {
     pub ni_cpks: Option<NIMatmul<'a>>,
     pub quadrature_weights: Vec<f64>,
     pub atm_quad_split: Vec<usize>,
-    pub adjustment_factor: Vec<f64>,
+    pub adjustment_factor: Vec<Vec<f64>>,
     pub hardness: usize,
-    pub nbatch_grids: usize,
     pub verbose: bool,
     pub intmd: HashMap<String, Tsr>,
     pub result: HashMap<String, Tsr>,
@@ -1053,9 +1066,8 @@ impl<'a> RHessKSNIMatmulBecke<'a> {
         ni: NIMatmul<'a>,
         quadrature_weights: Vec<f64>,
         atm_quad_split: Vec<usize>,
-        adjustment_factor: Vec<f64>,
+        adjustment_factor: Vec<Vec<f64>>,
         hardness: usize,
-        nbatch_grids: usize,
         verbose: bool,
     ) -> Self {
         Self {
@@ -1067,7 +1079,6 @@ impl<'a> RHessKSNIMatmulBecke<'a> {
             atm_quad_split,
             adjustment_factor,
             hardness,
-            nbatch_grids,
             verbose,
             intmd: HashMap::new(),
             result: HashMap::new(),
@@ -1090,7 +1101,6 @@ impl<'a> RHessKSNIMatmulBecke<'a> {
             &self.quadrature_weights,
             &self.adjustment_factor,
             self.hardness,
-            self.nbatch_grids,
             atm_list,
             self.verbose,
         );

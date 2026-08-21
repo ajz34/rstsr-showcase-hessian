@@ -37,7 +37,6 @@ fn test_setup(hess_case_svwn: &CaseAmoniaRKSBecke) {
         atm_quad_split,
         adjustment_factor,
         3,
-        16384,
         false,
     );
     becke_obj.make_hessian_setup(mo_coeff.view(), mo_occ.view(), None);
@@ -131,7 +130,6 @@ fn test_make_hess(hess_case_svwn: &CaseAmoniaRKSBecke) {
         atm_quad_split,
         adjustment_factor,
         3,
-        16384,
         true,
     );
 
