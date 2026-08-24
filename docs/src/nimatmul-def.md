@@ -101,6 +101,8 @@ $$
 | `vxc` | $f_g^\chi$ | $(\chi, g)$ <br> `[nvar, ngrids]` | $(g, \chi)$ <br> `[ngrids, nvar]` |
 | `fxc` | $f_g^{\chi \chi'}$ | $(\chi, \chi', g)$ <br> `[nvar, nvar, ngrids]` | $(g, \chi, \chi')$ <br> `[ngrids, nvar, nvar]` |
 
+这里出现的星号 $*$ 是指维度与意义不固定，并非复共轭。
+
 请留意，PySCF 所使用的 NumPy 尽管是 row-major 约定；但其中的 $\phi_{g \mu}^{*}$ 尽管表面维度是 $(*, g, \mu)$，其内存中的连续性是 $g$ 即格点索引在最内层，其次 $\mu$ 即基函数，最后是原子轨道导数分量。这个内存连续性顺序与 column-major 的 REST 实际上是相同的。对于其他分量，REST (column-major) 与 PySCF/NumPy (row-major) 的维度相反，内存连续性相同。
 
 **张量 (开壳层)**

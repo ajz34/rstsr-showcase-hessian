@@ -1,4 +1,4 @@
-# DFT 二阶 Skeleton 导数
+# DFT 能量二阶 Skeleton 导数
 
 这份文档将讨论 DFT 二阶 Skeleton 导数的实现策略。我们只使用矩阵乘法的策略，不使用其他优化工具。
 
@@ -9,7 +9,13 @@
 - `vxc` 对角部分 (单原子双重导数)；
 - `vxc` 普通部分 (双原子各一重导数)。
 
-我们这里稍作展开。首先，Skeleton 导数的定义是，在密度矩阵 (轨道系数) 不发生变化的情况下，改变原子坐标的导数。Skeleton 导数可以通过固定轨道系数、改变原子坐标，作数值差分计算得到。
+我们这里稍作展开。首先，回顾 DFT 能量的计算表达式：
+
+$$
+E^\text{xc} = \int f \rho \, \mathrm{d} \bm{r} = \sum_g w_g f_g \rho_g = \sum_g w_g (f \rho)_g
+$$
+
+Skeleton 导数的定义是，在密度矩阵 (轨道系数) 不发生变化的情况下，改变原子坐标的导数。Skeleton 导数可以通过固定轨道系数、改变原子坐标，作数值差分计算得到。
 
 对于 DFT 任务，其一阶 Skeleton 导数是 (暂时用 partial 记号表示 Skeleton 导数；我们只要记得不要对轨道系数求导)：
 
@@ -30,22 +36,37 @@ $$
 \frac{\partial^2 E^\text{xc}}{\partial \mathbb{A} \partial \mathbb{B}}
 &= \sum_{g \chi} w_g \left( \frac{\partial f_g^\chi}{\partial \mathbb{B}} \frac{\partial \xi_g^\chi}{\partial \mathbb{A}} + f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial \mathbb{A} \partial \mathbb{B}} \right) \\
 &= \sum_{g \chi \chi'} w_g f_g^{\chi \chi'} \frac{\partial \xi_g^{\chi'}}{\partial \mathbb{B}} \frac{\partial \xi_g^\chi}{\partial \mathbb{A}} + \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial \mathbb{A} \partial \mathbb{B}}
+\quad (\texttt{de\_xc})
 \end{aligned}
 $$
 
 到这里，我们已经可以将第一项 (`fxc` 贡献项) 拆分出来了。第二项是 `vxc` 贡献，取决于具体的偏导计算过程，我们将其拆分为对角与普通部分。这个拆分并非是 trivial 的，后面需要具体地讨论。
 
-## 2. 原子核偏导数的常用技巧
+> **缺失格点偏置导数**
+> 
+> 上面的讨论在理想的全空间坐标积分下成立。现实里，在不少情况下也确实可以给出合理的 Hessian (指杂化 LDA/GGA 泛函)。
+> 
+> 但作为数值积分方法，我们没有考虑原子坐标变化对格点 $\bm{r}_g$ 与权重 $w_g$ 的影响。meta-GGA 的 Hessian 计算一般要求引入格点偏置的影响。我们将在其他文档中讨论该问题。
 
-上面的讨论适用于任意性质。现在作特化：我们仅考虑 $\mathbb{A} = A_t$ 的情形；其中 $A_t$ 是指原子 $A$ 的 $t$ 三维空间分量。正常情况下用 $\bm{R}_A$ 向量表示，但为了程序实现对应上的便利，我们就用简化记号 $A_t$。
+## 2. 电子积分原子核偏导数的常用技巧
 
-一个常见技巧是，**原子轨道基**下 (其他基有其他处理技巧)，
+上面的讨论适用于任意性质。现在作特化：我们仅考虑 $\mathbb{A} = A_t$ 的情形；其中 $A_t$ 是指原子 $A$ 的 $t$ 三维空间分量。正常情况下用 $\bm{R}_A$ 向量 (或其三维分量 $R_{At}$) 表示，但为了程序实现对应上的便利，我们有时简化为记号 $A_t$。
+
+一个常见技巧是，**原子轨道基**下，
 
 $$
 \partial_{A_t} \phi_\mu = - \partial_t \phi_\mu \delta_{\mu \in A} = - \phi_\mu^t \delta_{\mu \in A}
 $$
 
-大致说来，这使用到了空间上的 Stokes 定理，使得原子核坐标偏导可以转化为电子坐标偏导，但被偏导对象只能是特定基函数。
+大致说来，这使用到了空间上的 Stokes 定理，使得原子核坐标偏导可以转化为电子坐标偏导，但被偏导对象只能是特定原子上展开的基函数，不是所有基函数。
+
+我们通常不称 DFT 格点积分为电子积分 (电子积分一般是指 1-2 电子、2-4 中心的简单算符解析积分)；但这不影响 DFT 作为 1 电子积分的本质。这里的技巧不仅在普通电子积分适用，在 DFT 也一样如此。
+
+> **该技巧只针对原子轨道基有效**
+>
+> 该技巧只针对原子轨道基有效。这里的原子轨道不限于 Gaussian 基函数，也可以是 Slater 基函数、数值基函数等，以及其对应的赝势基。只要是原子轨道基，电子积分的原子核偏导数都可以转化为电子坐标偏导数。
+>
+> 但另一大类基函数是平面波。对于平面波，基函数导数一般应该化为动量空间下的算符操作，有其他的实现策略；且当前的技巧对平面波基函数完全不适用。
 
 我们要注意到，在标度上，原子尽管数量很少，但也是一个标度。在二阶梯度 Skeleton 导数问题里，一种比较有效的策略是，先处理电子导数；不能进一步处理的部分，再处理原子核导数。不过这也因问题而异：像这里我们在 `fxc` 上，就先处理了原子导数；但在 `vxc` 上，我们先处理了电子导数。这在后面的实现细节里会有体现。
 
@@ -57,20 +78,23 @@ $$
 
 $$
 \frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} \leftarrow \sum_{g \chi \chi'} w_g f_g^{\chi \chi'} (\partial_{A_t} \xi_g^\chi) (\partial_{B_s} \xi_g^{\chi'})
+\quad (\texttt{de\_fxc})
 $$
 
-上式用 einsum 可以直接写出。我们在 PySCF 语境 (row-major) 下，先回顾与总结上式的记号与维度：
+**函数 `get_de_fxc`**
 
-| 表达式 | 程序变量 | 维度 | einsum 记号 |
-|--|--|--|--|
-| $w_g$ | `weights` | $(g)$ <br> `[ngrids]` | `g` |
-| $f_g^{\chi \chi'}$ | `fxc` | $(\chi, \chi', g)$ <br> `[nvar, nvar, ngrids]` | `gxy` |
-| $\partial_{A_t} \xi_g^\chi$ | `drho` | $(A, t, \chi, g)$ <br> `[natm, 3, nvar, ngrids]` | `Atxg` |
-| $\partial_{B_s} \xi_g^{\chi'}$ | `drho` | $(B, s, \chi', g)$ <br> `[natm, 3, nvar, ngrids]` | `Bsyg` |
+| 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
+|--|--|--|--|--|
+| `wf` | $w_g f_g^{\chi \chi'}$ | $(g, \chi, \chi')$</br>`[g, x, y]` | `[ngrids, nvar, nvar]` | $\mathrm{sym} (\chi, \chi'
+)$ |
+| `drho` | $\partial_{A_t} \xi_g^\chi$ | $(g, \chi, t, A)$</br>`[g, x, t, A]` | `[ngrids, nvar, 3, natm]` | |
+| `de_fxc`</br>(output) | | $(t, s, A, B)$ </br>`[t, s, A, B]` | `[3, 3, natm, natm]` | $\mathrm{sym} (tA, sB)$ |
 
-那么上式就可以用非常简单的计算过程给出：
+其程序实现，如果是在 NumPy 中，或引入 tblis 的 RSTSR，是可以比较方便地使用 einsum 给出的。
 
 ```python
+# Please note the indices interchange of row-major / col-major
+# This is numpy code, so row-major is used, different to col-major of above table
 de_fxc = np.einsum("g, xyg, Atxg, Bsyg -> ABts", weights, fxc, drho, drho)
 ```
 
@@ -78,16 +102,62 @@ de_fxc = np.einsum("g, xyg, Atxg, Bsyg -> ABts", weights, fxc, drho, drho)
 
 我们要注意到，$\partial_{A_t} \xi_g^\chi$ 与 $\partial_{B_s} \xi_g^{\chi'}$ 实际上是一个东西，只是用了不同的角标而已。
 
-该计算最大计算量是 $2 \times 3^2 n_\mathrm{atom}^2 n_\mathrm{var} n_\mathrm{grids}$ FMAs，是较大内存瓶颈的 $O(N^3)$ 复杂度。
+该计算最大计算量是 $2 \times 3^2 n_\mathrm{atom}^2 n_\mathrm{var} n_\mathrm{grids}$ FMAs，是较大内存瓶颈但计算量很小的 $O(N^3)$ 复杂度。
 
-上面唯一困难的部分是 `drho` $\partial_{A_t} \xi_g^\chi$ 的计算。
+上式的 `wf` 是很容易获得的：$w_g$ 是基本的格点参数，$f_g^{\chi \chi'}$ 可以通过封装后的 LibXC 接口立即获得。困难的部分是 `drho` $\partial_{A_t} \xi_g^\chi$ 的计算。
 
-- 其最大计算复杂度是 $O(n_\mathrm{AO}^2 n_\mathrm{grid})$ 即 $O(N^3)$，出现在 `ao_dm0` $\bar{\phi}_{g \mu}$ 的计算上 (定义在下面给出)。
-- 缩并 $\delta_{\mu \in A}$ 到 $\partial_{A_t} \xi_g^\chi$ 内存遍历次数很多，耗时其实不少，也是程序实现的难点；但它其实是 $O(n_\mathrm{AO} n_\mathrm{grid})$ 即 $O(N^2)$ 计算复杂度。原子尽管也参与了计算，但注意到 $\delta_{\mu \in A}$，因此在计算复杂度核算时，原子数可以合并到原子轨道里。
+### 3.2 密度格点一阶 Skeleton 梯度 `drho` 概述与实现决策
 
-这里我们需要对 LDA (RHO), GGA (SIGMA), MGGA (TAU) 分别讨论。
+首先回顾密度格点定义：
 
-### 3.2 LDA (RHO)
+$$
+\xi_g^\chi = \sum_{\mu \nu} D_{\mu \nu} \xi_{g \mu \nu}^\chi
+$$
+
+对其作核坐标的 Skeleton 偏导数 $\partial_{A_t}$，将只会对 $\xi_{g \mu \nu}^\chi$ 作偏导数。$\xi_{g \mu \nu}^\chi$ 对于 LDA/GGA/mGGA 有不同的定义；但大致上，它都表现为
+1. 密度矩阵 $D_{\mu \nu}$ 与一个右矢 $\phi_{g \nu}^*$ 先作矩阵乘法并缩并指标 $\nu$。计算复杂度是 $O(n_\mathrm{AO}^2 n_\mathrm{grid})$ 即 $O(N^3)$。
+2. 随后再与一个左矢 $\phi_{g \mu}^*$ 作数乘并缩并指标 $\mu$；但如何缩并需要对 LDA (RHO) / GGA (SIGMA) / MGGA (TAU) 分别处理。该步骤内存遍历次数很多，耗时其实不少，也是程序实现的难点；但它其实是 $O(n_\mathrm{AO} n_\mathrm{grid})$ 即 $O(N^2)$ 计算复杂度。
+
+上面的第 1 步是简单矩阵乘法，其程序实现是 1 行，因此不引入新的函数：
+
+$$
+\bar{\phi}_{g \mu}^* = \sum_{\nu} D_{\mu \nu} \phi_{g \nu}^*
+\quad (\texttt{ao\_dm0})
+$$
+
+- `ao_dm0` $\bar{\phi}_{g \mu}^*$ 与 `ao` $\phi_{g \mu}^*$ 接近，是 $(g, \mu, *)$ `[ngrids, nao, ncomp]` 维度张量。
+- 在实际 GGA/MGGA 二阶梯度计算中，`ao_dm0` $\bar{\phi}_{g \mu}^*$ 中的上标 $*$ 最大是一阶梯度 (非导数、$x$/$y$/$z$) 的 4 种情况。而 `ao` $\phi_{g \mu}^*$ 的上标 $*$ 则最大会到三阶梯度的 20 种情况。同时参考函数 `get_hess_ncomp_ao_dm0`。
+- 对于 GGA/MGGA，该步的 FLOPs 是 $8 n_\mathrm{basis}^2 n_\mathrm{grids}$。
+
+```rust
+let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % &dm0;
+```
+
+> **实现决策：使用 AO 基的密度矩阵与轨道缩并**
+>
+> 决策：使用下述变量 `ao_dm0` $\bar{\phi}_{g \mu}^*$ 作为重要中间量。
+>
+> 放弃的其他可能性：使用占据分子轨道基 $\bar{\phi}_{g i}^* = \sum_{\nu} C_{\nu i} \phi_{g \nu}^*$ 作预缩并。
+>
+> 这里并没有作详细分析与测评；但出于下述考量，放弃该可能性：
+> - 主要原因：Fock Skeleton 一阶梯度问题 `dao_vxc_diag` 同样需要 `ao_dm0` $\bar{\phi}_{g \mu}^*$。这一项没有办法利用占据轨道比基组数更少得以加速。
+> - 主要原因：内存用量可以接受。我们如果允许 $20 n_\mathrm{basis} n_\mathrm{grids}$ 的 `ao` $\phi_{g \mu}^*$ 存储，那么 $4 n_\mathrm{basis} n_\mathrm{grids}$ 的 `ao_dm0` $\bar{\phi}_{g \mu}^*$ 也应是可以接受的。
+> - 次要原因：程序的编写会变得复杂。如果是能量或响应问题，基函数格点 `ao` 或许与占据轨道缩并会更有优势 (在 nimatmul 模块中，有一些 `_bra_trans` 函数专门用于此类问题)。但梯度问题中，经常会出现针对特定原子的部分基组缩并 $\delta_{\mu \in A}$，程序编写上会比较麻烦。
+> - 可能的改进：如果使用一次占据轨道缩并、与一次占据轨道展开，在基组比较大的时候 (超过 6-31G)，FLOPs 是比较小的 $16 n_\mathrm{occ} n_\mathrm{basis} n_\mathrm{grids}$。但考虑到这个计算量相对于 Fock Skeleton 一阶梯度来说并不大，且要明确引入占据轨道而非更广义的密度矩阵，因此没有采用这种微小但引入代码复杂程度的性能优化。
+
+### 3.3 `drho` 计算
+
+**函数 `get_drho`**
+
+| 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
+|--|--|--|--|--|
+| `xc_type` | | | `LDA` / `GGA` / `MGGA` | |
+| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp` 4/10/10 |
+| `ao_dm0` | $\bar{\phi}_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp` 1/4/4 |
+| `aoslices` | | | `natm` |
+| `drho`</br>(output) | $\partial_{A_t} \xi_g^\chi$ | $(g, \chi, t, A)$ </br>`[g, x, t, A]` | `[ngrids, nvar, 3, natm]` | |
+
+**LDA (RHO)**
 
 $$
 \begin{aligned}
@@ -97,15 +167,9 @@ $$
 \end{aligned}
 $$
 
-其中，我们定义
-
-$$
-\bar{\phi}_{g \mu} = \sum_\nu \phi_{g \nu} D_{\mu \nu} \quad (\texttt{ao\_dm0})
-$$
-
 上式的 2 倍，来源于偏导链式法则对 $\mu, \nu$ 的对称项的合并。
 
-### 3.3 GGA (SIGMA)
+**GGA (SIGMA)**
 
 $$
 \begin{aligned}
@@ -117,7 +181,7 @@ $$
 
 请留意上式的推导是跳步的。我们需要利用一些 $\mu \leftrightarrow \nu$ dummy 指标轮换简化到上式 (留作思考：为何上式的第二项不是 $\phi_{g \mu}^r \bar{\phi}_{g \mu}^t$？)。2 倍的系数来源于 $\phi_{g \mu}^r \phi_{g \nu} + \phi_{g \mu} \phi_{g \nu}^r$ 的对称性，这与 LDA (RHO) 的情况稍有不同。
 
-### 3.4 MGGA (TAU)
+**MGGA (TAU)**
 
 $$
 \begin{aligned}
@@ -129,14 +193,14 @@ $$
 
 这里最后的表达式就没有 2 倍系数了；这单纯是因为 $\tau$ 的定义里有 $\frac{1}{2}$ 的系数。
 
-### 3.5 代码实现决定
-
-上述计算有两种实现策略：
-
-1. 直接依公式实现，原地对指标 $\mu \in A$ 执行缩并；
-2. 先生成一个 $(t, \xi, \mu, g)$ 的张量，基于此对 $\mu \in A$ 执行缩并，得到 $(A, t, \xi, g)$ 的 `drho` 张量。
-
-我们最终选择第 1 种实现。原因是，第 1 种实现的写入 memory footprint 较小，不会有数倍的 $(\mu, g)$ 的大内存写入。第 2 种尽管是 RI-JK 或后面 vxc 贡献项计算所用到的策略，但在这里反而不适合。
+> **实现决策：`drho` 实现中 $\delta_{\mu \in A}$ 的应用时机**
+>
+>上述计算有两种实现策略：
+>
+> 1. 直接依公式实现，原地对指标 $\mu \in A$ 执行缩并；
+> 2. 先生成一个含有指标 $\mu$ 的、维度为 $(g, \mu, \xi, t)$ 的张量，基于此应用 $\delta_{\mu \in A}$ 执行缩并，得到最终维度 $(g, \xi, t, A)$ 的 `drho` 张量。
+>
+> 我们最终选择第 1 种实现。原因是，第 1 种实现的写入 memory footprint 较小，不会有数倍的 $(\mu, g)$ 的大内存写入。第 2 种尽管是 RI-JK 或后面 vxc 贡献项计算所用到的策略，但在这里反而不适合。
 
 ## 4. `vxc` 对角部分实现细节
 
@@ -146,15 +210,16 @@ $$
 \frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} \leftarrow \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial A_t \partial B_s}
 $$
 
-### 4.1 `vxc` 对角与普通部分的定义
+### 4.1 `vxc` 对角与非对角部分的定义
 
-与 RI-JK 一样，DFT 也会涉及到对角与普通部分的差别。
-- 对角部分是指对其中一个原子轨道 $\mu$ 求两次导数；由原子核导数的规则，这个导数必须是对同一个原子求两次导数。
-- 普通部分则是对两个原子轨道 $\mu, \nu$ 各求一次导数；这两个导数可以在不同的原子上进行。
+- **对角部分 (`diag`)**：指对其中一个原子轨道 $\mu$ 求两次导数；由原子核导数的规则，这个导数必须是对同一个原子求两次导数。
+- **非对角部分 (`nondiag`)**：则是对两个原子轨道 $\mu, \nu$ 各求一次导数；这两个导数可以在不同的原子上进行。
+
+需要指出，对角部分确实只会对维度为 $(t, s, A, B)$ Hessian 张量的 $A = B$ 部分作贡献，但 **非对角部分也会对 $A = B$ 的部分作贡献**，只是贡献的具体项不同。这里用“对角”与“非对角”对意义不同的部分作区分，或许是不幸，但暂时没有更好的命名。
 
 DFT 相比于 J/K 积分，
 - DFT 是 2 中心而 J/K 是 4 中心，要考虑的原子轨道导数组合少了很多；
-- DFT 要区分 LDA/GGA/MGGA，要考虑的项又多了不少。
+- DFT 要区分 LDA/GGA/MGGA、且表达式非线性，要考虑的项又多了不少。
 
 ### 4.2 对角部分中间量 `dao_vxc_diag`
 
