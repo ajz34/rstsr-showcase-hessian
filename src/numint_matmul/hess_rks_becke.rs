@@ -610,31 +610,28 @@ pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView,
     let mut vmat_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], ao.device()));
 
     for A in 0..natm {
-        if matches!(xc_type, RHO) {
-            let wf_rho: Tsr = 0.5 * index!(wf, O, O) * drho.i((.., O, .., A));
-            for t in 0..3 {
-                let aow = index!(wf_rho, t) * index!(ao, O);
+        for t in 0..3 {
+            if matches!(xc_type, RHO) {
+                let wf_rho: Tsr = 0.5 * index!(wf, O, O) * drho.i((.., O, t, A));
+                let aow = wf_rho * index!(ao, O);
                 index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
+                continue;
             }
-        }
 
-        if matches!(xc_type, SIGMA | TAU) {
-            let mut wf_rho = rt::vecdot(&wf, drho.i((.., .., None, .., A)), 1);
-            *&mut wf_rho.i_mut((.., 0)) *= 0.5;
-            if matches!(xc_type, TAU) {
-                *&mut wf_rho.i_mut((.., 4)) *= 0.25;
-            }
-            for t in 0..3 {
-                let aow = rt::vecdot(wf_rho.i((.., None, ..4, t)), ao.i((.., .., ..4)), 2);
+            let mut wf_rho = rt::vecdot(&wf, drho.i((.., .., t, A)), 1);
+            if matches!(xc_type, SIGMA | TAU) {
+                *&mut wf_rho.i_mut((.., 0)) *= 0.5;
+                if matches!(xc_type, TAU) {
+                    *&mut wf_rho.i_mut((.., 4)) *= 0.25;
+                }
+                let aow = rt::vecdot(wf_rho.i((.., None, ..4)), ao.i((.., .., ..4)), 2);
                 index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
             }
 
             if matches!(xc_type, TAU) {
                 for r in [X, Y, Z] {
-                    for t in 0..3 {
-                        let aow = wf_rho.i((.., 4, t)) * index!(ao, r);
-                        index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, r), 1.0, 1.0);
-                    }
+                    let aow = wf_rho.i((.., 4)) * index!(ao, r);
+                    index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, r), 1.0, 1.0);
                 }
             }
         }

@@ -222,68 +222,59 @@ pub fn get_vmat_fxc_uks(
     let mut vmatβ_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], device));
 
     for A in 0..natm {
-        if matches!(xc_type, RHO) {
-            let wf_αα_00: Tsr = 0.5 * wf.i((.., O, α, O, α));
-            let wf_βα_00: Tsr = 0.5 * wf.i((.., O, β, O, α));
+        for t in 0..3 {
+            if matches!(xc_type, RHO) {
+                let wf_αα_00: Tsr = 0.5 * wf.i((.., O, α, O, α));
+                let wf_βα_00: Tsr = 0.5 * wf.i((.., O, β, O, α));
+                let wvα_f: Tsr = wf_αα_00 * drhoα.i((.., O, t, A)) + wf_βα_00 * drhoβ.i((.., O, t, A));
 
-            let wvα_f: Tsr =
-                wf_αα_00.i((.., None)) * drhoα.i((.., O, .., A)) + wf_βα_00.i((.., None)) * drhoβ.i((.., O, .., A));
+                let wf_αβ_00: Tsr = 0.5 * wf.i((.., O, α, O, β));
+                let wf_ββ_00: Tsr = 0.5 * wf.i((.., O, β, O, β));
+                let wvβ_f: Tsr = wf_αβ_00 * drhoα.i((.., O, t, A)) + wf_ββ_00 * drhoβ.i((.., O, t, A));
 
-            let wf_αβ_00: Tsr = 0.5 * wf.i((.., O, α, O, β));
-            let wf_ββ_00: Tsr = 0.5 * wf.i((.., O, β, O, β));
-
-            let wvβ_f: Tsr =
-                wf_αβ_00.i((.., None)) * drhoα.i((.., O, .., A)) + wf_ββ_00.i((.., None)) * drhoβ.i((.., O, .., A));
-
-            for t in 0..3 {
-                let aowα = wvα_f.i((.., t)) * index!(ao, O);
+                let aowα = wvα_f * index!(ao, O);
                 index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
-                let aowβ = wvβ_f.i((.., t)) * index!(ao, O);
+                let aowβ = wvβ_f * index!(ao, O);
                 index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
+                continue;
             }
-        }
 
-        if matches!(xc_type, SIGMA | TAU) {
             let wf_αα = wf.i((.., .., α, .., α));
             let wf_αβ = wf.i((.., .., α, .., β));
             let wf_βα = wf.i((.., .., β, .., α));
             let wf_ββ = wf.i((.., .., β, .., β));
 
-            let drhoα_A = drhoα.i((.., .., .., A));
-            let drhoβ_A = drhoβ.i((.., .., .., A));
+            let drhoα_tA = drhoα.i((.., .., t, A));
+            let drhoβ_tA = drhoβ.i((.., .., t, A));
 
-            for t in 0..3 {
-                let drhoα_t = drhoα_A.i((.., .., t));
-                let drhoβ_t = drhoβ_A.i((.., .., t));
+            let wf_rho_αα = rt::vecdot(&wf_αα, &drhoα_tA, 1);
+            let wf_rho_βα = rt::vecdot(&wf_βα, &drhoβ_tA, 1);
+            let wf_rho_αβ = rt::vecdot(&wf_αβ, &drhoα_tA, 1);
+            let wf_rho_ββ = rt::vecdot(&wf_ββ, &drhoβ_tA, 1);
+            let mut wf_rho_α = wf_rho_αα + wf_rho_βα;
+            let mut wf_rho_β = wf_rho_αβ + wf_rho_ββ;
 
-                let wf_rho_αα = rt::vecdot(wf_αα.view(), drhoα_t.view(), 1);
-                let wf_rho_βα = rt::vecdot(wf_βα.view(), drhoβ_t.view(), 1);
-                let wf_rho_αβ = rt::vecdot(wf_αβ.view(), drhoα_t.view(), 1);
-                let wf_rho_ββ = rt::vecdot(wf_ββ.view(), drhoβ_t.view(), 1);
-                let mut wf_rho_α = &wf_rho_αα + &wf_rho_βα;
-                let mut wf_rho_β = &wf_rho_αβ + &wf_rho_ββ;
-
+            if matches!(xc_type, SIGMA | TAU) {
                 *&mut wf_rho_α.i_mut((.., 0)) *= 0.5;
                 *&mut wf_rho_β.i_mut((.., 0)) *= 0.5;
                 if matches!(xc_type, TAU) {
                     *&mut wf_rho_α.i_mut((.., 4)) *= 0.25;
                     *&mut wf_rho_β.i_mut((.., 4)) *= 0.25;
                 }
-
                 for c in 0..4 {
                     let aowα = wf_rho_α.i((.., c)) * index!(ao, c);
                     index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
                     let aowβ = wf_rho_β.i((.., c)) * index!(ao, c);
                     index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
                 }
+            }
 
-                if matches!(xc_type, TAU) {
-                    for r in [X, Y, Z] {
-                        let aowα = wf_rho_α.i((.., 4)) * index!(ao, r);
-                        index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, r), 1.0, 1.0);
-                        let aowβ = wf_rho_β.i((.., 4)) * index!(ao, r);
-                        index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, r), 1.0, 1.0);
-                    }
+            if matches!(xc_type, TAU) {
+                for r in [X, Y, Z] {
+                    let aowα = wf_rho_α.i((.., 4)) * index!(ao, r);
+                    index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, r), 1.0, 1.0);
+                    let aowβ = wf_rho_β.i((.., 4)) * index!(ao, r);
+                    index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, r), 1.0, 1.0);
                 }
             }
         }
