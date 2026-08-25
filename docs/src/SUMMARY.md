@@ -3,4 +3,5 @@
 # nimatmul Hessian 原型实现
 
 - [DFT 格点积分约定](./nimatmul-def.md)
-- [DFT 二阶 Skeleton 导数](./nimatmul-skeleton2.md)
+- [DFT 能量二阶 Skeleton 导数](./nimatmul-skeleton2.md)
+- [DFT Fock 矩阵一阶 Skeleton 导数](./nimatmul-vmat1.md)
