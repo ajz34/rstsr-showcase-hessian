@@ -418,7 +418,7 @@ pub fn get_de_becke_atom_3_uks(w: TsrView, prhoα: TsrView, prhoβ: TsrView, fxc
 /// - `de_becke_vxc_diag` : shape `[3, 3, natm]`, from the spin-summed `0.5 * dao_vxc_diag` expanded
 ///   to dense (3, 3) pairs.
 /// - `de_becke_vxc_off` : shape `[3, 3, natm]`, from the spin-summed `0.5 * dao_vxc_off` contracted
-///   with the matching per-spin `dm0` on the ket AO index.
+///   with the matching per-spin `dm0` on the leading AO axis.
 ///
 /// Both for the last (B) axis scatter (see [`contract_pvxc`]).
 #[allow(clippy::too_many_arguments)]
@@ -434,21 +434,18 @@ pub fn get_de_becke_vxc_parts_uks(
 ) -> (Tsr, Tsr) {
     let nao = dao_vxc_diag_α.shape()[0];
 
-    // pvxc_diag [3, 3, nao] = 0.5 * (dao_vxc_diag_α + dao_vxc_diag_β)[IDX_PAIR_TS]; symmetric
-    // under (t, s), so it doubles as the interchanged kernel
+    // pvxc_diag [nao, 3, 3] = 0.5 * (dao_vxc_diag_α + dao_vxc_diag_β)[IDX_PAIR_TS]; the symmetric
+    // pairs make it invariant under (t, s), so it doubles as the interchanged
+    // kernel
     const IDX_PAIR_TS: [usize; 9] = [0, 1, 2, 1, 3, 4, 2, 4, 5];
-    let pvxc_diag: Tsr =
-        0.5 * (&dao_vxc_diag_α + &dao_vxc_diag_β).index_select(1, IDX_PAIR_TS).t().into_shape([3, 3, nao]);
+    let pvxc_diag: Tsr = 0.5 * (&dao_vxc_diag_α + &dao_vxc_diag_β).index_select(1, IDX_PAIR_TS).into_shape([nao, 3, 3]);
 
-    // pvxc_off[s, t, u] = 0.5 * sum_v (dao_vxc_off_α[v, u, t, s] dm0α[u, v] + dao_vxc_off_β[v, u,
-    // t, s] dm0β[u, v])  (einsum "tsuv, uv -> tsu" on the python [t, s, u, v] kernels per spin;
-    // this module's kernels store the AO indices transposed relative to python, so the free index
-    // is the FIRST AO axis of the [u, v, t, s] storage; the (s, t) interchange is the trailing
-    // transpose)
-    let pvxc_off: Tsr = 0.5
-        * (rt::vecdot(dao_vxc_off_α, dm0α, 0) + rt::vecdot(dao_vxc_off_β, dm0β, 0))
-            .transpose([2, 1, 0])
-            .into_contig(ColMajor);
+    // pvxc_off[u, t, s] = 0.5 * sum_v (dao_vxc_off_α[u, v, t, s] dm0α[u, v] + dao_vxc_off_β[u, v,
+    // t, s] dm0β[u, v])  (einsum "tsuv, uv -> tsu" on the python [t, s, u, v] kernels per spin,
+    // with the free direction axes interchanged; by the kernels' [u, v, t, s] -> [v, u, s, t]
+    // symmetry, built into `make_dao_vxc_off`, contracting the SECOND AO axis yields the
+    // interchanged orientation directly, with no transpose)
+    let pvxc_off: Tsr = 0.5 * (rt::vecdot(dao_vxc_off_α, dm0α, 1) + rt::vecdot(dao_vxc_off_β, dm0β, 1));
     (contract_pvxc(pvxc_diag.view(), atm_idx, aoslices), contract_pvxc(pvxc_off.view(), atm_idx, aoslices))
 }
 
