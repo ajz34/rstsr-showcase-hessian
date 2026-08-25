@@ -82,13 +82,13 @@ $$
 
 | 程序指标 | 公式指标 | 维度大小 | 意义 |
 |--|--|--|--|
-| `u, v` | 下标 $\mu, \nu$ | `nao` | 基函数 |
-| `g` | 下标 $g$ | `ngrids` | DFT 格点 |
+| `u, v` | 下标 $\mu, \nu$ | `nao` $n_\mathrm{basis}$ | 基函数 |
+| `g` | 下标 $g$ | `ngrids` $n_\mathrm{grids}$ | DFT 格点 |
 | `t, s, r` | 上标 $t, s, r \in \{x, y, z\}$ | 3 | 空间分量 |
-| `x, y` | 上标 $\chi, \chi'$ | `nvar` | DFT 基本参量分量 |
-| `A, B` | 上标 $A, B$ | `natm` | 原子 |
-| `A, B` | 上标 $\mathbb{A}, \mathbb{B}$ | `nprop` | 任意性质 |
-| `i, j` | 下标 $i, j$ | `nocc` | 占据轨道 |
+| `x, y` | 上标 $\chi, \chi'$ | `nvar` $n_\mathrm{var}$ | DFT 基本参量分量 |
+| `A, B` | 上标 $A, B$ | `natm` $n_\mathrm{atom}$ | 原子 |
+| `A, B` | 上标 $\mathbb{A}, \mathbb{B}$ | `nprop` $n_\mathrm{prop}$ | 任意性质 |
+| `i, j` | 下标 $i, j$ | `nocc` $n_\mathrm{occ}$ | 占据轨道 |
 | | 上标 $*$ | `ncomp` | 原子轨道导数分量 |
 | `σ, ς` | 上标 $\sigma, \varsigma \in \{ \alpha, \beta \}$ | 2 | 自旋分量 |
 
