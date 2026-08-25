@@ -526,22 +526,22 @@ pub fn get_vmat_ip(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
         return vmat_ip;
     }
 
-    if matches!(xc_type, SIGMA | TAU) {
-        let mut aow: Tsr = 0.5 * index!(wv, 0) * index!(ao, O);
-        for r in 0..3 {
-            aow += index!(wv, r + 1) * index!(ao, r + 1);
-        }
-        for t in 0..3 {
-            index_mut!(vmat_ip, t).matmul_from(&index!(ao, t + 1).t(), &aow, 1.0, 1.0);
-        }
+    assert_matches!(xc_type, SIGMA | TAU);
 
-        for t in 0..3 {
-            let mut aow_d: Tsr = 0.5 * index!(wv, 0) * index!(ao, t + 1);
-            for r in 0..3 {
-                aow_d += index!(wv, r + 1) * index!(ao, IDX_AO_DERIV2[t][r]);
-            }
-            index_mut!(vmat_ip, t).matmul_from(&aow_d.t(), &index!(ao, O), 1.0, 1.0);
+    let mut aow: Tsr = 0.5 * index!(wv, 0) * index!(ao, O);
+    for r in 0..3 {
+        aow += index!(wv, r + 1) * index!(ao, r + 1);
+    }
+    for t in 0..3 {
+        index_mut!(vmat_ip, t).matmul_from(&index!(ao, t + 1).t(), &aow, 1.0, 1.0);
+    }
+
+    for t in 0..3 {
+        let mut aow_d: Tsr = 0.5 * index!(wv, 0) * index!(ao, t + 1);
+        for r in 0..3 {
+            aow_d += index!(wv, r + 1) * index!(ao, IDX_AO_DERIV2[t][r]);
         }
+        index_mut!(vmat_ip, t).matmul_from(&aow_d.t(), &index!(ao, O), 1.0, 1.0);
     }
 
     if matches!(xc_type, TAU) {
@@ -618,15 +618,15 @@ pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView,
                 continue;
             }
 
+            assert_matches!(xc_type, SIGMA | TAU);
+
             let mut wf_rho = rt::vecdot(&wf, drho.i((.., .., t, A)), 1);
-            if matches!(xc_type, SIGMA | TAU) {
-                *&mut wf_rho.i_mut((.., 0)) *= 0.5;
-                if matches!(xc_type, TAU) {
-                    *&mut wf_rho.i_mut((.., 4)) *= 0.25;
-                }
-                let aow = rt::vecdot(wf_rho.i((.., None, ..4)), ao.i((.., .., ..4)), 2);
-                index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
+            *&mut wf_rho.i_mut((.., 0)) *= 0.5;
+            if matches!(xc_type, TAU) {
+                *&mut wf_rho.i_mut((.., 4)) *= 0.25;
             }
+            let aow = rt::vecdot(wf_rho.i((.., None, ..4)), ao.i((.., .., ..4)), 2);
+            index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
 
             if matches!(xc_type, TAU) {
                 for r in [X, Y, Z] {
