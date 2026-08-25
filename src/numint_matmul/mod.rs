@@ -5,6 +5,7 @@ pub mod becke_partition;
 pub mod hess_rks;
 pub mod hess_rks_becke;
 pub mod hess_uks;
+pub mod hess_uks_becke;
 pub mod nimatmul;
 pub mod pure_eval_rho;
 pub mod pure_xcpot;
