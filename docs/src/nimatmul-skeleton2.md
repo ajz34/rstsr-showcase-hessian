@@ -57,6 +57,7 @@ $$
 > DFT 格点导数所涉及到的张量，一般来说，其维度依最连续 (column-major 下是最左侧的维度) 排序是
 > - 格点维度 `g`，维度大小 `ngrids` $n_\mathrm{grids}$；
 > - 基组维度 `u, v`，维度大小 `nao` $n_\mathrm{basis}$；
+> - 参量维度 `x, y`，维度大小 `nvar` $n_\mathrm{var}$；
 > - 空间维度 `t, s`，维度大小 3；存在特例为对称合并维度 `ts`，维度大小 6；
 > - 基组格点导数维度 `*`，维度大小 `ncomp`；
 > - 原子维度 `A, B`，维度大小 `natm` $n_\mathrm{atom}$。
@@ -71,7 +72,7 @@ $$
 \partial_{A_t} \phi_\mu = - \partial_t \phi_\mu \delta_{\mu \in A} = - \phi_\mu^t \delta_{\mu \in A}
 $$
 
-大致说来，这使用到了空间上的 Stokes 定理，使得原子核坐标偏导可以转化为电子坐标偏导，但被偏导对象只能是特定原子上展开的基函数，不是所有基函数。
+大致说来，这利用了基函数只通过相对坐标 $\bm{r} - \bm{R}_A$ 依赖电子坐标与原子核坐标，由链式法则使得原子核坐标偏导可以转化为电子坐标偏导，但被偏导对象只能是特定原子上展开的基函数，不是所有基函数。
 
 我们通常不称 DFT 格点积分为电子积分 (电子积分一般是指 1-2 电子、2-4 中心的简单算符解析积分)；但这不影响 DFT 作为 1 电子积分的本质。这里的技巧不仅在普通电子积分适用，在 DFT 也一样如此。
 
@@ -98,8 +99,7 @@ $$
 
 | 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
 |--|--|--|--|--|
-| `wf` | $w_g f_g^{\chi \chi'}$ | $(g, \chi, \chi')$</br>`[g, x, y]` | `[ngrids, nvar, nvar]` | $\mathrm{sym} (\chi, \chi'
-)$ |
+| `wf` | $w_g f_g^{\chi \chi'}$ | $(g, \chi, \chi')$</br>`[g, x, y]` | `[ngrids, nvar, nvar]` | $\mathrm{sym} (\chi, \chi')$ |
 | `drho` | $\partial_{A_t} \xi_g^\chi$ | $(g, \chi, t, A)$</br>`[g, x, t, A]` | `[ngrids, nvar, 3, natm]` | |
 | `de_fxc`</br>(output) | | $(t, s, A, B)$ </br>`[t, s, A, B]` | `[3, 3, natm, natm]` | $\mathrm{sym} (tA, sB)$ |
 
@@ -111,11 +111,11 @@ $$
 de_fxc = np.einsum("g, xyg, Atxg, Bsyg -> ABts", weights, fxc, drho, drho)
 ```
 
-不使用 einsum 也是容易的，不过要对张量维度的 broadcasting 要小心一点即可。
+不使用 einsum 也是容易的，不过对张量维度的 broadcasting 小心一点即可。
 
 我们要注意到，$\partial_{A_t} \xi_g^\chi$ 与 $\partial_{B_s} \xi_g^{\chi'}$ 实际上是一个东西，只是用了不同的角标而已。
 
-该计算最大计算量是 $2 \times 3^2 n_\mathrm{atom}^2 n_\mathrm{var} n_\mathrm{grids}$ FMAs，是较大内存瓶颈但计算量很小的 $O(N^3)$ 复杂度。
+该计算最大计算量是 $2 \times 3^2 n_\mathrm{atom}^2 n_\mathrm{var} n_\mathrm{grids}$ FLOPs，是较大内存瓶颈但计算量很小的 $O(N^3)$ 复杂度。
 
 上式的 `wf` 是很容易获得的：$w_g$ 是基本的格点参数，$f_g^{\chi \chi'}$ 可以通过封装后的 LibXC 接口立即获得。困难的部分是 `drho` $\partial_{A_t} \xi_g^\chi$ 的计算。
 
@@ -153,10 +153,10 @@ let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % &dm0;
 > 放弃的其他可能性：使用占据分子轨道基 $\bar{\phi}_{g i}^* = \sum_{\nu} C_{\nu i} \phi_{g \nu}^*$ 作预缩并。
 >
 > 这里并没有作详细分析与测评；但出于下述考量，放弃该可能性：
-> - 主要原因：Fock Skeleton 一阶梯度问题 `dao_vxc_diag` 同样需要 `ao_dm0` $\bar{\phi}_{g \mu}^*$。这一项没有办法利用占据轨道比基组数更少得以加速。
+> - 主要原因：`vxc` 对角贡献项 `dao_vxc_diag` 同样需要 `ao_dm0` $\bar{\phi}_{g \mu}^*$。这一项没有办法利用占据轨道比基组数更少得以加速：其必须要扩张到原子轨道基组才能作后续计算 (对 $\delta_{\mu \in A}$ 的原子切片缩并、以及格点偏置贡献对 $\mathscr{T}_{\mu}^{(ts)}$ 的复用，都要求保留 $\mu$ 指标)。
 > - 主要原因：内存用量可以接受。我们如果允许 $20 n_\mathrm{basis} n_\mathrm{grids}$ 的 `ao` $\phi_{g \mu}^*$ 存储，那么 $4 n_\mathrm{basis} n_\mathrm{grids}$ 的 `ao_dm0` $\bar{\phi}_{g \mu}^*$ 也应是可以接受的。
 > - 次要原因：程序的编写会变得复杂。如果是能量或响应问题，基函数格点 `ao` 或许与占据轨道缩并会更有优势 (在 nimatmul 模块中，有一些 `_bra_trans` 函数专门用于此类问题)。但梯度问题中，经常会出现针对特定原子的部分基组缩并 $\delta_{\mu \in A}$，程序编写上会比较麻烦。
-> - 可能的改进：如果使用一次占据轨道缩并、与一次占据轨道展开，在基组比较大的时候 (超过 6-31G)，FLOPs 是比较小的 $16 n_\mathrm{occ} n_\mathrm{basis} n_\mathrm{grids}$。但考虑到这个计算量相对于 Fock Skeleton 一阶梯度来说并不大，且要明确引入占据轨道而非更广义的密度矩阵，因此没有采用这种微小但引入代码复杂程度的性能优化。
+> - 可能的改进：如果使用一次占据轨道缩并、与一次占据轨道展开，在基组比较大的时候 (超过 6-31G)，FLOPs 是比较小的 $16 n_\mathrm{occ} n_\mathrm{basis} n_\mathrm{grids}$。这一改进的可能性来源于 `drho` 的指标结构：`drho` 的指标是 $(g, \chi, t, A)$ 而不含 $\mu$，被缩并的一端取占据轨道或原子轨道基皆可；这与 `dao_vxc_diag` 必须保留 $\mu$ 指标的情况不同。但考虑到这个计算量相对于 Fock Skeleton 一阶梯度来说并不大，且要明确引入占据轨道而非更广义的密度矩阵，因此没有采用这种微小但引入代码复杂程度的性能优化。
 
 ### 3.3 `drho` 计算
 
@@ -170,12 +170,14 @@ let ao_dm0 = index!(ao, ..ncomp_ao_dm0) % &dm0;
 | `aoslices` | | | `natm` |
 | `drho`</br>(output) | $\partial_{A_t} \xi_g^\chi$ | $(g, \chi, t, A)$ </br>`[g, x, t, A]` | `[ngrids, nvar, 3, natm]` | |
 
+表中 `ao`/`ao_dm0` 行的 `ncomp` 栏 (依 LDA/GGA/MGGA 三种情形给出) 指该函数实际读取的最大导数分量数；实际分配的 `ao` 张量取所有函数的最大需求，由 `get_hess_ao_deriv` 决定 (LDA 为至二阶导数共 10 个分量，GGA/MGGA 为至三阶共 20 个分量)。下文各函数表中的 `ncomp` 栏均按此约定。
+
 **`drho`: LDA (RHO)**
 
 $$
 \begin{aligned}
 \partial_{A_t} \xi_g^{\chi = \rho}
-&= \sum_{\mu \nu} \partial_{A_t} \big( \phi_{g \mu} \phi_{g \nu} D_{\mu \nu} \big) \quad (\texttt{drho[:, :, 0]}) \\
+&= \sum_{\mu \nu} \partial_{A_t} \big( \phi_{g \mu} \phi_{g \nu} D_{\mu \nu} \big) \quad (\texttt{drho[:, 0, :, :]}) \\
 &= - 2 \sum_{\mu} \delta_{\mu \in A} \phi_{g \mu}^t \bar{\phi}_{g \mu}
 \end{aligned}
 $$
@@ -187,7 +189,7 @@ $$
 $$
 \begin{aligned}
 \partial_{A_t} \xi_g^{\chi = \rho_r}
-&= 2 \sum_{\mu \nu} \partial_{A_t} \big( \phi_{g \mu}^r \phi_{g \nu} D_{\mu \nu} \big) \quad (\texttt{drho[:, :, 1:4]}) \\
+&= 2 \sum_{\mu \nu} \partial_{A_t} \big( \phi_{g \mu}^r \phi_{g \nu} D_{\mu \nu} \big) \quad (\texttt{drho[:, 1:4, :, :]}) \\
 &= - 2 \sum_{\mu} \delta_{\mu \in A} \left( \phi_{g \mu}^{t r} \bar{\phi}_{g \mu} + \phi_{g \mu}^t \bar{\phi}_{g \mu}^r \right)
 \end{aligned}
 $$
@@ -199,7 +201,7 @@ $$
 $$
 \begin{aligned}
 \partial_{A_t} \xi_g^{\chi = \rho_\tau}
-&= \frac{1}{2} \sum_{r \mu \nu} \partial_{A_t} \big( \phi_{g \mu}^r \phi_{g \nu}^r D_{\mu \nu} \big) \quad (\texttt{drho[:, :, 4]}) \\
+&= \frac{1}{2} \sum_{r \mu \nu} \partial_{A_t} \big( \phi_{g \mu}^r \phi_{g \nu}^r D_{\mu \nu} \big) \quad (\texttt{drho[:, 4, :, :]}) \\
 &= - \sum_{r \mu} \delta_{\mu \in A} \phi_{g \mu}^{t r} \bar{\phi}_{g \mu}^r
 \end{aligned}
 $$
@@ -211,7 +213,7 @@ $$
 >上述计算有两种实现策略：
 >
 > 1. 直接依公式实现，原地对指标 $\mu \in A$ 执行缩并；
-> 2. 先生成一个含有指标 $\mu$ 的、维度为 $(g, \mu, \xi, t)$ 的张量，基于此应用 $\delta_{\mu \in A}$ 执行缩并，得到最终维度 $(g, \xi, t, A)$ 的 `drho` 张量。
+> 2. 先生成一个含有指标 $\mu$ 的、维度为 $(g, \mu, \chi, t)$ 的张量，基于此应用 $\delta_{\mu \in A}$ 执行缩并，得到最终维度 $(g, \chi, t, A)$ 的 `drho` 张量。
 >
 > 我们最终选择第 1 种实现。原因是，第 1 种实现的写入 memory footprint 较小，不会有数倍的 $(\mu, g)$ 的大内存写入。第 2 种尽管是 RI-JK 或后面 vxc 贡献项计算所用到的策略，但在这里反而不适合。
 
@@ -262,7 +264,7 @@ $$
 
 同时，该导数关于 $t, s$ 是对称的。因此，原先 $3 \times 3$ 的问题可以化为 $(xx, xy, xz, yy, yz, zz)$ 的 6 分量问题，稍微节省一些计算量。
 
-因此，我们将会给出一个中间量 `dao_vxc_diag` $\mathscr{T}_{\mu}^{(ts)}$ (维度 $((ts), \mu)$，大小 $(6, n_\mathrm{basis})$)：
+因此，我们将会给出一个中间量 `dao_vxc_diag` $\mathscr{T}_{\mu}^{(ts)}$ (维度 $(\mu, (ts))$，大小 $(n_\mathrm{basis}, 6)$)：
 
 $$
 \mathscr{T}_{\mu}^{(ts)} = 2 \sum_{g \chi \nu} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} D_{\mu \nu} \quad \text{(restrict $\partial$ to $\mu$, \texttt{dao\_vxc\_diag})}
@@ -292,7 +294,7 @@ $$
 
 | 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
 |--|--|--|--|--|
-| `dao_vxc_diag` | $\mathscr{T}_{\mu}^{(ts)}$ | $((ts), \mu)$</br>`[ts, u]` | `[6, nao]` | |
+| `dao_vxc_diag` | $\mathscr{T}_{\mu}^{(ts)}$ | $(\mu, (ts))$</br>`[u, ts]` | `[nao, 6]` | |
 | `aoslices` | | | `natm` |
 | `de_vxc_diag`</br>(output) | | $(t, s, A, B)$</br>`[t, s, A, B]` | `[3, 3, natm, natm]` | $A \neq B$ 零值 |
 
@@ -367,7 +369,7 @@ $$
 \frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} \leftarrow \sum_{g \chi \mu \nu} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} D_{\mu \nu} \delta_{\mu \in A} \delta_{\nu \in B} + \text{swap} (A_t, B_s) \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$)}
 $$
 
-非对角部分需要对两个原子轨道 $\mu, \nu$ 各求一次导数。与对角情况不同，这时我们不再适合先边际掉其中一个原子轨道，而是需要保留所有原子轨道。我们将定义下述中间量 `dao_vxc` $\mathscr{T}_{\mu \nu}^{t s}$ (在 row-major 下维度 $(t, s, \mu, \nu)$，大小 $(3, 3, n_\text{AO}, n_\text{AO})$)：
+非对角部分需要对两个原子轨道 $\mu, \nu$ 各求一次导数。与对角情况不同，这时我们不再适合先边际掉其中一个原子轨道，而是需要保留所有原子轨道。我们将定义下述中间量 `dao_vxc_off` $\mathscr{T}_{\mu \nu}^{t s}$ (维度 $(\mu, \nu, t, s)$，大小 $(n_\mathrm{basis}, n_\mathrm{basis}, 3, 3)$；row-major 的 Python 参考实现中为 $(t, s, \mu, \nu)$ 即 `[3, 3, nao, nao]`)：
 
 $$
 \mathscr{T}_{\mu \nu}^{t s} = \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_{g \mu \nu}^\chi}{\partial t \partial s} + \text{swap} (t \mu, s \nu) \quad \text{(restrict $\partial_t$ to $\mu$, $\partial_s$ to $\nu$, \texttt{dao\_vxc\_off})}
@@ -376,8 +378,10 @@ $$
 那么最终的二阶导数贡献项可以写为：
 
 $$
-\frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} = \sum_{\mu \nu} \mathscr{T}_{\mu \nu}^{t s} D_{\mu \nu} \delta_{\mu \in A} \delta_{\nu \in B} + \text{swap} (A_t, B_s) \quad (\texttt{de\_vxc\_off})
+\frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s} = \sum_{\mu \nu} \mathscr{T}_{\mu \nu}^{t s} D_{\mu \nu} \delta_{\mu \in A} \delta_{\nu \in B} \quad (\texttt{de\_vxc\_off})
 $$
+
+请留意，$\mathscr{T}_{\mu \nu}^{t s}$ 的定义中已经完成了 $\text{swap} (t \mu, s \nu)$ 的对称化。因此，上式的单次缩并 (配合 $\partial_t$ 限制在 $\mu$、$\partial_s$ 限制在 $\nu$ 的约定) 已经给出完整的非对角贡献，不需要再额外补 $\text{swap} (A_t, B_s)$ 项。程序中，$(B, A)$ 块直接由 $(A, B)$ 块转置填充；这只是存储上的镜像操作，并非额外的求和项。
 
 **函数 `make_dao_vxc_off`**
 
@@ -415,9 +419,9 @@ $$
 
 程序上，这是一组 9 个 $(n_\mathrm{basis}, n_\mathrm{grids})$ 将格点指标边际掉的矩阵乘法。其中 $\phi^t$ 即 `ao` 张量在 $t \in \{x, y, z\}$ 上的 3 个分量；$w_g f_g^\rho$ 即 `wv[0]`。
 
-我们注意到 $\mathscr{T}_{\mu \nu}^{ts}$ 关于 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 的联合交换是对称的 (因为 $\xi_{g \mu \nu}^\chi = \xi_{g \nu \mu}^\chi$，而 $(t, s)$ 仅作为对称记号)。因此原先 $3 \times 3 = 9$ 的矩阵乘法可以只算 $6$ 个 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 分量，剩下的 $(yx, zx, zy)$ 通过转置补齐。
+我们注意到 $\mathscr{T}_{\mu \nu}^{ts}$ 关于 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 的联合交换是对称的 (因为 $\xi_{g \mu \nu}^\chi = \xi_{g \nu \mu}^\chi$，而 $(t, s)$ 仅作为对称记号)。因此原先 $3 \times 3 = 9$ 的矩阵乘法原则上可以只算 $6$ 个 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 分量，剩下的 $(yx, zx, zy)$ 通过 AO 指标转置补齐。不过，当前实现中 LDA 部分仍按 $9$ 个分量完整计算，以与 GGA 部分的循环结构保持一致。
 
-该项的最大计算量是 $6 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度。
+该项的最大计算量是 $3^2 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FLOPs，是 $O(N^3)$ 复杂度。
 
 **`dao_vxc_off`: GGA (SIGMA)**
 
@@ -451,7 +455,7 @@ $$
 
 至此 LDA + GGA 部分的 $\mathscr{T}_{\mu \nu}^{ts}$ 全部完成。注意这里我们将 LDA (RHO) 与 GGA (SIGMA) 合并在一起算，是为了节省一组 ket 端 $\phi_{g \nu}^s$ 的矩阵乘法；这与第 4 节 `dao_vxc_diag` 中将 LDA 项与 GGA 第二项合并为一次缩并的优化是同样的策略。
 
-该项的最大计算量出现在 9 个 $(\widetilde{\phi}^t)^\dagger \phi^s$ 的矩阵乘法上，即 $3^2 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度。这里没有像 LDA 一样利用 $(ts) \leftrightarrow (st)$ 的对称性，是因为 $\widetilde{\phi}^t$ 内部混合了 LDA 与 GGA 的项，难以直接利用 $(ts)$ 对称性；而对称化反而是放在矩阵乘法之后通过转置完成的。
+该项的最大计算量出现在 9 个 $(\widetilde{\phi}^t)^\dagger \phi^s$ 的矩阵乘法上，即 $3^2 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FLOPs，是 $O(N^3)$ 复杂度。这里 (与 LDA 的实际实现一样) 没有利用 $(ts) \leftrightarrow (st)$ 的对称性，是因为 $\widetilde{\phi}^t$ 内部混合了 LDA 与 GGA 的项，难以直接利用 $(ts)$ 对称性；而对称化反而是放在矩阵乘法之后通过转置完成的。
 
 **`dao_vxc_off`: MGGA (TAU)**
 
@@ -467,10 +471,10 @@ $$
 \mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= \frac{1}{2} \sum_{g r} w_g f_g^\tau \phi_{g \mu}^{t r} \phi_{g \nu}^{s r} + \text{swap} (t \mu, s \nu)
 $$
 
-上式的 $t, s$ 是对称的，因此仍然可以使用 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 的 6 分量来计算，剩下的 $(yx, zx, zy)$ 通过转置补齐。该计算量会比较大，涉及到 $6 \times 3 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FMAs，是 $O(N^3)$ 复杂度；其中，$6$ 来源于 $(ts)$ 的分量数，$3$ 来源于 $r$ 的分量数。
+上式与 LDA 一样具有 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 的联合交换对称性 (注意单个 $(t, s)$ 分块本身并不对称，而是 $\mathscr{T}^{ts} = (\mathscr{T}^{st})^{\mathsf{T}}$，转置发生在 AO 指标上)，因此仍然可以使用 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 的 6 分量来计算，剩下的 $(yx, zx, zy)$ 通过 AO 指标转置补齐。该计算量会比较大，涉及到 $6 \times 3 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FLOPs，是 $O(N^3)$ 复杂度；其中，$6$ 来源于 $(ts)$ 的分量数，$3$ 来源于 $r$ 的分量数。
 
 > **实现决策：避免二阶导数格点的直接计算**
 >
-> `vxc` 非对角部分应该是计算量最大的部分了。我们这里采用的是 $(t, s, \mu, \nu)$ 中间量策略，在 mGGA 下需要 27 个 $2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FMAs。这个计算量要大于前面的 `fxc` 与 `vxc` 对角部分不少。
+> `vxc` 非对角部分应该是计算量最大的部分了。我们这里采用的是 $(\mu, \nu, t, s)$ 中间量策略，在 mGGA 下需要 27 个 $2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FLOPs 的矩阵乘法。这个计算量要大于前面的 `fxc` 与 `vxc` 对角部分不少。
 >
 > 这个问题是否有其他解决方法？最直观的方法是，采用与 `fxc` 一样的策略，直接计算得到二阶导数密度格点 $\partial_{A_t} \partial_{B_s} \xi^\chi_g$ 即 $(n_\mathrm{atm}, n_\mathrm{atm}, 3, 3, n_\mathrm{var}, n_\mathrm{grids})$ 的张量，随后与 vxc 作缩并。具体实现上当然可以分批给出 $\partial_{A_t} \partial_{B_s} \xi^\chi_g$ 的分量，但其包含了格点数量，且导数密度格点会是被缩并维度非常小 (一个原子的原子轨道数量) 的长条形矩阵乘法，对缓存可能不算太友好。同时，FMA 的数量我相信与上述中间量策略是差不多的。

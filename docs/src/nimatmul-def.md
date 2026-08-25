@@ -34,7 +34,7 @@ $$
 
 为了以后程序实现与公式推演方便，记 DFT 基本参量为 $\bm{\xi}$ 的向量形式[^note-1]：
 
-[^note-1]: 该记号是我个人的习惯。该记号取材自 N. Q.; Zhang, I. Y.; Xu, X. *J. Comput. Chem.* **2013**, *34* (20), 1759–1774. doi: [10.1002/jcc.23312](https://doi.org/10.1002/jcc.23312)。对应本文的 $\xi_\chi$，该文章的对应记号是 $\zeta_\eta$。之所以要更改 $\zeta$ 到 $\xi$，是因为 $\zeta$ 在 DFT 经常被用来表示自旋极化率 $\zeta = (\rho^\alpha - \rho^\beta) / \rho$，也在基组函数中被用来表示指数衰减参数 $\zeta$。之所以要更改 $\eta$ 到 $\chi$，单纯是因为我们以后可能在 einsum 记号中用 `x` 表示该参量的索引。
+[^note-1]: 该记号是我个人的习惯。该记号取材自 Su, N. Q.; Zhang, I. Y.; Xu, X. *J. Comput. Chem.* **2013**, *34* (20), 1759–1774. doi: [10.1002/jcc.23312](https://doi.org/10.1002/jcc.23312)。对应本文的 $\xi_\chi$，该文章的对应记号是 $\zeta_\eta$。之所以要更改 $\zeta$ 到 $\xi$，是因为 $\zeta$ 在 DFT 经常被用来表示自旋极化率 $\zeta = (\rho^\alpha - \rho^\beta) / \rho$，也在基组函数中被用来表示指数衰减参数 $\zeta$。之所以要更改 $\eta$ 到 $\chi$，单纯是因为我们以后可能在 einsum 记号中用 `x` 表示该参量的索引。
 
 $$
 \bm{\xi} = (\rho, \rho^x, \rho^y, \rho^z, \tau)
@@ -101,7 +101,7 @@ $$
 | `vxc` | $f_g^\chi$ | $(\chi, g)$ <br> `[nvar, ngrids]` | $(g, \chi)$ <br> `[ngrids, nvar]` |
 | `fxc` | $f_g^{\chi \chi'}$ | $(\chi, \chi', g)$ <br> `[nvar, nvar, ngrids]` | $(g, \chi, \chi')$ <br> `[ngrids, nvar, nvar]` |
 
-这里出现的星号 $*$ 是指维度与意义不固定，并非复共轭。
+这里出现的星号 $*$ 泛指原子轨道导数分量；其具体数目依所含导数阶数而定 (连同零阶分量，至一阶导数共 4 个、至二阶共 10 个、至三阶共 20 个)。它并非复共轭。
 
 请留意，PySCF 所使用的 NumPy 尽管是 row-major 约定；但其中的 $\phi_{g \mu}^{*}$ 尽管表面维度是 $(*, g, \mu)$，其内存中的连续性是 $g$ 即格点索引在最内层，其次 $\mu$ 即基函数，最后是原子轨道导数分量。这个内存连续性顺序与 column-major 的 REST 实际上是相同的。对于其他分量，REST (column-major) 与 PySCF/NumPy (row-major) 的维度相反，内存连续性相同。
 
