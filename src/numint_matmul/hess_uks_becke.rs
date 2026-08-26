@@ -199,22 +199,13 @@ pub fn get_de_fxc_uks(wf: TsrView, drhoα: TsrView, drhoβ: TsrView) -> Tsr {
 /// - `drhoα`, `drhoβ` : shape `[ngrids, nvar, 3, natm]`, per-spin outputs of
 ///   [`super::hess_rks_becke::get_drho`].
 /// - `wf` : shape `[ngrids, nvar, 2, nvar, 2]`.  Grid-weighted spin-polarized fxc kernel.
-/// - `aoslices` : shape `[natm, 4]`; per-atom `[shl0, shl1, p0, p1]` AO slices.
 ///
 /// # Returns
 ///
 /// - `vmatα_fxc`, `vmatβ_fxc` : shape `[nao, nao, 3, natm]` each, assembled across the AO axes (bra
 ///   + ket).
-#[allow(clippy::too_many_arguments)]
-pub fn get_vmat_fxc_uks(
-    xc_type: XCDenType,
-    ao: TsrView,
-    drhoα: TsrView,
-    drhoβ: TsrView,
-    wf: TsrView,
-    aoslices: &[[usize; 4]],
-) -> (Tsr, Tsr) {
-    let natm = aoslices.len();
+pub fn get_vmat_fxc_uks(xc_type: XCDenType, ao: TsrView, drhoα: TsrView, drhoβ: TsrView, wf: TsrView) -> (Tsr, Tsr) {
+    let natm = drhoα.shape()[3];
     let nao = ao.shape()[1];
     let device = ao.device();
 
@@ -642,8 +633,7 @@ pub fn make_hessian_setup_chunk_becke_uks(
 
     // per-atom skeleton Vxc Fock derivative per spin: spin-coupled fxc part plus per-spin
     // basis-derivative (ipip) part; both are already assembled across the AO axes
-    let (vmat_fxc_α, vmat_fxc_β) =
-        get_vmat_fxc_uks(xc_type, ao.view(), drhoα.view(), drhoβ.view(), wf.view(), &aoslices);
+    let (vmat_fxc_α, vmat_fxc_β) = get_vmat_fxc_uks(xc_type, ao.view(), drhoα.view(), drhoβ.view(), wf.view());
     let vmat_vxc_α = get_vmat_vxc(vmat_ip_α.view(), &aoslices);
     let vmat_vxc_β = get_vmat_vxc(vmat_ip_β.view(), &aoslices);
     let vmat_deriv1_α = &vmat_fxc_α + &vmat_vxc_α;

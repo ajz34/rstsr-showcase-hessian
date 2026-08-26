@@ -596,15 +596,14 @@ pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
 /// - `ao` : shape `[ngrids, nao, ncomp]`; reads channels 0..3.
 /// - `drho` : shape `[ngrids, nvar, 3, natm]`, output of [`get_drho`].
 /// - `wf` : shape `[ngrids, nvar, nvar]`.  Grid-weighted fxc.
-/// - `aoslices` : shape `[natm, 4]`.
 ///
 /// # Returns
 ///
 /// - `vmat_fxc` : shape `[nao, nao, 3, natm]`, assembled across the AO axes.
-pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
+pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView) -> Tsr {
     // direct transformation of `pyhessref/nimatmul/rks_with_becke.py`, function `_vmat_fxc`
 
-    let natm = aoslices.len();
+    let natm = drho.shape()[3];
     let nao = ao.shape()[1];
 
     let mut vmat_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], ao.device()));
@@ -987,7 +986,7 @@ pub fn make_hessian_setup_chunk_becke(
     let de_vxc_off = get_de_vxc_off(dao_vxc_off.view(), dm0.view(), &aoslices);
 
     let vmat_ip = get_vmat_ip(xc_type, ao.view(), wv.view());
-    let vmat_fxc = get_vmat_fxc(xc_type, ao.view(), drho.view(), wf.view(), &aoslices);
+    let vmat_fxc = get_vmat_fxc(xc_type, ao.view(), drho.view(), wf.view());
     let vmat_vxc = get_vmat_vxc(vmat_ip.view(), &aoslices);
     // per-atom skeleton Vxc Fock derivative; both parts are already assembled
     // across the AO axes
