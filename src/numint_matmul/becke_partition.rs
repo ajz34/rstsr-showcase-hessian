@@ -655,6 +655,11 @@ impl TaskBuffers {
 /// entries/blocks are re-zeroed per lane; every other element is fully
 /// assigned/overwritten by its unique writer (see [`eval_switch_pair_pass`]
 /// and [`eval_lane_ddw`]).
+///
+/// Each buffer is allocated only for the machinery that actually runs: the
+/// 1st-order row buffers when `deriv >= 1`, the deriv-2 tensors when the
+/// context's `do_deriv2` is set; the rest stay empty and are never touched
+/// (their readers are gated on the same flags in `process_lane`).
 struct LaneScratch {
     /// `[A]`: switch-product numerators `P_A` (overwritten, initialized to 1).
     P: Vec<f64simd>,
@@ -696,24 +701,26 @@ struct LaneScratch {
 
 impl LaneScratch {
     fn new(natm: usize, deriv: usize, do_deriv2: bool) -> Self {
-        let z = |n: usize| vec![simd_val(0.0); n];
-        let d2 = do_deriv2 as usize;
+        let do_deriv1 = deriv >= 1;
+        // `n` zeroed registers when the machinery flagged by `on` runs, an empty
+        // (allocation-free) vector otherwise
+        let z = |n: usize, on: bool| if on { vec![simd_val(0.0); n] } else { Vec::new() };
         Self {
-            P: z(natm),
-            dist: z(natm),
-            dR_dist: z(3 * natm),
-            PrM: z(9 * natm * d2),
-            dR_Z: if deriv >= 1 { z(3 * natm) } else { Vec::new() },
-            dR_Pg: if deriv >= 1 { z(3 * natm) } else { Vec::new() },
-            dR_log_P: z(natm * 3 * natm * d2),
-            ddR_Z: z(natm * natm * 9 * d2),
-            ddR_Pg: z(natm * natm * 9 * d2),
-            dq: z(3 * natm * d2),
-            dlog_Ag: z(3 * natm * d2),
-            ddw: z(3 * natm * 3 * natm * d2),
-            fullA: z(9 * natm * d2),
-            fullB: z(9 * natm * d2),
-            dw: if deriv >= 1 { z(3 * natm) } else { Vec::new() },
+            P: z(natm, true),
+            dist: z(natm, true),
+            dR_dist: z(3 * natm, do_deriv1),
+            PrM: z(9 * natm, do_deriv2),
+            dR_Z: z(3 * natm, do_deriv1),
+            dR_Pg: z(3 * natm, do_deriv1),
+            dR_log_P: z(natm * 3 * natm, do_deriv2),
+            ddR_Z: z(natm * natm * 9, do_deriv2),
+            ddR_Pg: z(natm * natm * 9, do_deriv2),
+            dq: z(3 * natm, do_deriv2),
+            dlog_Ag: z(3 * natm, do_deriv2),
+            ddw: z(3 * natm * 3 * natm, do_deriv2),
+            fullA: z(9 * natm, do_deriv2),
+            fullB: z(9 * natm, do_deriv2),
+            dw: z(3 * natm, do_deriv1),
         }
     }
 }
