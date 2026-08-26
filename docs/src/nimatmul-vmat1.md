@@ -46,6 +46,8 @@ $$
 
 ## 2. `fxc` 部分实现细节
 
+### 2.1 `fxc` 贡献项实现概述
+
 `fxc` 贡献项的核心问题是
 
 $$
@@ -67,8 +69,9 @@ $$
 | `drho` | $\partial_{A_t} \xi_g^{\chi'}$ | $(g, \chi', t, A)$</br>`[g, x, t, A]` | `[ngrids, nvar, 3, natm]` | |
 | `wf` | $w_g f_g^{\chi \chi'}$ | $(g, \chi, \chi')$</br>`[g, x, y]` | `[ngrids, nvar, nvar]` | $\mathrm{sym} (\chi, \chi'
 )$ |
-| `aoslices` | | | `natm` | 仅用于 `natm` |
 | `vmat_fxc`</br>(output) | | $(\mu, \nu, t, A)$</br>`[u, v, t, A]` | `[nao, nao, 3, natm]` | $\mathrm{sym} (\mu, \nu)$ |
+
+### 2.2 `fxc` 贡献项的具体实现
 
 具体实现上，首先注意到权重 $w_g$、泛函核二阶导数 $f_g^{\chi \chi'}$ 与密度格点对坐标的导数 $\partial_{A_t} \xi_g^{\chi'}$ 都没有涉及到原子轨道 $\mu, \nu$。这些量可以先进行代价较小的、对 $\chi'$ 指标的缩并，得到四维中间量：
 
@@ -78,8 +81,6 @@ $$
 $$
 
 在实际实现中，**我们采用外部依原子指标 `A` 与三维坐标 $t$ 迭代的策略，将当前问题转化为完全等价与普通 Fock 矩阵生成的问题**；换句话说，区别仅仅是我们要生成 $3 n_\mathrm{atom}$ 个矩阵，但每个矩阵在程序实现上与 Fock 矩阵没有区别。
-
-这里作为参考，将详细的缩并过程列出。
 
 **`vmat_fxc`: LDA (RHO)**
 
@@ -149,3 +150,51 @@ $$
 $$
 \frac{\partial V_{\mu \nu}^\text{xc}}{\partial A_t} \leftarrow \sum_{g} \sum_{r \in \{x, y, z\}} \mathscr{W}_{g \mu}^{A_t r} \phi_{g \nu}^r + \mathrm{swap} (\mu, \nu) \quad (\texttt{vmat\_fxc}, \text{MGGA increment})
 $$
+
+## 3. `vxc` 部分实现细节
+
+### 3.1 `vxc` 贡献项实现概述
+
+`vxc` 贡献项的核心问题是
+
+$$
+\frac{\partial V_{\mu \nu}^\text{xc}}{\partial A_t} \leftarrow \sum_{\chi g} w_g f_g^\chi \frac{\partial \xi_{g \mu \nu}^\chi}{\partial A_t} \quad (\texttt{vmat\_vxc})
+$$
+
+在这一项的处理上，我们对 $\delta_{\mu \in A}$ 的应用，会在最后进行。我们先会产生一个类似于对电子坐标作导数的中间矩阵 `vmat_ip`。这与 Skeleton 能量二阶导数的 `dao_vxc_diag/off` 的情况是类似的。
+
+我们首先需要将原子核导数 $\partial_{A_t}$ 问题转化为电子坐标导数 $\partial_{t}$ 问题 (借用 $\partial_{A_t} \phi_{g \mu}^* = - \partial_t \phi_{g \mu}^* \delta_{\mu \in A}$ 的关系)。为了后续处理方便，我们定义细节更丰富的、仅针对基组指标 $\mu$ 作偏导的临时张量 $\mathscr{T}_{\mu \nu}^{t}$。需要留意，该张量 **并非对 $\mu, \nu$ 对称**。
+
+$$
+\mathscr{T}_{\mu \nu}^{t} = \sum_{\chi g} w_g f_g^\chi \frac{\partial \xi_{g \mu \nu}^\chi}{\partial t} \quad (\text{restrict $\partial$ to $\mu$}, \texttt{vmat\_ip})
+$$
+
+随后再依原子指标 $A$ 作缩并，得到最终的 vxc 贡献项：
+
+$$
+\frac{\partial V_{\mu \nu}^\text{xc}}{\partial A_t} = - \mathscr{T}_{\mu \nu}^{t} \delta_{\mu \in A} + \mathrm{swap} (\mu, \nu)
+$$
+
+**函数 `get_vmat_ip`**
+
+| 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
+|--|--|--|--|--|
+| `xc_type` | | | `LDA` / `GGA` / `MGGA` | |
+| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp`</br>4/10/10 |
+| `wv` | $w_g f_g^\chi$ | $(g, \chi)$</br>`[g, x]` | `[ngrids, nvar]` | |
+| `vmat_ip`</br>(output) | $\mathscr{T}_{\mu \nu}^{t}$ | $(\mu, \nu, t)$</br>`[u, v, t]` | `[nao, nao, 3]` | |
+
+**函数 `get_vmat_vxc`**
+
+| 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
+|--|--|--|--|--|
+| `vmat_ip` | $\mathscr{T}_{\mu \nu}^{t}$ | $(\mu, \nu, t)$</br>`[u, v, t]` | `[nao, nao, 3]` | |
+| `aoslices` | | | `natm` | |
+| `vmat_vxc`</br>(output) | | $(\mu, \nu, t, A)$</br>`[u, v, t, A]` | `[nao, nao, 3, natm]` | $\mathrm{sym} (\mu, \nu)$ |
+
+### 3.2 `vxc` 贡献项的具体实现
+
+`vxc` 贡献项的实现结构与 Fock 矩阵实际上是类似的，只是需要留意与 `fxc` 的情形有两个不同：
+- `vxc` 贡献项的中间量 $\mathscr{T}_{\mu \nu}^{t}$ 并非对 $(\mu, \nu)$ 对称，在编写代码的时候需要稍微谨慎一些。
+- GGA (SIGMA) 所构造的 $\xi_{g \mu \nu}^{\rho^r}$ ($r \in \{x, y, z\}$) 中，左矢 $\phi_{g \mu}^r$ 与右矢 $\phi_{g \nu}$ 的导数分量不对称，因此会相对于 Fock 矩阵计算多出一些额外的代码实现。
+

@@ -471,7 +471,7 @@ $$
 \mathscr{T}_{\mu \nu}^{ts} \mathrel{+}= \frac{1}{2} \sum_{g r} w_g f_g^\tau \phi_{g \mu}^{t r} \phi_{g \nu}^{s r} + \text{swap} (t \mu, s \nu)
 $$
 
-上式与 LDA 一样具有 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 的联合交换对称性 (注意单个 $(t, s)$ 分块本身并不对称，而是 $\mathscr{T}^{ts} = (\mathscr{T}^{st})^{\mathsf{T}}$，转置发生在 AO 指标上)，因此仍然可以使用 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 的 6 分量来计算，剩下的 $(yx, zx, zy)$ 通过 AO 指标转置补齐。该计算量会比较大，涉及到 $6 \times 3 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FLOPs，是 $O(N^3)$ 复杂度；其中，$6$ 来源于 $(ts)$ 的分量数，$3$ 来源于 $r$ 的分量数。
+上式与 LDA 一样具有 $(t \leftrightarrow s, \mu \leftrightarrow \nu)$ 的联合交换对称性 (注意单个 $(t, s)$ 分块本身并不对称，而是 $\mathscr{T}^{ts}_{\mu \nu} = \mathscr{T}^{st}_{\nu \mu}$，转置同时发生在 AO 指标上)，因此仍然可以使用 $(ts) \in \{xx, xy, xz, yy, yz, zz\}$ 的 6 分量来计算，剩下的 $(yx, zx, zy)$ 通过 AO 指标转置补齐。该计算量会比较大，涉及到 $6 \times 3 \times 2 n_\mathrm{basis}^2 n_\mathrm{grid}$ FLOPs，是 $O(N^3)$ 复杂度；其中，$6$ 来源于 $(ts)$ 的分量数，$3$ 来源于 $r$ 的分量数。
 
 > **实现决策：避免二阶导数格点的直接计算**
 >
