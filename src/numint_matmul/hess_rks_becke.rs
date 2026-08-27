@@ -25,7 +25,7 @@
 // - AO derivative components (constants below): value `O` 0; gradient `X..Z` 1..3; 2nd derivatives
 //   `XX..ZZ` 4..9 (symmetric pairs, see `IDX_AO_DERIV2`); 3rd derivatives `XXX..ZZZ` 10..19.
 
-use super::becke_partition::{becke_partition_with_tables, AtmIndices, BeckeDerivArg, BeckeMolTables};
+use super::becke_partition::{becke_partition_with_tables, AtmIndices, BeckePartitionArg, BeckeMolTables};
 use super::hess_rks::get_rks_response_bra_batched;
 use super::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -998,7 +998,7 @@ pub fn make_hessian_setup_chunk_becke(
     let cddw = (&exc * rho.i((.., 0))).into_vec();
 
     let boundaries = by_atom_chunk(natm, atm_idx, ngrids);
-    let deriv_arg = BeckeDerivArg {
+    let deriv_arg = BeckePartitionArg {
         output_w: false,
         output_dw: true,
         output_ddw: false,

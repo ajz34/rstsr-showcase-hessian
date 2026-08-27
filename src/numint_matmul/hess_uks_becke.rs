@@ -28,7 +28,7 @@
 //   `XX..ZZ` 4..9 (symmetric pairs, see `IDX_AO_DERIV2` in `hess_rks_becke`); 3rd derivatives
 //   `XXX..ZZZ` 10..19.
 
-use super::becke_partition::{becke_partition_with_tables, AtmIndices, BeckeDerivArg, BeckeMolTables};
+use super::becke_partition::{becke_partition_with_tables, AtmIndices, BeckeMolTables, BeckePartitionArg};
 use super::hess_rks_becke::{
     by_atom_chunk, contract_pvxc, get_de_becke_atom_1, get_de_becke_atom_2, get_de_vxc_diag, get_de_vxc_off, get_drho,
     get_hess_ao_deriv, get_hess_ncomp_ao_dm0, get_vmat_ip, get_vmat_vxc, make_dao_vxc_diag, make_dao_vxc_off,
@@ -645,7 +645,7 @@ pub fn make_hessian_setup_chunk_becke_uks(
     let cddw = (&exc * (rho.i((.., 0, α)) + rho.i((.., 0, β)))).into_vec();
 
     let boundaries = by_atom_chunk(natm, atm_idx, ngrids);
-    let deriv_arg = BeckeDerivArg {
+    let deriv_arg = BeckePartitionArg {
         output_w: false,
         output_dw: true,
         output_ddw: false,

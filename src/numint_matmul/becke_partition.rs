@@ -2,6 +2,12 @@
 //!
 //! This file is intended not to interfere to other parts of the codebase.
 //!
+//! The file is organized in three tiers, mirrored by the `#region` markers below: `Becke*`
+//! (main-thread interface: public types, entry points, molecular tables, and the per-call
+//! context), `Task*` (parallel-thread interface: batch task splitting and per-worker buffers),
+//! and `Lane*` (grid-iteration interface: lane gathering, scratch, evaluation, and write-back);
+//! cross-cutting utilities (switch functions, FpSimd helpers, misc) come last.
+//!
 //! This code tries to somehow optimize with SIMD. However, this requires manually setting
 //! `target-cpu` or something similar when cargo build (only release is not enough). The efficiency
 //! is not tested currently, but theoretically should not be too pitiful I believe.
@@ -20,10 +26,7 @@ const INVTOL: f64 = 1e-14;
 /// the deriv-2 rank-1 cross-term matrix; see [`eval_lane_ddw`].
 const CROSS_CB: usize = 12;
 
-/// Create a SIMD register with all lanes set to `x`.
-const fn simd_val(x: f64) -> f64simd {
-    f64simd::splat(x)
-}
+/* #region Becke*: main-thread interface (public API, molecular tables, context) */
 
 /// Output of Becke partitioning function.
 ///
@@ -65,7 +68,7 @@ pub struct BeckePartitionOutput {
 /// - If `contract_w/dw/ddw` is provided, `c/dc/ddc` will be computed with the given deriv level by
 ///   default. But if it is not provided, `c/dc/ddc` will be None, even `output_c/dc/ddc` is true.
 #[derive(Debug)]
-pub struct BeckeDerivArg<'a> {
+pub struct BeckePartitionArg<'a> {
     pub output_w: bool,
     pub output_dw: bool,
     pub output_ddw: bool,
@@ -74,7 +77,7 @@ pub struct BeckeDerivArg<'a> {
     pub contract_ddw: Option<&'a [f64]>,
 }
 
-impl<'a> Default for BeckeDerivArg<'a> {
+impl<'a> Default for BeckePartitionArg<'a> {
     fn default() -> Self {
         Self {
             output_w: true,
@@ -87,7 +90,7 @@ impl<'a> Default for BeckeDerivArg<'a> {
     }
 }
 
-impl<'a> BeckeDerivArg<'a> {
+impl<'a> BeckePartitionArg<'a> {
     /// Set the contraction weights for the Becke partitioning.
     pub fn set_contract(mut self, deriv: usize, contract: &'a [f64]) -> Self {
         match deriv {
@@ -236,7 +239,7 @@ pub fn becke_partition<'a>(
     hardness: usize,
     nbatch: usize,
     deriv: usize,
-    deriv_arg: Option<BeckeDerivArg<'a>>,
+    deriv_arg: Option<BeckePartitionArg<'a>>,
 ) -> BeckePartitionOutput {
     let tables = BeckeMolTables::new(atm_coords, adjustment_factor, deriv);
     becke_partition_with_tables(
@@ -262,7 +265,7 @@ pub fn becke_partition_with_tables<'a>(
     hardness: usize,
     nbatch: usize,
     deriv: usize,
-    deriv_arg: Option<BeckeDerivArg<'a>>,
+    deriv_arg: Option<BeckePartitionArg<'a>>,
 ) -> BeckePartitionOutput {
     let ctx = BeckePartitionContext::new(
         tables,
@@ -324,8 +327,6 @@ pub fn becke_partition_with_tables<'a>(
     ctx.into_output()
 }
 
-/* #region driver: context, batch/task buffers, per-lane orchestration */
-
 /// Per-call context of [`becke_partition_with_tables`]: validated dimensions
 /// and dispatch flags, the borrowed molecular tables, the contraction sets
 /// (per-set grid slices), and the output buffers.
@@ -366,7 +367,7 @@ impl<'a> BeckePartitionContext<'a> {
         hardness: usize,
         nbatch: usize,
         deriv: usize,
-        deriv_arg: Option<BeckeDerivArg<'a>>,
+        deriv_arg: Option<BeckePartitionArg<'a>>,
     ) -> Self {
         // dimensions
         let ngrids = grid_coords.len();
@@ -448,6 +449,10 @@ impl<'a> BeckePartitionContext<'a> {
     }
 }
 
+/* #endregion */
+
+/* #region Task*: parallel-thread interface (batch tasks, per-worker buffers) */
+
 /// One parallel task: a grid range `[g0, g1)` plus its attribution to generating atoms.
 enum BatchTask<'a> {
     /// ByGrid scheme: per-grid attribution read from the full `ngrids`-length slice.
@@ -463,6 +468,86 @@ impl BatchTask<'_> {
         }
     }
 }
+
+/// Contraction partials of one task.
+///
+/// `c`/`dc`/`ddc` hold this task's contraction partials (sums over the task's
+/// grid range), reduced into the shared output by [`Self::reduce`] under the
+/// task mutex — this is what lets the caller obtain a contracted `ddc` without
+/// materializing the full `O(natm^2 * ngrids)` `ddw` tensor.
+///
+/// `cw_lanes_dw`/`cw_lanes_ddw` are per-lane scratch (one SIMD register per
+/// contraction set), refilled each lane so the dc/ddc contraction allocates
+/// nothing inside the lane loop.
+struct TaskContraction {
+    /// shape `[nset_w]`: contraction partial of `w`.
+    c: Option<Vec<f64>>,
+    /// shape `[natm * 3 * nset_dw]`, C-order `(A, t, iset)`.
+    dc: Option<Vec<f64>>,
+    /// shape `[natm * 3 * natm * 3 * nset_ddw]`, C-order `(A, t, B, s, iset)`.
+    ddc: Option<Vec<f64>>,
+    /// shape `[nset_dw]`: this lane's `contract_dw` weights.
+    cw_lanes_dw: Vec<f64simd>,
+    /// shape `[nset_ddw]`: this lane's `contract_ddw` weights.
+    cw_lanes_ddw: Vec<f64simd>,
+}
+
+impl TaskContraction {
+    fn new(ctx: &BeckePartitionContext<'_>) -> Self {
+        let natm = ctx.natm;
+        Self {
+            c: ctx.nset_w.map(|n| vec![0.0; n]),
+            dc: ctx.nset_dw.map(|n| vec![0.0; natm * 3 * n]),
+            ddc: ctx.nset_ddw.map(|n| vec![0.0; natm * 3 * natm * 3 * n]),
+            cw_lanes_dw: ctx.nset_dw.map_or_else(Vec::new, |n| vec![simd_val(0.0); n]),
+            cw_lanes_ddw: ctx.nset_ddw.map_or_else(Vec::new, |n| vec![simd_val(0.0); n]),
+        }
+    }
+
+    /// Add this task's contraction partials into the shared output buffers,
+    /// under the task mutex (c/dc/ddc are grid sums written by every task), and
+    /// reset them: the buffers are owned by the worker thread (see
+    /// `for_each_init`) and reused by its next task, so the partials must not
+    /// survive past the reduction.
+    fn reduce(&mut self, ctx: &BeckePartitionContext<'_>, guard: &Mutex<()>) {
+        if self.c.is_none() && self.dc.is_none() && self.ddc.is_none() {
+            return;
+        }
+        let _guard = guard.lock().unwrap();
+        for (buf, partial) in
+            [(&ctx.output.c, &mut self.c), (&ctx.output.dc, &mut self.dc), (&ctx.output.ddc, &mut self.ddc)]
+        {
+            if let (Some(buf), Some(partial)) = (buf, partial) {
+                // SAFETY: exclusive access granted by the task mutex
+                let slc = unsafe { cast_mut_slice(buf) };
+                for (o, v) in slc.iter_mut().zip(partial.iter_mut()) {
+                    *o += *v;
+                    *v = 0.0;
+                }
+            }
+        }
+    }
+}
+
+/// Per-worker-thread buffers: the task's contraction partials plus the
+/// flattened per-lane scratch (see [`LaneScratch`]), allocated once by
+/// `for_each_init` and reused across all tasks handled by the worker.
+struct TaskBuffers {
+    contraction: TaskContraction,
+    lane: LaneScratch,
+}
+
+impl TaskBuffers {
+    fn new(ctx: &BeckePartitionContext<'_>) -> Self {
+        Self { contraction: TaskContraction::new(ctx), lane: LaneScratch::new(ctx.natm, ctx.deriv, ctx.do_deriv2) }
+    }
+}
+
+/* #endregion */
+
+/* #region Lane*: grid-iteration interface (gather, scratch, evaluation, write-back) */
+
+// --- gather: batch -> SIMD lanes --- //
 
 /// One task's grid batch gathered into SIMD lanes.
 struct LaneBatch {
@@ -572,79 +657,7 @@ fn gather_lane_batch(
     }
 }
 
-/// Contraction partials of one task.
-///
-/// `c`/`dc`/`ddc` hold this task's contraction partials (sums over the task's
-/// grid range), reduced into the shared output by [`Self::reduce`] under the
-/// task mutex — this is what lets the caller obtain a contracted `ddc` without
-/// materializing the full `O(natm^2 * ngrids)` `ddw` tensor.
-///
-/// `cw_lanes_dw`/`cw_lanes_ddw` are per-lane scratch (one SIMD register per
-/// contraction set), refilled each lane so the dc/ddc contraction allocates
-/// nothing inside the lane loop.
-struct TaskContraction {
-    /// shape `[nset_w]`: contraction partial of `w`.
-    c: Option<Vec<f64>>,
-    /// shape `[natm * 3 * nset_dw]`, C-order `(A, t, iset)`.
-    dc: Option<Vec<f64>>,
-    /// shape `[natm * 3 * natm * 3 * nset_ddw]`, C-order `(A, t, B, s, iset)`.
-    ddc: Option<Vec<f64>>,
-    /// shape `[nset_dw]`: this lane's `contract_dw` weights.
-    cw_lanes_dw: Vec<f64simd>,
-    /// shape `[nset_ddw]`: this lane's `contract_ddw` weights.
-    cw_lanes_ddw: Vec<f64simd>,
-}
-
-impl TaskContraction {
-    fn new(ctx: &BeckePartitionContext<'_>) -> Self {
-        let natm = ctx.natm;
-        Self {
-            c: ctx.nset_w.map(|n| vec![0.0; n]),
-            dc: ctx.nset_dw.map(|n| vec![0.0; natm * 3 * n]),
-            ddc: ctx.nset_ddw.map(|n| vec![0.0; natm * 3 * natm * 3 * n]),
-            cw_lanes_dw: ctx.nset_dw.map_or_else(Vec::new, |n| vec![simd_val(0.0); n]),
-            cw_lanes_ddw: ctx.nset_ddw.map_or_else(Vec::new, |n| vec![simd_val(0.0); n]),
-        }
-    }
-
-    /// Add this task's contraction partials into the shared output buffers,
-    /// under the task mutex (c/dc/ddc are grid sums written by every task), and
-    /// reset them: the buffers are owned by the worker thread (see
-    /// `for_each_init`) and reused by its next task, so the partials must not
-    /// survive past the reduction.
-    fn reduce(&mut self, ctx: &BeckePartitionContext<'_>, guard: &Mutex<()>) {
-        if self.c.is_none() && self.dc.is_none() && self.ddc.is_none() {
-            return;
-        }
-        let _guard = guard.lock().unwrap();
-        for (buf, partial) in
-            [(&ctx.output.c, &mut self.c), (&ctx.output.dc, &mut self.dc), (&ctx.output.ddc, &mut self.ddc)]
-        {
-            if let (Some(buf), Some(partial)) = (buf, partial) {
-                // SAFETY: exclusive access granted by the task mutex
-                let slc = unsafe { cast_mut_slice(buf) };
-                for (o, v) in slc.iter_mut().zip(partial.iter_mut()) {
-                    *o += *v;
-                    *v = 0.0;
-                }
-            }
-        }
-    }
-}
-
-/// Per-worker-thread buffers: the task's contraction partials plus the
-/// flattened per-lane scratch (see [`LaneScratch`]), allocated once by
-/// `for_each_init` and reused across all tasks handled by the worker.
-struct TaskBuffers {
-    contraction: TaskContraction,
-    lane: LaneScratch,
-}
-
-impl TaskBuffers {
-    fn new(ctx: &BeckePartitionContext<'_>) -> Self {
-        Self { contraction: TaskContraction::new(ctx), lane: LaneScratch::new(ctx.natm, ctx.deriv, ctx.do_deriv2) }
-    }
-}
+// --- per-lane scratch and orchestration --- //
 
 /// Flattened per-lane scratch, reused across lanes and tasks.
 ///
@@ -767,9 +780,7 @@ fn process_lane(
     }
 }
 
-/* #endregion */
-
-/* #region per-lane evaluation */
+// --- per-lane evaluation --- //
 
 /// Deriv-0 lane intermediates from [`eval_partition`], also consumed by the deriv-1/2
 /// passes.  The per-atom arrays `P`/`dist` live in the lane scratch (see
@@ -1355,9 +1366,7 @@ fn eval_lane_ddw(
     }
 }
 
-/* #endregion */
-
-/* #region lane write-back and contraction */
+// --- lane write-back and contraction --- //
 
 /// Write one lane of `w` to the output buffer and accumulate the `c`
 /// contraction partial.
@@ -1493,56 +1502,6 @@ fn store_lane_ddw(
 
 /* #endregion */
 
-/* #region simple utilities */
-
-fn dist3_naive(a: &[f64; 3], b: &[f64; 3]) -> f64 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
-}
-
-fn dist3_hybrid(a: &[f64simd; 3], b: &[f64; 3]) -> f64simd {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).map(f64::sqrt)
-}
-
-/// Lane-wise negation of a length-3 SIMD vector.
-fn neg3(v: [f64simd; 3]) -> [f64simd; 3] {
-    [-v[0], -v[1], -v[2]]
-}
-
-/// Lane-wise negation of a 3x3 SIMD matrix (over `(t, s)`).
-fn neg33(m: [[f64simd; 3]; 3]) -> [[f64simd; 3]; 3] {
-    [[-m[0][0], -m[0][1], -m[0][2]], [-m[1][0], -m[1][1], -m[1][2]], [-m[2][0], -m[2][1], -m[2][2]]]
-}
-
-/// Load up to `SIMDD` elements from `slc` into a SIMD register, zero-padding
-/// the remaining lanes.
-#[inline(always)]
-fn load_simd_pad(slc: &[f64]) -> f64simd {
-    let mut s = simd_val(0.0);
-    for i in 0..slc.len() {
-        s[i] = slc[i];
-    }
-    s
-}
-
-/// Horizontal sum of the first `n` lanes of a SIMD register (`n <= SIMDD`).
-#[inline(always)]
-fn sum_lanes(s: f64simd, n: usize) -> f64 {
-    unsafe { std::hint::assert_unchecked(n <= SIMDD) };
-    let mut acc = 0.0;
-    for i in 0..n {
-        acc += s[i];
-    }
-    acc
-}
-
-/* #endregion */
-
 /* #region switch function utilities */
 
 fn switch_f3(mu: f64simd, a_factor: f64) -> f64simd {
@@ -1623,7 +1582,44 @@ fn switch_d2nu_f_hardness(mu: f64simd, a_factor: f64, hardness: usize) -> (f64si
 
 /* #endregion */
 
-/* #region enhancement to FpSimd */
+/* #region FpSimd enhancement */
+
+/// Create a SIMD register with all lanes set to `x`.
+const fn simd_val(x: f64) -> f64simd {
+    f64simd::splat(x)
+}
+
+/// Lane-wise negation of a length-3 SIMD vector.
+fn neg3(v: [f64simd; 3]) -> [f64simd; 3] {
+    [-v[0], -v[1], -v[2]]
+}
+
+/// Lane-wise negation of a 3x3 SIMD matrix (over `(t, s)`).
+fn neg33(m: [[f64simd; 3]; 3]) -> [[f64simd; 3]; 3] {
+    [[-m[0][0], -m[0][1], -m[0][2]], [-m[1][0], -m[1][1], -m[1][2]], [-m[2][0], -m[2][1], -m[2][2]]]
+}
+
+/// Load up to `SIMDD` elements from `slc` into a SIMD register, zero-padding
+/// the remaining lanes.
+#[inline(always)]
+fn load_simd_pad(slc: &[f64]) -> f64simd {
+    let mut s = simd_val(0.0);
+    for i in 0..slc.len() {
+        s[i] = slc[i];
+    }
+    s
+}
+
+/// Horizontal sum of the first `n` lanes of a SIMD register (`n <= SIMDD`).
+#[inline(always)]
+fn sum_lanes(s: f64simd, n: usize) -> f64 {
+    unsafe { std::hint::assert_unchecked(n <= SIMDD) };
+    let mut acc = 0.0;
+    for i in 0..n {
+        acc += s[i];
+    }
+    acc
+}
 
 /// Lane-wise helpers on [`FpSimd`] used by the partition evaluation.
 trait FpSimdEnhanceAPI<T> {
@@ -1661,6 +1657,20 @@ impl<T: Copy> FpSimdEnhanceAPI<T> for FpSimd<T> {
 /* #endregion */
 
 /* #region other utilities */
+
+fn dist3_naive(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+fn dist3_hybrid(a: &[f64simd; 3], b: &[f64; 3]) -> f64simd {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    (dx * dx + dy * dy + dz * dz).map(f64::sqrt)
+}
 
 /// Derive a `&mut [T]` from `&[T]` — undefined behaviour on aliased use.
 ///
