@@ -829,12 +829,17 @@ fn eval_partition(
         Z += scr.P[A];
     }
     // partition numerator: the generating atom's P (a definite atom for ByAtom; a
-    // lane-wise mask over the per-grid indices for ByGrid)
+    // per-lane gather over the per-grid indices for ByGrid)
     let Pg = match attr {
+        // one scalar assignment per lane (padding lanes keep 0) instead of natm
+        // mask_select passes over the whole register
         LaneAttrib::ByGrid(atm_idx) => {
             let mut Pg = simd_val(0.0);
-            for A in 0..natm {
-                Pg = scr.P[A].mask_select(atm_idx.map(|a| a == A), Pg);
+            for g in 0..SIMDD {
+                let A = atm_idx[g];
+                if A < natm {
+                    Pg[g] = scr.P[A][g];
+                }
             }
             Pg
         },
@@ -1116,27 +1121,27 @@ fn eval_lane_dw(
     // apply translation invariance
     let mut dw_neg_sum = [simd_val(0.0); 3];
     match attr {
+        // the gathered row entry of lane g is scr.dw[atm_g * 3 + t][g] itself, so the
+        // fix reduces to a per-lane in-place addition (padding lanes skipped)
         LaneAttrib::ByGrid(atm_idx) => {
-            let mut dw_g = [simd_val(0.0); 3];
             for A in 0..natm {
-                let mask = atm_idx.map(|a| a == A);
                 for t in 0..3 {
                     dw_neg_sum[t] -= scr.dw[A * 3 + t];
-                    dw_g[t] = scr.dw[A * 3 + t].mask_select(mask, dw_g[t]);
                 }
             }
             for g in 0..SIMDD {
                 let atm_g = atm_idx[g];
                 if atm_g < natm {
                     for t in 0..3 {
-                        scr.dw[atm_g * 3 + t][g] = dw_neg_sum[t][g] + dw_g[t][g];
+                        scr.dw[atm_g * 3 + t][g] += dw_neg_sum[t][g];
                     }
                 }
             }
         },
         LaneAttrib::ByAtom(atm_g) => {
-            // the whole lane belongs to atm_g: dw_g is simply dw[atm_g], and the
-            // per-lane atom check degenerates to one uniform row update
+            // the whole lane belongs to atm_g: the gathered row is simply
+            // dw[atm_g] itself, and the per-lane atom check degenerates to one
+            // uniform row update
             for A in 0..natm {
                 for t in 0..3 {
                     dw_neg_sum[t] -= scr.dw[A * 3 + t];
@@ -1184,21 +1189,25 @@ fn eval_lane_ddw(
 
     // gather M = A_g for the ddR_Pg cross term (dlog_Ag[r], P_Ag) first
     let P_Ag = match attr {
+        // per-lane gather of the generating atom's row: stream each row M =
+        // atm_idx[g] of dR_log_P into lane g (padding lanes keep 0 from the fill)
         LaneAttrib::ByGrid(atm_idx) => {
-            for r in 0..n3 {
-                let mut v = simd_val(0.0);
-                for M in 0..natm {
-                    v = dR_log_P[M * n3 + r].mask_select(atm_idx.map(|a| a == M), v);
-                }
-                scr.dlog_Ag[r] = v;
-            }
+            scr.dlog_Ag.fill(simd_val(0.0));
             let mut P_Ag = simd_val(0.0);
-            for A in 0..natm {
-                P_Ag = P[A].mask_select(atm_idx.map(|a| a == A), P_Ag);
+            for g in 0..SIMDD {
+                let M = atm_idx[g];
+                if M >= natm {
+                    continue;
+                }
+                let row = &dR_log_P[M * n3..(M + 1) * n3];
+                for r in 0..n3 {
+                    scr.dlog_Ag[r][g] = row[r][g];
+                }
+                P_Ag[g] = P[M][g];
             }
             P_Ag
         },
-        // definite generating atom: direct index instead of the mask gathers
+        // definite generating atom: direct index instead of the per-lane gathers
         LaneAttrib::ByAtom(atm_g) => {
             let row = &dR_log_P[atm_g * n3..(atm_g + 1) * n3];
             scr.dlog_Ag.copy_from_slice(row);
