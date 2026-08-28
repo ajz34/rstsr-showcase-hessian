@@ -80,9 +80,9 @@ fn test_setup(hess_case_tpss0: &CaseAmoniaRKSBecke) {
         "de_becke_atom_3",
         "de_becke_vxc_diag",
         "de_becke_vxc_off",
-        "vmat_becke_T1",
-        "vmat_becke_T2_ipip",
-        "vmat_becke_T2_fxc",
+        "vmat_becke_dw",
+        "vmat_becke_vxc",
+        "vmat_becke_fxc",
     ] {
         println!("fp {key}: {}", fp(becke_obj.intmd[key].view()));
     }
