@@ -717,7 +717,9 @@ pub fn get_de_becke_atom_3(w: TsrView, prho: TsrView, fxc: TsrView) -> Tsr {
 /// Contract a per-grid-atom skeleton-Vxc kernel into the chunk atom's Hessian
 /// column (pyhessref `_contract_pvxc`, with the free direction axes
 /// interchanged): the full-AO sum enters the `A == B` block, the per-atom
-/// AO-slice sums enter every `B` column of the row atom.
+/// AO-slice sums enter every `B` column of the row atom.  The 0.5 factor of
+/// the `de_becke_vxc_*` grid-shift terms is absorbed here: the full-AO sum
+/// carries it, the slice sums are unscaled (2 x 0.5 = 1).
 ///
 /// # Parameters
 ///
@@ -735,10 +737,10 @@ pub fn contract_pvxc(pvxc: TsrView, atm_idx: usize, aoslices: &[[usize; 4]]) -> 
     let natm = aoslices.len();
     let mut row: Tsr = rt::zeros(([3, 3, natm], pvxc.device()));
 
-    *&mut row.i_mut((.., .., atm_idx)) += pvxc.sum_axes(0);
+    *&mut row.i_mut((.., .., atm_idx)) += 0.5 * &pvxc.sum_axes(0);
     for (B, &[_, _, p0, p1]) in aoslices.iter().enumerate() {
         let slc = rt::slice!(p0, p1);
-        *&mut row.i_mut((.., .., B)) -= 2.0 * &pvxc.i((slc, .., ..)).sum_axes(0);
+        *&mut row.i_mut((.., .., B)) -= pvxc.i((slc, .., ..)).sum_axes(0);
     }
 
     row
@@ -759,10 +761,10 @@ pub fn contract_pvxc(pvxc: TsrView, atm_idx: usize, aoslices: &[[usize; 4]]) -> 
 ///
 /// # Returns
 ///
-/// - `de_becke_vxc_diag` : shape `[3, 3, natm]`, from `0.5 * dao_vxc_diag` expanded to dense (3, 3)
-///   pairs.
-/// - `de_becke_vxc_off` : shape `[3, 3, natm]`, from `0.5 * dao_vxc_off` contracted with `dm0` on
-///   its leading AO axis.
+/// - `de_becke_vxc_diag` : shape `[3, 3, natm]`, from `dao_vxc_diag` expanded to dense (3, 3) pairs;
+///   the 0.5 factor of the grid-shift terms lives in [`contract_pvxc`].
+/// - `de_becke_vxc_off` : shape `[3, 3, natm]`, from `dao_vxc_off` contracted with `dm0` on its
+///   leading AO axis.
 ///
 /// Both for the last (B) axis scatter (see [`contract_pvxc`]).
 pub fn get_de_becke_vxc_parts(
@@ -774,18 +776,15 @@ pub fn get_de_becke_vxc_parts(
 ) -> (Tsr, Tsr) {
     let nao = dao_vxc_diag.shape()[0];
 
-    // pvxc_diag [nao, 3, 3] = 0.5 * dao_vxc_diag[IDX_PAIR_TS]; the symmetric
+    // pvxc_diag [nao, 3, 3] = dao_vxc_diag[IDX_PAIR_TS]; the symmetric
     // pairs make it invariant under (t, s), so it doubles as the interchanged
     // kernel
     const IDX_PAIR_TS: [usize; 9] = [0, 1, 2, 1, 3, 4, 2, 4, 5];
-    let pvxc_diag: Tsr = 0.5 * dao_vxc_diag.index_select(1, IDX_PAIR_TS).into_shape([nao, 3, 3]);
+    let pvxc_diag: Tsr = dao_vxc_diag.index_select(1, IDX_PAIR_TS).into_shape([nao, 3, 3]);
 
-    // pvxc_off[u, t, s] = 0.5 * sum_v dao_vxc_off[u, v, t, s] dm0[u, v]  (einsum
-    // "tsuv, uv -> tsu" on the python [t, s, u, v] kernel with the free
-    // direction axes interchanged; by the kernel's [u, v, t, s] -> [v, u, s, t]
-    // symmetry, built into `make_dao_vxc_off`, contracting the SECOND AO axis
-    // yields the interchanged orientation directly, with no transpose)
-    let pvxc_off: Tsr = 0.5 * rt::vecdot(dao_vxc_off, dm0, 1);
+    // pvxc_off[u, t, s] = sum_v dao_vxc_off[u, v, t, s] dm0[u, v]
+    // (einsum "tsuv, uv -> tsu" on the [t, s, u, v] kernel)
+    let pvxc_off: Tsr = rt::vecdot(dao_vxc_off, dm0, 1);
     (contract_pvxc(pvxc_diag.view(), atm_idx, aoslices), contract_pvxc(pvxc_off.view(), atm_idx, aoslices))
 }
 
