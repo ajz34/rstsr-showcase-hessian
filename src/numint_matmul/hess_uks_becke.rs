@@ -32,7 +32,7 @@ use super::becke_partition::{becke_partition_with_tables, AtmIndices, BeckeMolTa
 use super::hess_rks_becke::{
     by_atom_chunk, contract_pvxc, get_de_becke_atom_1, get_de_becke_atom_2, get_de_vxc_diag, get_de_vxc_off, get_drho,
     get_hess_ao_deriv, get_hess_ncomp_ao_dm0, get_vmat_ip, get_vmat_vxc, make_dao_vxc_diag, make_dao_vxc_off,
-    quad_split_by_atom, vxc_fock,
+    quad_split_by_atom, xc_fock_stack,
 };
 use super::hess_uks::get_uks_response_bra_batched;
 use super::prelude::*;
@@ -190,7 +190,8 @@ pub fn get_de_fxc_uks(wf: TsrView, drhoα: TsrView, drhoβ: TsrView) -> Tsr {
 /// matrices for UKS (pyhessref `_vmat_fxc_uks`) — the spin-coupled piece.
 /// Unlike the spin-diagonal [`get_vmat_vxc`] (reused from RKS per spin), the
 /// fxc contraction here couples the two spin channels:
-/// `wvα_f = wf_αα @ drho_α + wf_βα @ drho_β` and symmetrically for beta.
+/// `field_α = wf_αα @ drho_α + wf_βα @ drho_β` and symmetrically for beta,
+/// one [`xc_fock_stack`] call per spin per atom row.
 ///
 /// # Parameters
 ///
@@ -213,66 +214,16 @@ pub fn get_vmat_fxc_uks(xc_type: XCDenType, ao: TsrView, drhoα: TsrView, drhoβ
     let mut vmatβ_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], device));
 
     for A in 0..natm {
-        for t in 0..3 {
-            if matches!(xc_type, RHO) {
-                let wf_αα_00: Tsr = 0.5 * wf.i((.., O, α, O, α));
-                let wf_βα_00: Tsr = 0.5 * wf.i((.., O, β, O, α));
-                let wvα_f: Tsr = wf_αα_00 * drhoα.i((.., O, t, A)) + wf_βα_00 * drhoβ.i((.., O, t, A));
-
-                let wf_αβ_00: Tsr = 0.5 * wf.i((.., O, α, O, β));
-                let wf_ββ_00: Tsr = 0.5 * wf.i((.., O, β, O, β));
-                let wvβ_f: Tsr = wf_αβ_00 * drhoα.i((.., O, t, A)) + wf_ββ_00 * drhoβ.i((.., O, t, A));
-
-                let aowα = wvα_f * index!(ao, O);
-                index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
-                let aowβ = wvβ_f * index!(ao, O);
-                index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
-                continue;
-            }
-
-            let wf_αα = wf.i((.., .., α, .., α));
-            let wf_αβ = wf.i((.., .., α, .., β));
-            let wf_βα = wf.i((.., .., β, .., α));
-            let wf_ββ = wf.i((.., .., β, .., β));
-
-            let drhoα_tA = drhoα.i((.., .., t, A));
-            let drhoβ_tA = drhoβ.i((.., .., t, A));
-
-            let wf_rho_αα = rt::vecdot(&wf_αα, &drhoα_tA, 1);
-            let wf_rho_βα = rt::vecdot(&wf_βα, &drhoβ_tA, 1);
-            let wf_rho_αβ = rt::vecdot(&wf_αβ, &drhoα_tA, 1);
-            let wf_rho_ββ = rt::vecdot(&wf_ββ, &drhoβ_tA, 1);
-            let mut wf_rho_α = wf_rho_αα + wf_rho_βα;
-            let mut wf_rho_β = wf_rho_αβ + wf_rho_ββ;
-
-            if matches!(xc_type, SIGMA | TAU) {
-                *&mut wf_rho_α.i_mut((.., 0)) *= 0.5;
-                *&mut wf_rho_β.i_mut((.., 0)) *= 0.5;
-                if matches!(xc_type, TAU) {
-                    *&mut wf_rho_α.i_mut((.., 4)) *= 0.25;
-                    *&mut wf_rho_β.i_mut((.., 4)) *= 0.25;
-                }
-                for c in 0..4 {
-                    let aowα = wf_rho_α.i((.., c)) * index!(ao, c);
-                    index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, O), 1.0, 1.0);
-                    let aowβ = wf_rho_β.i((.., c)) * index!(ao, c);
-                    index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, O), 1.0, 1.0);
-                }
-            }
-
-            if matches!(xc_type, TAU) {
-                for r in [X, Y, Z] {
-                    let aowα = wf_rho_α.i((.., 4)) * index!(ao, r);
-                    index_mut!(vmatα_fxc, t, A).matmul_from(aowα.t(), index!(ao, r), 1.0, 1.0);
-                    let aowβ = wf_rho_β.i((.., 4)) * index!(ao, r);
-                    index_mut!(vmatβ_fxc, t, A).matmul_from(aowβ.t(), index!(ao, r), 1.0, 1.0);
-                }
-            }
-        }
+        // fields [g, x, t] = sum_{σ', y} wf[g, x, σ, y, σ'] drho_σ'[g, y, t, A], passed unscaled
+        // (the 0.5/0.25 factors of the reference are absorbed by `xc_fock_stack`; see
+        // [`super::hess_rks_becke::get_vmat_fxc`])
+        let field_α = rt::vecdot(wf.i((.., .., α, .., α)), drhoα.i((.., None, .., .., A)), 2)
+            + rt::vecdot(wf.i((.., .., α, .., β)), drhoβ.i((.., None, .., .., A)), 2);
+        let field_β = rt::vecdot(wf.i((.., .., β, .., α)), drhoα.i((.., None, .., .., A)), 2)
+            + rt::vecdot(wf.i((.., .., β, .., β)), drhoβ.i((.., None, .., .., A)), 2);
+        *&mut vmatα_fxc.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), field_α.view());
+        *&mut vmatβ_fxc.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), field_β.view());
     }
-
-    let vmatα_fxc = &vmatα_fxc + vmatα_fxc.swapaxes(0, 1);
-    let vmatβ_fxc = &vmatβ_fxc + vmatβ_fxc.swapaxes(0, 1);
 
     (vmatα_fxc, vmatβ_fxc)
 }
@@ -438,15 +389,15 @@ pub fn get_de_becke_vxc_parts_uks(
 /// `vmat_deriv1_σ` (the DFT part of the CP-KS right-hand side f1ao), i.e.
 /// `sum_A vmat_deriv1_grid_σ[A] ~ 0`.
 ///
-/// - T1 (weight part): per-spin [`vxc_fock`] built with the Becke `dw[g, t, A]` slices as the
+/// - T1 (weight part): per-spin [`xc_fock_stack`] built with the Becke `dw[g, t, A]` slices as the
 ///   weight field and the spin's own `vxc` field; every grid of the chunk contributes to every
 ///   atom's row.
 /// - T2_ipip: the chunk's per-spin `vmat_ip` symmetrised in AO — the chunk holds one atom's grids,
 ///   so `vmat_ip` already is the per-grid-atom kernel.
 /// - T2_fxc: the fxc kernel spin-coupled and folded with the total spatial density derivative of
 ///   BOTH spins (`fxc[σ, :, σ', :]` against `prho_σ'`; leading minus from the `prho = -d rho / dr`
-///   convention of [`get_drho`]), contracted as a [`vxc_fock`] on the chunk weights.  This mirrors
-///   the [`get_vmat_fxc_uks`] spin coupling.
+///   convention of [`get_drho`]), contracted as an [`xc_fock_stack`] on the chunk weights.  This
+///   mirrors the [`get_vmat_fxc_uks`] spin coupling.
 ///
 /// # Parameters
 ///
@@ -482,47 +433,32 @@ pub fn get_vmat_becke_parts_uks(
     let nao = ao.shape()[1];
     let natm = dw.shape()[2];
     let device = ao.device().clone();
-    let ngrids = fxc.shape()[0];
-    let nvar = fxc.shape()[1];
 
-    // T1: per-spin Vxc-style Fock with the becke dw[A, t] rows as weights (all rows)
+    // T1: per-spin XC-style Fock with the becke dw[·, ·, A] rows as weights (all rows); wv_σ
+    // [g, x, t] = vxc[g, x, σ] dw[g, t, A]
     let mut vmat_becke_t1_α = rt::zeros(([nao, nao, 3, natm], &device));
     let mut vmat_becke_t1_β = rt::zeros(([nao, nao, 3, natm], &device));
     for A in 0..natm {
-        for t in 0..3 {
-            let fock_α = vxc_fock(xc_type, ao.view(), vxc.i((.., .., α)), index!(dw, t, A));
-            *&mut vmat_becke_t1_α.i_mut((.., .., t, A)) += &fock_α;
-            let fock_β = vxc_fock(xc_type, ao.view(), vxc.i((.., .., β)), index!(dw, t, A));
-            *&mut vmat_becke_t1_β.i_mut((.., .., t, A)) += &fock_β;
-        }
+        let wv_α = vxc.i((.., .., α, None)) * dw.i((.., None, .., A));
+        *&mut vmat_becke_t1_α.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), wv_α.view());
+        let wv_β = vxc.i((.., .., β, None)) * dw.i((.., None, .., A));
+        *&mut vmat_becke_t1_β.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), wv_β.view());
     }
 
     // T2_ipip: chunk's per-spin vmat_ip symmetrised in AO
     let vmat_becke_t2_ipip_α = &vmat_ip_α + vmat_ip_α.swapaxes(0, 1);
     let vmat_becke_t2_ipip_β = &vmat_ip_β + vmat_ip_β.swapaxes(0, 1);
 
-    // T2_fxc: fxc spin-coupled and folded with prho[t] of both spins, contracted on the chunk
-    // weights; fxc_prho_σ [g, x] = sum_{σ', y} fxc[σ, x, σ', y] prho_σ'[g, y, t]
-    let mut vmat_becke_t2_fxc_α = rt::zeros(([nao, nao, 3], &device));
-    let mut vmat_becke_t2_fxc_β = rt::zeros(([nao, nao, 3], &device));
-    for t in 0..3 {
-        let prhoα_t = prhoα.i((.., .., t));
-        let prhoβ_t = prhoβ.i((.., .., t));
-
-        let fxc_prho_α: Tsr = (rt::vecdot(fxc.i((.., .., α, .., α, None)), prhoα_t.i((.., None, .., None)), 2)
-            + rt::vecdot(fxc.i((.., .., α, .., β, None)), prhoβ_t.i((.., None, .., None)), 2))
-        .into_shape([ngrids, nvar]);
-        let neg_fxc_prho_α: Tsr = -1.0 * fxc_prho_α;
-        let fock_α = vxc_fock(xc_type, ao.view(), neg_fxc_prho_α.view(), w.view());
-        *&mut vmat_becke_t2_fxc_α.i_mut((.., .., t)) += &fock_α;
-
-        let fxc_prho_β: Tsr = (rt::vecdot(fxc.i((.., .., β, .., α, None)), prhoα_t.i((.., None, .., None)), 2)
-            + rt::vecdot(fxc.i((.., .., β, .., β, None)), prhoβ_t.i((.., None, .., None)), 2))
-        .into_shape([ngrids, nvar]);
-        let neg_fxc_prho_β: Tsr = -1.0 * fxc_prho_β;
-        let fock_β = vxc_fock(xc_type, ao.view(), neg_fxc_prho_β.view(), w.view());
-        *&mut vmat_becke_t2_fxc_β.i_mut((.., .., t)) += &fock_β;
-    }
+    // T2_fxc: fxc spin-coupled and folded with prho of both spins, contracted on the chunk
+    // weights; fxc_prho_σ [g, x, t] = sum_{σ', y} fxc[σ, x, σ', y] prho_σ'[g, y, t]
+    let fxc_prho_α: Tsr = rt::vecdot(fxc.i((.., .., α, .., α)), prhoα.i((.., None, ..)), 2)
+        + rt::vecdot(fxc.i((.., .., α, .., β)), prhoβ.i((.., None, ..)), 2);
+    let fxc_prho_β: Tsr = rt::vecdot(fxc.i((.., .., β, .., α)), prhoα.i((.., None, ..)), 2)
+        + rt::vecdot(fxc.i((.., .., β, .., β)), prhoβ.i((.., None, ..)), 2);
+    let wv_α: Tsr = -1.0 * fxc_prho_α * w.i((.., None, None));
+    let wv_β: Tsr = -1.0 * fxc_prho_β * w.i((.., None, None));
+    let vmat_becke_t2_fxc_α = xc_fock_stack(xc_type, ao.view(), wv_α.view());
+    let vmat_becke_t2_fxc_β = xc_fock_stack(xc_type, ao.view(), wv_β.view());
 
     (
         vmat_becke_t1_α,

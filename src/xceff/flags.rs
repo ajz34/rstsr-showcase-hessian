@@ -58,7 +58,8 @@ impl XCDenType {
     ///
     /// - RHO: 1 component (AO value)
     /// - SIGMA: 4 components (AO value + 3 gradient components)
-    /// - TAU: 4 components (AO value + 3 gradient components) [
+    /// - TAU: 4 components (AO value + 3 gradient components; the kinetic energy density itself
+    ///   needs no additional AO component)
     /// - LAPL: 10 components (AO value + 3 gradient components + 6 second derivative components)
     pub fn num_ao_comp(&self) -> usize {
         AO_DERIV_DIM[self.num_ao_deriv()]

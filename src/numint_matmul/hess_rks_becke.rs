@@ -80,13 +80,12 @@ pub const fn get_hess_ao_deriv(xc_type: XCDenType) -> usize {
 ///
 /// # Returns
 ///
-/// - `ncomp` : 1 for RHO, 4 for SIGMA/TAU.
-pub const fn get_hess_ncomp_ao_dm0(xc_type: XCDenType) -> usize {
+/// - `ncomp` : 1 for RHO, 4 for SIGMA/TAU (same as [`XCDenType::num_ao_comp`] for the implemented
+///   families).
+pub fn get_hess_ncomp_ao_dm0(xc_type: XCDenType) -> usize {
     match xc_type {
-        RHO => 1,
-        SIGMA => 4,
-        TAU => 4,
         LAPL => unimplemented!(),
+        _ => xc_type.num_ao_comp(),
     }
 }
 
@@ -587,8 +586,9 @@ pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
 
 /// fxc contribution to the per-atom skeleton derivative of the Vxc Fock matrix
 /// (pyhessref `_vmat_fxc`): the fxc kernel folded against the skeleton density
-/// derivative `drho[A]`.  The genuinely spin-coupled piece for UKS, so the UKS
-/// counterpart is kept separate.
+/// derivative `drho[A]`, one [`xc_fock_stack`] call per atom row.  The
+/// genuinely spin-coupled piece for UKS, so the UKS counterpart is kept
+/// separate.
 ///
 /// # Parameters
 ///
@@ -601,42 +601,20 @@ pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
 ///
 /// - `vmat_fxc` : shape `[nao, nao, 3, natm]`, assembled across the AO axes.
 pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView) -> Tsr {
-    // direct transformation of `pyhessref/nimatmul/rks_with_becke.py`, function `_vmat_fxc`
-
     let natm = drho.shape()[3];
     let nao = ao.shape()[1];
 
     let mut vmat_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], ao.device()));
 
     for A in 0..natm {
-        for t in 0..3 {
-            if matches!(xc_type, RHO) {
-                let wf_rho: Tsr = 0.5 * index!(wf, O, O) * drho.i((.., O, t, A));
-                let aow = wf_rho * index!(ao, O);
-                index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
-                continue;
-            }
-
-            assert_matches!(xc_type, SIGMA | TAU);
-
-            let mut wf_rho = rt::vecdot(&wf, drho.i((.., .., t, A)), 1);
-            *&mut wf_rho.i_mut((.., 0)) *= 0.5;
-            if matches!(xc_type, TAU) {
-                *&mut wf_rho.i_mut((.., 4)) *= 0.25;
-            }
-            let aow = rt::vecdot(wf_rho.i((.., None, ..4)), ao.i((.., .., ..4)), 2);
-            index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, O), 1.0, 1.0);
-
-            if matches!(xc_type, TAU) {
-                for r in [X, Y, Z] {
-                    let aow = wf_rho.i((.., 4)) * index!(ao, r);
-                    index_mut!(vmat_fxc, t, A).matmul_from(aow.t(), index!(ao, r), 1.0, 1.0);
-                }
-            }
-        }
+        // field [g, x, t] = sum_y wf[g, x, y] drho[g, y, t, A], passed unscaled: the per-block
+        // AO-axis symmetrisation of `xc_fock_stack` reproduces the 0.5 (rho) factor and turns
+        // the tau factor 0.25 + final symmetrisation of the reference into its 0.5
+        let field = rt::vecdot(&wf, drho.i((.., None, .., .., A)), 2);
+        *&mut vmat_fxc.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), field.view());
     }
 
-    &vmat_fxc + vmat_fxc.swapaxes(0, 1)
+    vmat_fxc
 }
 
 /* #endregion */
@@ -761,8 +739,8 @@ pub fn contract_pvxc(pvxc: TsrView, atm_idx: usize, aoslices: &[[usize; 4]]) -> 
 ///
 /// # Returns
 ///
-/// - `de_becke_vxc_diag` : shape `[3, 3, natm]`, from `dao_vxc_diag` expanded to dense (3, 3) pairs;
-///   the 0.5 factor of the grid-shift terms lives in [`contract_pvxc`].
+/// - `de_becke_vxc_diag` : shape `[3, 3, natm]`, from `dao_vxc_diag` expanded to dense (3, 3)
+///   pairs; the 0.5 factor of the grid-shift terms lives in [`contract_pvxc`].
 /// - `de_becke_vxc_off` : shape `[3, 3, natm]`, from `dao_vxc_off` contracted with `dm0` on its
 ///   leading AO axis.
 ///
@@ -792,45 +770,60 @@ pub fn get_de_becke_vxc_parts(
 
 /* #region becke grid-shift parts: f1ao (CP-KS RHS) */
 
-/// Symmetric Vxc-style Fock matrix from a generic weight and functional field
-/// (pyhessref `_vxc_fock`): the standard on-grid Vxc build (nr_vxc
-/// convention, 0.5 factors) with the grid weights and the "vxc-like" field as
-/// free inputs.
+/// Symmetric XC-style Fock matrices from a stack of grid-weighted effective
+/// fields (pyhessref `_vxc_fock`, generalised): the standard on-grid Vxc build
+/// (nr_vxc convention), batched over the trailing field axis.
+///
+/// The field is not restricted to the vxc itself: feeding the grid-weighted
+/// vxc produces the Vxc Fock matrix (`vmat_becke_dw` with the Becke `dw` rows
+/// as the weights), while feeding an fxc kernel folded with a density
+/// derivative produces first skeleton derivatives of the Fock matrix
+/// (`vmat_fxc`, `vmat_becke_fxc`).  The build is linear in `wv`, and the
+/// nr_vxc 0.5 factors live here, not with the callers: the rho channel enters
+/// both the bra and the ket AO factor (the AO-axis symmetrisation supplies the
+/// ket half), and the tau channel enters the kinetic-density pair products
+/// only once (those products are already AO-symmetric).
 ///
 /// # Parameters
 ///
 /// - `xc_type` : density family.
 /// - `ao` : shape `[ngrids, nao, ncomp]`; reads channels 0..3.
-/// - `veff` : shape `[ngrids, nvar]`.  Functional-derivative field.
-/// - `wg` : shape `[ngrids]`.  Weight field (the Becke `dw[g, t, A]` slices for `vmat_becke_dw`,
-///   the chunk grid weights for `vmat_becke_fxc`).
+/// - `wv` : shape `[ngrids, nvar, k]` (g, x, field).  Stack of grid-weighted effective fields,
+///   weights already folded in and unscaled.  `k` is typically the 3 Cartesian directions of one
+///   atom row; batching them keeps the per-field `[nao, ngrids] x [ngrids, nao]` GEMMs down to one
+///   wide GEMM per row without a `[ngrids, nao, 3 * natm]`-sized intermediate.
 ///
 /// # Returns
 ///
-/// - `vxc_fock` : shape `[nao, nao]`.  Symmetric Vxc-style Fock matrix.
-pub fn vxc_fock(xc_type: XCDenType, ao: TsrView, veff: TsrView, wg: TsrView) -> Tsr {
-    let mut wv = &veff * &wg;
-    *&mut wv.i_mut((.., O)) *= 0.5;
+/// - `fock` : shape `[nao, nao, k]`.  Symmetric XC-style Fock matrices, one per field.
+pub fn xc_fock_stack(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
+    let ngrids = ao.shape()[0];
+    let nao = ao.shape()[1];
+    let k = wv.shape()[2];
 
-    if matches!(xc_type, RHO) {
-        let aow = index!(wv, O) * index!(ao, O);
-        let aow_ao = aow.t() % index!(ao, O);
-        return &aow_ao + aow_ao.t();
-    }
+    let mut wv: Tsr = wv.into_contig(ColMajor);
+    *&mut wv.i_mut((.., O, ..)) *= 0.5;
 
-    let aow = rt::vecdot(ao.i((.., .., ..4)), wv.i((.., None, ..4)), -1);
-    let aow_ao = aow.t() % index!(ao, O);
-    let mut vxc_fock = &aow_ao + aow_ao.t();
+    // aow [g, u, k] = sum_{c < nc} wv[:, c, :] ao[:, :, c]; nc = value + gradient AO channels
+    // (rho components excluding tau, which is contracted separately below)
+    let nc = xc_type.num_ao_comp();
+    let aow = rt::vecdot(ao.i((.., .., ..nc)), wv.i((.., None, ..nc)), 2);
+
+    // one wide GEMM over the k fields; x (v, u, k) = sum_g ao[g, v] aow[g, u, k]
+    let x = (index!(ao, O).t() % aow.into_shape([ngrids, nao * k])).into_shape([nao, nao, k]);
+    // AO-axis symmetrisation of the value/gradient part: fock[u, v, k] = x[v, u, k] + x[u, v, k]
+    let mut fock: Tsr = &x + x.swapaxes(0, 1);
 
     if matches!(xc_type, TAU) {
-        *&mut wv.i_mut((.., 4)) *= 0.5;
+        *&mut wv.i_mut((.., 4, ..)) *= 0.5;
         for j in 1..4 {
-            let aow = index!(wv, 4) * index!(ao, j);
-            vxc_fock += &(aow.t() % index!(ao, j));
+            let aow_j = ao.i((.., .., None, j)) * wv.i((.., None, 4, ..));
+            let x_j = (index!(ao, j).t() % aow_j.into_shape([ngrids, nao * k])).into_shape([nao, nao, k]);
+            fock += &x_j.swapaxes(0, 1);
         }
     }
 
-    vxc_fock
+    fock
 }
 
 /// f1ao-level Becke grid-shift parts of the skeleton Vxc Fock derivative
@@ -838,13 +831,13 @@ pub fn vxc_fock(xc_type: XCDenType, ao: TsrView, veff: TsrView, wg: TsrView) -> 
 /// vmat_becke_fxc` that restores translational invariance of `vmat_deriv1` (the DFT part of
 /// the CP-KS right-hand side f1ao).
 ///
-/// - `vmat_becke_dw` (weight part): [`vxc_fock`] built with the Becke `dw[g, t, A]` slices as the
-///   weight field; every grid of the chunk contributes to every atom's row.
+/// - `vmat_becke_dw` (weight part): [`xc_fock_stack`] per atom row, built with the Becke `dw[g, t,
+///   A]` slices as the weight field; every grid of the chunk contributes to every atom's row.
 /// - `vmat_becke_vxc` (functional part, Vxc): the chunk's `vmat_ip` symmetrised in AO — the chunk
 ///   holds one atom's grids, so `vmat_ip` already is the per-grid-atom kernel.
-/// - `vmat_becke_fxc` (functional part, fxc): the fxc kernel folded with `prho` (which equals
-///   `-d rho / dr` under a uniform translation, hence the leading minus), contracted as a
-///   [`vxc_fock`] on the chunk weights.
+/// - `vmat_becke_fxc` (functional part, fxc): the fxc kernel folded with `prho` (which equals `-d
+///   rho / dr` under a uniform translation, hence the leading minus), contracted as an
+///   [`xc_fock_stack`] on the chunk weights.
 ///
 /// # Parameters
 ///
@@ -879,30 +872,22 @@ pub fn get_vmat_becke_parts(
     let natm = dw.shape()[2];
     let device = ao.device().clone();
 
-    // dw part: Vxc-style Fock with the becke dw[A, t] rows as weights (all rows)
+    // dw part: XC-style Fock with the becke dw[·, ·, A] rows as weights (all rows)
     let mut vmat_becke_dw = rt::zeros(([nao, nao, 3, natm], &device));
     for A in 0..natm {
-        for t in 0..3 {
-            let fock = vxc_fock(xc_type, ao.view(), vxc.view(), index!(dw, t, A));
-            *&mut vmat_becke_dw.i_mut((.., .., t, A)) += &fock;
-        }
+        // wv [g, x, t] = vxc[g, x] dw[g, t, A]
+        let wv = vxc.i((.., .., None)) * dw.i((.., None, .., A));
+        *&mut vmat_becke_dw.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), wv.view());
     }
 
     // vxc part: chunk's vmat_ip symmetrised in AO
     let vmat_becke_vxc = &vmat_ip + vmat_ip.swapaxes(0, 1);
 
-    // fxc part: fxc folded with prho[t], contracted on the chunk weights
-    let mut vmat_becke_fxc = rt::zeros(([nao, nao, 3], &device));
-    let ngrids = fxc.shape()[0];
-    let nvar = fxc.shape()[1];
-    for t in 0..3 {
-        // fxc_prho [g, x] = sum_y fxc[g, x, y] prho[g, y, t]
-        let prho_t = prho.i((.., .., t));
-        let neg_fxc_prho: Tsr =
-            -1.0 * rt::vecdot(fxc.i((.., .., .., None)), prho_t.i((.., None, .., None)), 2).into_shape([ngrids, nvar]);
-        let fock = vxc_fock(xc_type, ao.view(), neg_fxc_prho.view(), w.view());
-        *&mut vmat_becke_fxc.i_mut((.., .., t)) += &fock;
-    }
+    // fxc part: fxc folded with prho, contracted on the chunk weights
+    // fxc_prho [g, x, t] = sum_y fxc[g, x, y] prho[g, y, t]
+    let fxc_prho = rt::vecdot(fxc, prho.i((.., None, ..)), 2);
+    let wv: Tsr = -1.0 * fxc_prho * w.i((.., None, None));
+    let vmat_becke_fxc = xc_fock_stack(xc_type, ao.view(), wv.view());
 
     (vmat_becke_dw, vmat_becke_vxc, vmat_becke_fxc)
 }
