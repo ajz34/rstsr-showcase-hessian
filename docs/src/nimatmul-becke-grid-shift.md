@@ -217,7 +217,7 @@ $$
 &\quad& \texttt{de\_becke\_atom\_3} \\
 &+ \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial t \, \partial B_s} \delta_{g \in A} + \mathrm{swap}(A_t, B_s)
 &\quad& \\
-&+ \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial t \partial s} \delta_{g \in A}
+&+ \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial t \partial s} \delta_{g \in A} \delta_{A B}
 &\quad& \texttt{de\_becke\_vxc}
 \end{alignat*}
 $$
@@ -227,6 +227,7 @@ $$
 - `de_becke_full_1`, `de_becke_atom_1`, `de_becke_atom_2`, `de_becke_atom_3` 四项是可以基于普通二阶梯度的中间量 (以及 Becke partition 所给出的格点权重梯度)，立即使用 einsum 计算的。在 REST 正式程序中不推荐使用 einsum，这些项会在实际程序中通过多步 vecdot 实现。
 - `de_becke_full_2` 这一项比较特殊。它涉及到权重二阶梯度 $\partial_{A_t} \partial_{B_s} w_g$，若要存储下来是 $O(N^3)$。即使要对格点分批，它也会占用较大的 memory footprint。我们在实际程序中，会作 fused-contraction：提前给定被缩并张量 $f_g \rho_g$，返回一个维度大小 $(A, B, t, s)$ 的 Hessian 增量。
 - `de_becke_vxc` 这一项 (两行) 是涉及到密度格点二阶导数的部分；我们会避免直接生成这类张量。这意味着我们需要复用其中的中间张量计算过程。
+- 最后一行的 $\delta_{AB}$ 来源是，这里格点导数同时要求 $\delta_{g \in A}$ 与 $\delta_{g \in B}$，因此只有当 $A = B$ 时才有贡献。后文的公式推演上，用 $\delta_{AB}$ 比较方便。
 
 ### 3.3 `de_becke_vxc` 贡献程序实现
 
@@ -251,12 +252,25 @@ $$
 &\leftarrow \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial t \, \partial B_s} \delta_{g \in A} + \mathrm{swap} (A_t, B_s) \\
 &= - \sum_{\mu \in B} \Big( \mathscr{T}_{\mu}^{A(ts)} + \sum_\nu \mathscr{T}_{\mu \nu}^{A st} D_{\mu \nu} \Big) + \mathrm{swap} (A_t, B_s) \\
 \frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s}
-&\leftarrow \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial t \, \partial s} \delta_{g \in A} \\
-&= \frac{1}{2} \sum_{\mu} \Big( \mathscr{T}_{\mu}^{A(ts)} + \sum_\nu \mathscr{T}_{\mu \nu}^{A ts} D_{\mu \nu} \Big) + \mathrm{swap} (A_t, B_s)
+&\leftarrow \sum_{g \chi} w_g f_g^\chi \frac{\partial^2 \xi_g^\chi}{\partial t \, \partial s} \delta_{g \in A} \delta_{A B} \\
+&= \frac{1}{2} \delta_{A B} \sum_{\mu} \Big( \mathscr{T}_{\mu}^{A(ts)} + \sum_\nu \mathscr{T}_{\mu \nu}^{A ts} D_{\mu \nu} \Big) + \mathrm{swap} (A_t, B_s)
 \end{align*}
 $$
 
 我们刻意在 $\partial_t \partial_s \xi_g^\chi$ 一项中引入 $\frac{1}{2}$ 系数，单纯是为了与 $\partial_t \partial_{B_s} \xi_g^\chi$ 所用到的 $\mathrm{swap} (A_t, B_s)$ 相匹配。
+
+由此，我们重组 `de_becke_vxc` 的计算过程为：
+
+$$
+\begin{alignat*}{4}
+\frac{\partial^2 E^\text{xc}}{\partial A_t \partial B_s}
+&\leftarrow \frac{1}{2} \delta_{AB} \sum_{\mu} \mathscr{T}_{\mu}^{A(ts)} - \sum_{\mu \in B} \mathscr{T}_{\mu}^{A(ts)}
+&\quad& \texttt{de\_becke\_vxc\_diag} \\
+&+ \frac{1}{2} \delta_{AB} \sum_{\mu \nu} \mathscr{T}_{\mu \nu}^{A ts} D_{\mu \nu} - \sum_{\mu \in B} \sum_\nu \mathscr{T}_{\mu \nu}^{A st} D_{\mu \nu}
+&\quad& \texttt{de\_becke\_vxc\_off} \\
+&+ \mathrm{swap} (A_t, B_s)
+\end{alignat*}
+$$
 
 **函数 `get_de_becke_vxc_parts`**
 
@@ -270,15 +284,35 @@ $$
 | `de_becke_vxc_diag`</br>(increment output) | $A$ specified | $(t, s, B)$</br>`[t, s, B]` | `[3, 3, natm]` |
 | `de_becke_vxc_off`</br>(increment output) | $A$ specified | $(t, s, B)$</br>`[t, s, B]` | `[3, 3, natm]` |
 
+请留意，程序实现中有一些公式难以表达清楚的部分：
+- 该函数是在格点 $g$ 的分批下完成的；这一批格点一定对应于同一个原子 $A$ 的 Lebedev 格点。因此，这里的所有 $A$ 指标都没有出现在维度大小中。
+- 尽管程序会输出 `de_becke_vxc_diag/off`，但它们是没有经过 $\mathrm{swap} (A_t, B_s)$ 对称化的。对称化过程会在格点 chunk 分批的过程中，拼接到完整的 $(t, s, A, B)$ 维度的 Hessian 中完成。
 
 **函数 `contract_pvxc`**
 
-| 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
-|--|--|--|--|--|
-| `pvxc` | $\tfrac{1}{2}\mathscr{T}_{\mu}^{A(ts)}$ 或 $\tfrac{1}{2}\sum_\nu \mathscr{T}_{\mu\nu}^{A ts} D_{\mu\nu}$ | $(\mu, t, s)$</br>`[u, t, s]` | `[nao, 3, 3]` | AO 轴前置，$\mu$ 在 col-major 下连续 |
-| `atm_idx` | $A$ | | | |
-| `aoslices` | | | `natm` | |
-| `de_pvxc`</br>(output) | | $(t, s, B)$</br>`[t, s, B]` | `[3, 3, natm]` | $(A, t) \leftrightarrow (B, s)$ 对称化由 driver 统一完成 |
+| 变量名 | 变量意义 | 指标顺序 | 维度大小 |
+|--|--|--|--|
+| `pvxc` | $\mathscr{T}_\mu^{A (t s)}$ (diag)</br>$\sum_\nu \mathscr{T}_{\mu \nu}^{A ts} D_{\mu \nu}$ (off) | $(\mu, t, s)$</br>`[u, t, s]` | `[nao, 3, 3]` |
+| `atm_idx` | $A$ | | |
+| `aoslices` | | | `natm` |
+| `de_pvxc`</br>(output) | | $(t, s, B)$</br>`[t, s, B]` | `[3, 3, natm]` |
+
+求梯度的过程中有一个完全相同的计算结构；函数 `contract_pvxc` 就是用来处理该结构的：
+
+$$
+\mathscr{P}_{t s}^B = \frac{1}{2} \delta_{AB} \sum_{\mu} \mathscr{S}_\mu^{t s} - \sum_{\mu \in B} \mathscr{S}_\mu^{t s}
+$$
+
+针对 diag/off 两种情况，这里的 $\mathscr{S}_\mu^{t s}$ 分别对应于
+
+$$
+\mathscr{S}_\mu^{t s} = \begin{cases}
+\mathscr{T}_\mu^{A (t s)} \delta_{AB}, & \texttt{diag} \\
+\sum_\nu \mathscr{T}_{\mu \nu}^{A ts} D_{\mu \nu}, & \texttt{off}
+\end{cases}
+$$
+
+这里会有一个比较容易迷惑的点。这里的张量是 $\mathscr{P}_{ts}^B$；它从表面上不包含指标 $A$，但实际上它是基于原子 $A$ 所生成格点的 batch/chunk 计算，必须要服务于特定的原子 $A$。这也是为什么在 `contract_pvxc` 函数中，`atm_idx` 仍然保留在函数参数中。
 
 ## 4. DFT Fock 格点偏移一阶 Skeleton 梯度实现
 
