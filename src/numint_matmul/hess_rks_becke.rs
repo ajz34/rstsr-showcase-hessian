@@ -801,7 +801,7 @@ pub fn get_de_becke_vxc_parts(
 pub fn xc_fock_stack(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
     let ngrids = ao.shape()[0];
     let nao = ao.shape()[1];
-    let k = wv.shape()[2];
+    let nk = wv.shape()[2];
 
     let mut wv: Tsr = wv.into_contig(ColMajor);
     *&mut wv.i_mut((.., O, ..)) *= 0.5;
@@ -812,7 +812,7 @@ pub fn xc_fock_stack(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
     let aow = rt::vecdot(ao.i((.., .., ..nc)), wv.i((.., None, ..nc)), 2);
 
     // one wide GEMM over the k fields; x (v, u, k) = sum_g ao[g, v] aow[g, u, k]
-    let x = (index!(ao, O).t() % aow.into_shape([ngrids, nao * k])).into_shape([nao, nao, k]);
+    let x = (index!(ao, O).t() % aow.into_shape([ngrids, nao * nk])).into_shape([nao, nao, nk]);
     // AO-axis symmetrisation of the value/gradient part: fock[u, v, k] = x[v, u, k] + x[u, v, k]
     let mut fock: Tsr = &x + x.swapaxes(0, 1);
 
@@ -820,7 +820,7 @@ pub fn xc_fock_stack(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
         *&mut wv.i_mut((.., 4, ..)) *= 0.5;
         for j in 1..4 {
             let aow_j = ao.i((.., .., None, j)) * wv.i((.., None, 4, ..));
-            let x_j = (index!(ao, j).t() % aow_j.into_shape([ngrids, nao * k])).into_shape([nao, nao, k]);
+            let x_j = (index!(ao, j).t() % aow_j.into_shape([ngrids, nao * nk])).into_shape([nao, nao, nk]);
             fock += &x_j.swapaxes(0, 1);
         }
     }

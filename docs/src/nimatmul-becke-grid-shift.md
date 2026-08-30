@@ -333,8 +333,36 @@ V_{\mu \nu}^\text{xc} &= \sum_{g \chi} w_g f_g^\chi \xi_{g \mu \nu}^\chi
 &\quad& \texttt{vmat\_becke\_dw} \\
 &+ \sum_{g \chi \chi'} w_g f_g^{\chi \chi'} \frac{\partial \xi_g^{\chi'}}{\partial t} \xi_{g \mu \nu}^\chi \delta_{g \in A}
 &\quad& \texttt{vmat\_becke\_fxc} \\
-&+ \sum_{g \chi} \frac{\partial w_g}{\partial A_t} f_g^\chi \xi_{g \mu \nu}^\chi \delta_{g \in A}
+&+ \sum_{g \chi} w_g f_g^\chi \frac{\partial \xi_{g \mu \nu}^\chi}{\partial t} \delta_{g \in A}
 &\quad& \texttt{vmat\_becke\_vxc}
 \end{alignat*}
 $$
 
+其中 `vmat_fxc`, `vmat_vxc` 是普通的 Fock 一阶梯度贡献；`vmat_becke_dw`, `vmat_becke_fxc`, `vmat_becke_vxc` 是格点偏移导数贡献。
+
+**函数 `get_vmat_becke_parts`**
+
+| 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
+|--|--|--|--|--|
+| `xc_type` | | | `LDA` / `GGA` / `MGGA` | |
+| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp`</br>4/10/10 |
+| `vxc` | $f_g^\chi$ | $(g, \chi)$</br>`[g, x]` | `[ngrids, nvar]` | |
+| `fxc` | $f_{g}^{\chi \chi'}$ | $(g, \chi, \chi')$</br>`[g, x, x']` | `[ngrids, nvar, nvar]` | |
+| `prho` | $\partial_t \xi_g^\chi$ | $(g, \chi, t)$</br>`[g, x, t]` | `[ngrids, nvar, 3]` | |
+| `w` | $w_g$ | $(g)$</br>`[g]` | `[ngrids]` | |
+| `dw` | $\partial_{A_t} w_g$ | $(g, t, A)$</br>`[g, t, A]` | `[ngrids, 3, natm]` | |
+| `vmat_ip` | $\mathscr{T}_{\mu \nu}^{t}$ | $(\mu, \nu, t)$</br>`[u, v, t]` | `[nao, nao, 3]` | |
+
+这里不作细致展开。总地来说，
+- `vmat_becke_dw` 与 `vmat_becke_fxc` 的实现方式与 Fock 矩阵计算一致，这在程序中使用 `xc_fock_stack` 实现。
+- `vmat_becke_vxc` 实现用到关键中间量 `vmat_ip`，从而在普通 Fock 矩阵一阶 Skeleton 导数计算之外不需要任何额外计算量。
+
+**函数 `xc_fock_stack`**
+
+| 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
+|--|--|--|--|--|
+| `xc_type` | | | `LDA` / `GGA` / `MGGA` | |
+| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp`</br>4/10/10 |
+| `wv` | | $(g, \chi, \mathbb{K})$</br>`[g, x, k]` | `[ngrids, nvar, nk]` |
+
+该函数可以用于计算 Fock 矩阵的相关量 (`vmat_fxc`, `vmat_becke_dw`, `vmat_becke_fxc`)。它的实现方式与普通 Fock 矩阵计算一致，但允许 $\mathbb{K}$ 个，即引入导数分量的计算。
