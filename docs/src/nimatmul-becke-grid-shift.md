@@ -2,6 +2,10 @@
 
 该文档将解决偏移导数问题。
 
+> **该文档仅处理闭壳层问题**
+>
+> 对于开壳层，各格点偏移项与闭壳层逐项对应：对 $f_g^\chi$ (vxc) 线性的项 (如 `de_becke_full_1`、`de_becke_vxc_*`、`vmat_becke_dw`、`vmat_becke_vxc`) 作两个自旋分量的求和；对 $f_g^{\chi \chi'}$ (fxc) 二次的项 (如 `de_fxc`、`de_becke_atom_1`、`de_becke_atom_3`、`vmat_becke_fxc`) 作 $\alpha\alpha / \alpha\beta / \beta\alpha / \beta\beta$ 四个自旋对的求和。格点权重部分 (Becke 配分的 `dw`/`ddw` 缩并) 与自旋无关；`de_becke_full_2` 中与 $\mathrm{ddw}$ 缩并的 $f_g \rho_g$ 取自旋求和后的密度。
+
 ## 1. 格点偏移导数概述
 
 ### 1.1 格点坐标权重与原子坐标的关系
@@ -114,7 +118,7 @@ $$
 我们交换求和顺序，引入 2-dim 临时张量 $\mathscr{T}_{\mu}^t$：
 
 $$
-\mathscr{T}_{\mu}^t = \sum_{g \chi} w_g f^\chi_g \frac{\partial \xi_{g \mu \nu}^\chi}{\partial t} D_{\mu \nu}
+\mathscr{T}_{\mu}^t = \sum_{g \chi \nu} w_g f^\chi_g \frac{\partial \xi_{g \mu \nu}^\chi}{\partial t} D_{\mu \nu} \quad (\text{restrict $\partial$ to $\mu$})
 $$
 
 那么一阶 Skeleton 梯度的普通项导数可以写为 (2 倍来源于 $\mathrm{swap}(\mu, \nu)$)：
@@ -144,7 +148,7 @@ $$
 但这不意味着先前的程序就能无痛地直接使用。我们需要对 $\mathscr{T}_{\mu}^t$ 的计算过程进行修改，在公式表达上引入 3-dim 张量 $\mathscr{T}_{\mu}^{A t}$：
 
 $$
-\mathscr{T}_{\mu}^{A t} = \sum_{g \chi} w_g f^\chi_g \frac{\partial \xi_{g \mu \nu}^\chi}{\partial t} D_{\mu \nu} \delta_{g \in A}
+\mathscr{T}_{\mu}^{A t} = \sum_{g \chi \nu} w_g f^\chi_g \frac{\partial \xi_{g \mu \nu}^\chi}{\partial t} D_{\mu \nu} \delta_{g \in A} \quad (\text{restrict $\partial$ to $\mu$})
 $$
 
 它其实仅仅就是在格点求和时，依据格点 $g$ 是由哪个原子 $A$ 所生成的 Lebedev 格点，来分割求和结果。这个过程并不复杂，也并不难以做到；但它必须要求下述数据结构要求：
@@ -157,7 +161,7 @@ $$
 > 
 > 未来的一种可能解决方案是，在依原子预先归类后，再进行基于空间坐标的排序 (有些接近于桶排序组合)。这不算太 trivial，因为一般来说生成 DFT 格点的最简单做法是先依原子迭代、后依半径迭代，最后用 Lebedev 打表数据给出；这显然有少许空间排序上的优化空间。但这不是当前文档与程序的实现目标。
 
-在具体的程序实现中，我们总是对格点作分批的。因此原先用于计算 $\mathscr{T}_{\mu}^t$ 的程序是能复用的，只是在得到一批 (必须是同一原子生成的 Lebedev) 格点的 $\mathscr{T}_{\mu}^{A t}$ 增量后，计算进第 1 项普通 Skeleton 导数贡献后，不着急者扔掉：
+在具体的程序实现中，我们总是对格点作分批的。因此原先用于计算 $\mathscr{T}_{\mu}^t$ 的程序是能复用的，只是在得到一批 (必须是同一原子生成的 Lebedev) 格点的 $\mathscr{T}_{\mu}^{A t}$ 增量后，计算进第 1 项普通 Skeleton 导数贡献后，先不着急扔掉：
 
 $$
 \partial_{A_t} E \leftarrow - 2 \sum_{\mu \in A} \sum_B \mathscr{T}_{\mu}^{B t}
@@ -178,7 +182,7 @@ $$
 | 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
 |--|--|--|--|--|
 | `drho` | $\partial_{A_t} \xi_g^\chi$ | $(g, \chi, t, A)$</br>`[g, x, t, A]` | `[ngrids, nvar, 3, natm]` | |
-| `prho` | $\partial_{t} \xi_g^\chi$ | $(g, \chi, t)$</br>`[g, x, t]` | `[ngrids, nvar, 3]` | |
+| `prho` | $\partial_{t} \xi_g^\chi$</br>(= $-\sum_A \partial_{A_t} \xi_g^\chi$) | $(g, \chi, t)$</br>`[g, x, t]` | `[ngrids, nvar, 3]` | |
 
 我们回顾到 $\partial_{A_t} = - \partial_t \delta_{\mu \in A}$，那么对 $\partial_{A_t}$ 原子指标 $A$ 求和可以立即得到关于 $\partial_t$ 的关系：
 
@@ -187,10 +191,10 @@ $$
 $$
 
 ```rust
-let prho = drho.sum_axes(3);
+let prho = -drho.sum_axes(3);
 ```
 
-由于这部分计算几乎没有代价，且 `drho` $\partial_{A_t} \xi_g^\chi$ 是二阶梯度程序中必须计算的，因此我们可以立即复用它来计算 $\partial_t \xi_g^\chi$，以简化一部分格点坐标偏移 Skeleton 导数。
+由于这部分计算几乎没有代价，且 `drho` $\partial_{A_t} \xi_g^\chi$ 是二阶梯度程序中必须计算的，因此我们可以立即复用它来得到 `prho` $\partial_t \xi_g^\chi$，以简化一部分格点坐标偏移 Skeleton 导数。
 
 但也需要指出，整个二阶梯度程序是不计算 $\partial_{A_t} \partial_{B_s} \xi_g^\chi$ 即格点密度二阶导数的：这一方面计算量太大，另一方面这是相当大的 $O(N^3)$ 内存需求。因此，如果碰到二阶密度导数的需求，必须要作密度在原子轨道上的展开，用更复杂 (但可复用普通二阶梯度中间量) 的方式计算。
 
@@ -286,7 +290,7 @@ $$
 
 请留意，程序实现中有一些公式难以表达清楚的部分：
 - 该函数是在格点 $g$ 的分批下完成的；这一批格点一定对应于同一个原子 $A$ 的 Lebedev 格点。因此，这里的所有 $A$ 指标都没有出现在维度大小中。
-- 尽管程序会输出 `de_becke_vxc_diag/off`，但它们是没有经过 $\mathrm{swap} (A_t, B_s)$ 对称化的。对称化过程会在格点 chunk 分批的过程中，拼接到完整的 $(t, s, A, B)$ 维度的 Hessian 中完成。
+- 尽管程序会输出 `de_becke_vxc_diag/off`，但它们是没有经过 $\mathrm{swap} (A_t, B_s)$ 对称化的：各 chunk 的输出是方向轴互换的 $(t, s, B)$ 增量，被散射到完整的 $(t, s, A, B)$ 维度 Hessian 的最后一根 (B) 轴上 (即列原子为该 chunk 的生成原子)，待全部 chunk 累加完成后统一作 $\mathrm{swap} (A_t, B_s)$ 对称化。
 
 **函数 `contract_pvxc`**
 
@@ -345,13 +349,16 @@ $$
 | 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
 |--|--|--|--|--|
 | `xc_type` | | | `LDA` / `GGA` / `MGGA` | |
-| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp`</br>4/10/10 |
+| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp`</br>1/4/4 |
 | `vxc` | $f_g^\chi$ | $(g, \chi)$</br>`[g, x]` | `[ngrids, nvar]` | |
 | `fxc` | $f_{g}^{\chi \chi'}$ | $(g, \chi, \chi')$</br>`[g, x, x']` | `[ngrids, nvar, nvar]` | |
 | `prho` | $\partial_t \xi_g^\chi$ | $(g, \chi, t)$</br>`[g, x, t]` | `[ngrids, nvar, 3]` | |
 | `w` | $w_g$ | $(g)$</br>`[g]` | `[ngrids]` | |
 | `dw` | $\partial_{A_t} w_g$ | $(g, t, A)$</br>`[g, t, A]` | `[ngrids, 3, natm]` | |
 | `vmat_ip` | $\mathscr{T}_{\mu \nu}^{t}$ | $(\mu, \nu, t)$</br>`[u, v, t]` | `[nao, nao, 3]` | |
+| `vmat_becke_dw`</br>(output) | | $(\mu, \nu, t, A)$</br>`[u, v, t, A]` | `[nao, nao, 3, natm]` | 所有行均填充 |
+| `vmat_becke_vxc`</br>(output) | | $(\mu, \nu, t)$</br>`[u, v, t]` | `[nao, nao, 3]` | 该 chunk 原子的行 |
+| `vmat_becke_fxc`</br>(output) | | $(\mu, \nu, t)$</br>`[u, v, t]` | `[nao, nao, 3]` | 该 chunk 原子的行 |
 
 这里不作细致展开。总地来说，
 - `vmat_becke_dw` 与 `vmat_becke_fxc` 的实现方式与 Fock 矩阵计算一致，这在程序中使用 `xc_fock_stack` 实现。
@@ -362,7 +369,8 @@ $$
 | 变量名 | 变量意义 | 指标顺序 | 维度大小 | 其他说明 |
 |--|--|--|--|--|
 | `xc_type` | | | `LDA` / `GGA` / `MGGA` | |
-| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp`</br>4/10/10 |
-| `wv` | | $(g, \chi, \mathbb{K})$</br>`[g, x, k]` | `[ngrids, nvar, nk]` |
+| `ao` | $\phi_{g \mu}^{*}$ | $(g, \mu, *)$</br>`[g, u, *]` | `[ngrids, nao, ncomp]` | `ncomp`</br>1/4/4 |
+| `wv` | 带权重的有效场栈 | $(g, \chi, \mathbb{K})$</br>`[g, x, k]` | `[ngrids, nvar, nk]` | |
+| `fock`</br>(output) | | $(\mu, \nu, \mathbb{k})$</br>`[u, v, k]` | `[nao, nao, nk]` | $\mathrm{sym} (\mu, \nu)$ |
 
 该函数可以用于计算 Fock 矩阵的相关量 (`vmat_fxc`, `vmat_becke_dw`, `vmat_becke_fxc`)。它的实现方式与普通 Fock 矩阵计算一致，但允许 $\mathbb{K}$ 个，即引入导数分量的计算。

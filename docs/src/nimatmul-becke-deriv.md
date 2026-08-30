@@ -27,7 +27,7 @@
 
 **该架构设计由人与 AI 共同完成** (初始人工-AI 混合代码跑通的情况下，AI refactor 给出)。
 
-> **实现决策：使用 array 长度记为 LANE 的仿 SIMD 类型 `f64simd`**
+> **实现决策：使用定长 array 的仿 SIMD 类型 `f64simd`**
 >
 > 在具体的程序实现里，我们会对格点维度 $g$ 作两重拆分：线程并行 task 拆分 (384-512)，以及线程内部串行 SIMD lane 拆分 (8)。
 >
@@ -49,7 +49,7 @@
   - 任务拆分 (`BatchTask`)，将全部格点拆分为互不重叠的区间 $[g_0, g_1)$。任务边界由格点归属方案 (`AtmIndices`) 决定：`ByGrid` 下按固定的 `nbatch` 均匀拆分 (任务内部可能混有不同原子的格点)；`ByAtom` 下任务不跨越原子的格点区间边界，每个任务只对应一个原子。
   - 线程缓冲 (`TaskBuffers`)，由并行迭代器的 per-worker 初始化分配一次、被该 worker 线程后续的所有任务复用。其中包括缩并部分和 (`TaskContraction`) 与 lane 暂存 (`LaneScratch`)。缩并部分和在每个任务结束时于互斥锁下 reduce 到输出缓冲。
 - **格点迭代级接口**
-  - lane 收集 (`gather_lane_batch`，输出 `LaneBatch`)，将任务的格点批次重新组织为定长 (LANE = 8) 的仿 SIMD lane。该函数是线程并行级与格点迭代级之间的桥接。
+  - lane 收集 (`gather_lane_batch`，输出 `LaneBatch`)，将任务的格点批次重新组织为定长 (`SIMDD` = 8) 的仿 SIMD lane。该函数是线程并行级与格点迭代级之间的桥接。
   - lane 求值与写回 (`process_lane` 所调度的 `eval_*`/`store_lane_*` 函数族，以及 `LaneScratch`、`LanePartition`、`LaneAttrib` 等)，以单个 lane (8 个格点) 为单位完成所有请求导数阶的求值、向输出缓冲的写回、以及向缩并部分和的累加。
 
 三层之间的调用关系是：入口函数构建 `BeckeMolTables` 与 `BeckePartitionContext`，拆分出 `BatchTask` 后交给 rayon 并行迭代；每个任务先 gather 为 `LaneBatch`，再逐 lane 执行 `process_lane`。除主线程级接口的少数类型与入口函数外 (pub `BeckeMolTables`、`BeckePartitionArg`/`BeckePartitionOutput`、`AtmIndices` 与两个入口函数)，其余类型均为私有实现细节。

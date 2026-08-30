@@ -102,12 +102,12 @@ fn test_setup(hess_case_b3lyp: &CaseAmoniaUKSBecke) {
         "de_becke_atom_3",
         "de_becke_vxc_diag",
         "de_becke_vxc_off",
-        "vmat_becke_T1_a",
-        "vmat_becke_T1_b",
-        "vmat_becke_T2_ipip_a",
-        "vmat_becke_T2_ipip_b",
-        "vmat_becke_T2_fxc_a",
-        "vmat_becke_T2_fxc_b",
+        "vmat_becke_dw_a",
+        "vmat_becke_dw_b",
+        "vmat_becke_vxc_a",
+        "vmat_becke_vxc_b",
+        "vmat_becke_fxc_a",
+        "vmat_becke_fxc_b",
     ] {
         println!("fp {key}: {}", fp(becke_obj.intmd[key].view()));
     }

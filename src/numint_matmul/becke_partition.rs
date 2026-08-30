@@ -128,8 +128,7 @@ pub enum AtmIndices<'a> {
     /// partition weight.  Grid points of different atoms may be interleaved freely.
     ByGrid(&'a [usize]),
     /// Cumulative grid boundaries per atom, length `natm + 1`: atom `A` owns the grids
-    /// `[indices[A], indices[A + 1])` (the grid must be grouped by atom; cf
-    /// `get_quad_split`/`quad_split_by_atom` in the pyhessref reference).  Batches
+    /// `[indices[A], indices[A + 1])` (the grid must be grouped by atom).  Batches
     /// never cross an atom boundary.
     ByAtom(&'a [usize]),
 }

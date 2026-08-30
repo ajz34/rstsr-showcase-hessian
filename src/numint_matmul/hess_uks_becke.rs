@@ -1,5 +1,3 @@
-// see also pyhessref/nimatmul/uks_with_becke.py
-//
 // Unrestricted sibling of `hess_rks_becke`: the single-spin helpers, the becke
 // partition machinery, and the chunk-level batching driver are shared with the
 // RKS implementation; only the spin-coupled pieces differ.  The spin extension
@@ -8,8 +6,7 @@
 // beta quantity), and terms quadratic in the fxc kernel become the four
 // spin-pair sum (the same aa/ab/ba/bb structure as `get_de_fxc_uks`).
 //
-// Like `hess_rks_becke` (which carries its own copies of the term-level
-// functions of `hess_rks`), this module carries its own copies of the
+// Like `hess_rks_becke`, this module carries its own copies of the
 // spin-coupled pieces of `hess_uks` and is meant as a future replacement of
 // `hess_uks`; the single-spin helpers are imported from `hess_rks_becke`, and
 // only the response reuses `hess_uks::get_uks_response_bra_batched`.
@@ -71,7 +68,7 @@ macro_rules! index_mut {
 /* #region basic pure functions of skeleton hessian evaluation */
 
 /// On-grid spin-polarized density with 1st/2nd functional derivatives and the
-/// per-particle XC energy density (pyhessref `_eval_rho_exc_vxc_fxc_uks`).
+/// per-particle XC energy density.
 ///
 /// Same as [`super::hess_uks::get_rho_vxc_fxc_uks`], but also returns the
 /// order-0 output `exc`, needed by the `cddw` contraction of `de_becke_full_2`
@@ -163,8 +160,8 @@ fn get_de_fxc_uks_inner(wf_block: TsrView, drho1: TsrView, drho2: TsrView) -> Ts
     tmp2.reshape([3, natm, 3, natm]).transpose([0, 2, 1, 3]).into_contig(ColMajor)
 }
 
-/// fxc contribution to the UKS XC skeleton Hessian (pyhessref `_de_fxc_uks`):
-/// the four spin-pair sum of [`super::hess_rks_becke::get_de_fxc`] blocks,
+/// fxc contribution to the UKS XC skeleton Hessian: the four spin-pair sum of
+/// [`super::hess_rks_becke::get_de_fxc`] blocks,
 /// `einsum("gxy, gxtA, gysB -> tsAB", wf, drho, drho)` per (s1, s2) pair.
 ///
 /// # Parameters
@@ -187,10 +184,10 @@ pub fn get_de_fxc_uks(wf: TsrView, drhoα: TsrView, drhoβ: TsrView) -> Tsr {
 }
 
 /// fxc contribution to the per-atom skeleton derivative of the Vxc Fock
-/// matrices for UKS (pyhessref `_vmat_fxc_uks`) — the spin-coupled piece.
-/// Unlike the spin-diagonal [`get_vmat_vxc`] (reused from RKS per spin), the
-/// fxc contraction here couples the two spin channels:
-/// `field_α = wf_αα @ drho_α + wf_βα @ drho_β` and symmetrically for beta,
+/// matrices for UKS — the spin-coupled piece.  Unlike the spin-diagonal
+/// [`get_vmat_vxc`] (reused from RKS per spin), the fxc contraction here
+/// couples the two spin channels:
+/// `field_α = wf_αα @ drho_α + wf_αβ @ drho_β` and symmetrically for beta,
 /// one [`xc_fock_stack`] call per spin per atom row.
 ///
 /// # Parameters
@@ -215,8 +212,8 @@ pub fn get_vmat_fxc_uks(xc_type: XCDenType, ao: TsrView, drhoα: TsrView, drhoβ
     let mut vmatβ_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], device));
 
     for A in 0..natm {
-        // fields [g, x, t] = sum_{σ', y} wf[g, x, σ, y, σ'] drho_σ'[g, y, t, A], passed unscaled
-        // (the 0.5/0.25 factors of the reference are absorbed by `xc_fock_stack`; see
+        // fields [g, x, t] = sum_{σ', y} wf[g, x, σ, y, σ'] drho_σ'[g, y, t, A], passed
+        // unscaled (the 0.5/0.25 factors are absorbed by `xc_fock_stack`; see
         // [`super::hess_rks_becke::get_vmat_fxc`])
         let field_α = rt::vecdot(wf.i((.., .., α, .., α)), drhoα.i((.., None, .., .., A)), 2)
             + rt::vecdot(wf.i((.., .., α, .., β)), drhoβ.i((.., None, .., .., A)), 2);
@@ -233,8 +230,8 @@ pub fn get_vmat_fxc_uks(xc_type: XCDenType, ao: TsrView, drhoα: TsrView, drhoβ
 
 /* #region becke grid-shift parts: skeleton hessian */
 
-/// `de_becke_atom_1` (notebook t3), UKS spin extension:
-/// `-einsum("g, txg, xyg, Bsyg -> Bts", w, prho_l, fxc[s1, :, s2, :], drho_r)`
+/// `de_becke_atom_1`, UKS spin extension:
+/// `einsum("g, txg, xyg, Bsyg -> Bts", w, prho_l, fxc[s1, :, s2, :], drho_r)`
 /// summed over the four spin pairs (s1, s2) — the same coupling structure as
 /// [`get_de_fxc_uks`].  Each pair reuses the single-spin
 /// [`get_de_becke_atom_1`] on the `fxc[s1, :, s2, :]` spin block; the free
@@ -244,8 +241,8 @@ pub fn get_vmat_fxc_uks(xc_type: XCDenType, ao: TsrView, drhoα: TsrView, drhoβ
 /// # Parameters
 ///
 /// - `w` : shape `[ngrids]`.  Grid weights of the chunk.
-/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t).  Total skeleton derivative `drho`
-///   summed over atoms, per spin.
+/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho_σ /
+///   dr`, per spin.
 /// - `fxc` : shape `[ngrids, nvar, 2, nvar, 2]`.
 /// - `drhoα`, `drhoβ` : shape `[ngrids, nvar, 3, natm]`.
 ///
@@ -274,8 +271,8 @@ pub fn get_de_becke_atom_1_uks(
     de_becke_atom_1
 }
 
-/// `de_becke_atom_2` (notebook t5), UKS spin extension:
-/// `-einsum("Bsg, xg, txg -> Bts", dw, vxc[σ], prho_σ)` summed over the two
+/// `de_becke_atom_2`, UKS spin extension:
+/// `einsum("Bsg, xg, txg -> Bts", dw, vxc[σ], prho_σ)` summed over the two
 /// spins.  Each spin reuses the single-spin [`get_de_becke_atom_2`].
 ///
 /// # Parameters
@@ -283,7 +280,8 @@ pub fn get_de_becke_atom_1_uks(
 /// - `dw` : shape `[ngrids, 3, natm]` (g, t, A).  Grid-first Becke `dw` (see
 ///   [`make_hessian_setup_chunk_becke_uks`]).
 /// - `vxc` : shape `[ngrids, nvar, 2]`.
-/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t).
+/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho_σ /
+///   dr`.
 ///
 /// # Returns
 ///
@@ -294,7 +292,7 @@ pub fn get_de_becke_atom_2_uks(dw: TsrView, vxc: TsrView, prhoα: TsrView, prho�
     &term_α + &term_β
 }
 
-/// `de_becke_atom_3` (notebook t6), UKS spin extension:
+/// `de_becke_atom_3`, UKS spin extension:
 /// `einsum("g, xyg, syg, txg -> ts", w, fxc[s1, :, s2, :], prho_r, prho_l)`
 /// summed over the four spin pairs — same structure as
 /// [`super::hess_rks_becke::get_de_becke_atom_3`], but with the two prho slots
@@ -304,7 +302,8 @@ pub fn get_de_becke_atom_2_uks(dw: TsrView, vxc: TsrView, prhoα: TsrView, prho�
 /// # Parameters
 ///
 /// - `w` : shape `[ngrids]`.  Grid weights of the chunk.
-/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t).
+/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho_σ /
+///   dr`.
 /// - `fxc` : shape `[ngrids, nvar, 2, nvar, 2]`.
 ///
 /// # Returns
@@ -329,11 +328,10 @@ pub fn get_de_becke_atom_3_uks(w: TsrView, prhoα: TsrView, prhoβ: TsrView, fxc
     de_becke_atom_3
 }
 
-/// `de_becke_vxc_diag` (notebook t8) / `de_becke_vxc_off` (t9), UKS spin
-/// extension: same structure as
-/// [`super::hess_rks_becke::get_de_becke_vxc_parts`], with the per-spin kernels
-/// (each built from its own `wv` weighting and `ao_dm0` contraction in
-/// [`make_hessian_setup_chunk_becke_uks`]) summed before the
+/// `de_becke_vxc_diag` / `de_becke_vxc_off`, UKS spin extension: same
+/// structure as [`super::hess_rks_becke::get_de_becke_vxc_parts`], with the
+/// per-spin kernels (each built from its own `wv` weighting and `ao_dm0`
+/// contraction in [`make_hessian_setup_chunk_becke_uks`]) summed before the
 /// [`contract_pvxc`] scatter — the contraction is linear, so spin-summing
 /// first is equivalent to contracting each spin separately.
 ///
@@ -374,8 +372,8 @@ pub fn get_de_becke_vxc_parts_uks(
     const IDX_PAIR_TS: [usize; 9] = [0, 1, 2, 1, 3, 4, 2, 4, 5];
     let pvxc_diag: Tsr = (&dao_vxc_diag_α + &dao_vxc_diag_β).index_select(1, IDX_PAIR_TS).into_shape([nao, 3, 3]);
 
-    // pvxc_off[u, t, s] = sum_v (dao_vxc_off_α[u, v, t, s] dm0α[u, v] + dao_vxc_off_β[u, v,
-    // t, s] dm0β[u, v])  (einsum "tsuv, uv -> tsu" on the [t, s, u, v] kernels per spin)
+    // pvxc_off[u, t, s] = sum_v (dao_vxc_off_α[u, v, t, s] dm0α[u, v]
+    //                         + dao_vxc_off_β[u, v, t, s] dm0β[u, v])
     let pvxc_off: Tsr = rt::vecdot(dao_vxc_off_α, dm0α, 1) + rt::vecdot(dao_vxc_off_β, dm0β, 1);
     (contract_pvxc(pvxc_diag.view(), atm_idx, aoslices), contract_pvxc(pvxc_off.view(), atm_idx, aoslices))
 }
@@ -385,20 +383,19 @@ pub fn get_de_becke_vxc_parts_uks(
 /* #region becke grid-shift parts: f1ao (CP-KS RHS) */
 
 /// f1ao-level Becke grid-shift parts of the per-spin skeleton Vxc Fock
-/// derivatives (pyhessref `_vmat_becke_parts_uks`): the per-spin increments
-/// `T1_σ + T2_σ` that restore translational invariance of each spin's
+/// derivatives: the per-spin increments `vmat_becke_dw_σ + vmat_becke_vxc_σ +
+/// vmat_becke_fxc_σ` that restore translational invariance of each spin's
 /// `vmat_deriv1_σ` (the DFT part of the CP-KS right-hand side f1ao), i.e.
 /// `sum_A vmat_deriv1_grid_σ[A] ~ 0`.
 ///
-/// - T1 (weight part): per-spin [`xc_fock_stack`] built with the Becke `dw[g, t, A]` slices as the
-///   weight field and the spin's own `vxc` field; every grid of the chunk contributes to every
-///   atom's row.
-/// - T2_ipip: the chunk's per-spin `vmat_ip` symmetrised in AO — the chunk holds one atom's grids,
-///   so `vmat_ip` already is the per-grid-atom kernel.
-/// - T2_fxc: the fxc kernel spin-coupled and folded with the total spatial density derivative of
-///   BOTH spins (`fxc[σ, :, σ', :]` against `prho_σ'`; leading minus from the `prho = -d rho / dr`
-///   convention of [`get_drho`]), contracted as an [`xc_fock_stack`] on the chunk weights.  This
-///   mirrors the [`get_vmat_fxc_uks`] spin coupling.
+/// - `vmat_becke_dw` (weight part): per-spin [`xc_fock_stack`] built with the Becke `dw[g, t, A]`
+///   slices as the weight field and the spin's own `vxc` field; every grid of the chunk contributes
+///   to every atom's row.
+/// - `vmat_becke_vxc`: the chunk's per-spin `vmat_ip` symmetrised in AO — the chunk holds one
+///   atom's grids, so `vmat_ip` already is the per-grid-atom kernel.
+/// - `vmat_becke_fxc`: the fxc kernel spin-coupled and folded with the total spatial density
+///   derivative of BOTH spins (`fxc[σ, :, σ', :]` against `prho_σ'`), contracted as an
+///   [`xc_fock_stack`] on the chunk weights.  This mirrors the [`get_vmat_fxc_uks`] spin coupling.
 ///
 /// # Parameters
 ///
@@ -407,7 +404,8 @@ pub fn get_de_becke_vxc_parts_uks(
 ///   for SIGMA/TAU), through [`xc_fock_stack`].
 /// - `vxc` : shape `[ngrids, nvar, 2]`.
 /// - `fxc` : shape `[ngrids, nvar, 2, nvar, 2]`.
-/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t), per spin.
+/// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho_σ /
+///   dr`, per spin.
 /// - `w` : shape `[ngrids]`.  Grid weights of the chunk.
 /// - `dw` : shape `[ngrids, 3, natm]` (g, t, A).  Grid-first Becke `dw` (see
 ///   [`get_de_becke_atom_2_uks`]).
@@ -416,9 +414,9 @@ pub fn get_de_becke_vxc_parts_uks(
 ///
 /// # Returns
 ///
-/// - `vmat_becke_T1_α`, `vmat_becke_T1_β` : shape `[nao, nao, 3, natm]`, filled on all rows.
-/// - `vmat_becke_T2_ipip_α/β`, `vmat_becke_T2_fxc_α/β` : shape `[nao, nao, 3]` — the chunk atom's
-///   row, scattered into the `[nao, nao, 3, natm]` accumulators by the driver.
+/// - `vmat_becke_dw_α`, `vmat_becke_dw_β` : shape `[nao, nao, 3, natm]`, filled on all rows.
+/// - `vmat_becke_vxc_α/β`, `vmat_becke_fxc_α/β` : shape `[nao, nao, 3]` — the chunk atom's row,
+///   scattered into the `[nao, nao, 3, natm]` accumulators by the driver.
 #[allow(clippy::too_many_arguments)]
 pub fn get_vmat_becke_parts_uks(
     xc_type: XCDenType,
@@ -436,48 +434,41 @@ pub fn get_vmat_becke_parts_uks(
     let natm = dw.shape()[2];
     let device = ao.device().clone();
 
-    // T1: per-spin XC-style Fock with the becke dw[·, ·, A] rows as weights (all rows); wv_σ
-    // [g, x, t] = vxc[g, x, σ] dw[g, t, A]
-    let mut vmat_becke_t1_α = rt::zeros(([nao, nao, 3, natm], &device));
-    let mut vmat_becke_t1_β = rt::zeros(([nao, nao, 3, natm], &device));
+    // dw part: per-spin XC-style Fock with the becke dw[·, ·, A] rows as weights (all rows);
+    // wv_σ [g, x, t] = vxc[g, x, σ] dw[g, t, A]
+    let mut vmat_becke_dw_α = rt::zeros(([nao, nao, 3, natm], &device));
+    let mut vmat_becke_dw_β = rt::zeros(([nao, nao, 3, natm], &device));
     for A in 0..natm {
         let wv_α = vxc.i((.., .., α, None)) * dw.i((.., None, .., A));
-        *&mut vmat_becke_t1_α.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), wv_α.view());
+        *&mut vmat_becke_dw_α.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), wv_α.view());
         let wv_β = vxc.i((.., .., β, None)) * dw.i((.., None, .., A));
-        *&mut vmat_becke_t1_β.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), wv_β.view());
+        *&mut vmat_becke_dw_β.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), wv_β.view());
     }
 
-    // T2_ipip: chunk's per-spin vmat_ip symmetrised in AO
-    let vmat_becke_t2_ipip_α = &vmat_ip_α + vmat_ip_α.swapaxes(0, 1);
-    let vmat_becke_t2_ipip_β = &vmat_ip_β + vmat_ip_β.swapaxes(0, 1);
+    // vxc part: chunk's per-spin vmat_ip symmetrised in AO
+    let vmat_becke_vxc_α = &vmat_ip_α + vmat_ip_α.swapaxes(0, 1);
+    let vmat_becke_vxc_β = &vmat_ip_β + vmat_ip_β.swapaxes(0, 1);
 
-    // T2_fxc: fxc spin-coupled and folded with prho of both spins, contracted on the chunk
+    // fxc part: fxc spin-coupled and folded with prho of both spins, contracted on the chunk
     // weights; fxc_prho_σ [g, x, t] = sum_{σ', y} fxc[σ, x, σ', y] prho_σ'[g, y, t]
     let fxc_prho_α: Tsr = rt::vecdot(fxc.i((.., .., α, .., α)), prhoα.i((.., None, ..)), 2)
         + rt::vecdot(fxc.i((.., .., α, .., β)), prhoβ.i((.., None, ..)), 2);
     let fxc_prho_β: Tsr = rt::vecdot(fxc.i((.., .., β, .., α)), prhoα.i((.., None, ..)), 2)
         + rt::vecdot(fxc.i((.., .., β, .., β)), prhoβ.i((.., None, ..)), 2);
-    let wv_α: Tsr = -1.0 * fxc_prho_α * w.i((.., None, None));
-    let wv_β: Tsr = -1.0 * fxc_prho_β * w.i((.., None, None));
-    let vmat_becke_t2_fxc_α = xc_fock_stack(xc_type, ao.view(), wv_α.view());
-    let vmat_becke_t2_fxc_β = xc_fock_stack(xc_type, ao.view(), wv_β.view());
+    let wv_α: Tsr = fxc_prho_α * w.i((.., None, None));
+    let wv_β: Tsr = fxc_prho_β * w.i((.., None, None));
+    let vmat_becke_fxc_α = xc_fock_stack(xc_type, ao.view(), wv_α.view());
+    let vmat_becke_fxc_β = xc_fock_stack(xc_type, ao.view(), wv_β.view());
 
-    (
-        vmat_becke_t1_α,
-        vmat_becke_t1_β,
-        vmat_becke_t2_ipip_α,
-        vmat_becke_t2_ipip_β,
-        vmat_becke_t2_fxc_α,
-        vmat_becke_t2_fxc_β,
-    )
+    (vmat_becke_dw_α, vmat_becke_dw_β, vmat_becke_vxc_α, vmat_becke_vxc_β, vmat_becke_fxc_α, vmat_becke_fxc_β)
 }
 
 /* #endregion */
 
 /* #region per-chunk evaluation */
 
-/// Per-chunk evaluation of all UKS skeleton ingredients with the grid-shift
-/// (pyhessref `make_hessian_setup_batch_uks`).  Unrestricted sibling of
+/// Per-chunk evaluation of all UKS skeleton ingredients with the grid-shift.
+/// Unrestricted sibling of
 /// [`super::hess_rks_becke::make_hessian_setup_chunk_becke`]: the chunk must
 /// hold grids of the single atom `atm_idx` (ByAtom attribution) and computes
 /// its own AO integrals through `ni.get_cached_ao`.
@@ -501,10 +492,10 @@ pub fn get_vmat_becke_parts_uks(
 ///
 /// - Sum: `fxc [ngrids, nvar, 2, nvar, 2]` (disjoint grid ranges); `de_fxc`, `de_vxc_diag_a/b`,
 ///   `de_vxc_off_a/b`, `de_becke_full_1/2` `[3, 3, natm, natm]`; `vmat_ip_a/b [nao, nao, 3]`;
-///   `vmat_fxc_a/b`, `vmat_vxc_a/b`, `vmat_deriv1_a/b`, `vmat_becke_T1_a/b` `[nao, nao, 3, natm]`.
+///   `vmat_fxc_a/b`, `vmat_vxc_a/b`, `vmat_deriv1_a/b`, `vmat_becke_dw_a/b` `[nao, nao, 3, natm]`.
 /// - Scatter into column `B = atm_idx` (direction axes interchanged): `de_becke_atom_1/2`,
-///   `de_becke_vxc_diag/off` `[3, 3, natm]`; `vmat_becke_T2_ipip_a/b`, `vmat_becke_T2_fxc_a/b`
-///   `[nao, nao, 3]`.
+///   `de_becke_vxc_diag/off` `[3, 3, natm]`; `vmat_becke_vxc_a/b`, `vmat_becke_fxc_a/b` `[nao, nao,
+///   3]`.
 /// - Scatter into the `[atm_idx, atm_idx]` diagonal block: `de_becke_atom_3` `[3, 3]`.
 #[allow(clippy::too_many_arguments)]
 pub fn make_hessian_setup_chunk_becke_uks(
@@ -545,9 +536,9 @@ pub fn make_hessian_setup_chunk_becke_uks(
 
     let drhoα = get_drho(xc_type, ao.view(), ao_dm0α.view(), &aoslices);
     let drhoβ = get_drho(xc_type, ao.view(), ao_dm0β.view(), &aoslices);
-    // prho_σ [ngrids, nvar, 3] = drho_σ summed over atoms
-    let prhoα = drhoα.sum_axes(3);
-    let prhoβ = drhoβ.sum_axes(3);
+    // prho_σ [ngrids, nvar, 3] = d rho_σ / dr = -(drho_σ summed over atoms)
+    let prhoα = -drhoα.sum_axes(3);
+    let prhoβ = -drhoβ.sum_axes(3);
 
     // --- without-becke parts --- //
 
@@ -598,14 +589,13 @@ pub fn make_hessian_setup_chunk_becke_uks(
         2,
         Some(deriv_arg),
     );
-    // dw flat is C-order [A, t, g] == Fortran-order [g, t, A];
-    // ddc flat is C-order [A, t, B, s, iset] == Fortran-order [iset, s, B, t, A]
+    // dw flat is C-order [A, t, g] == Fortran-order [g, t, A]
     let dw = rt::asarray((becke_result.dw.unwrap(), [ngrids, 3, natm].f(), &device));
 
     // --- becke grid-shift parts --- //
 
-    // de_becke_full_1 (notebook t1): einsum("Atg, xg, Bsxg -> ABts", dw, vxc[σ], drho_σ), summed
-    // over σ; t1 [t, s, A, B] = sum_g dw[g, t, A] vxc_drho[g, s, B], where
+    // de_becke_full_1: einsum("Atg, xg, Bsxg -> ABts", dw, vxc[σ], drho_σ), summed over σ;
+    // [t, s, A, B] = sum_g dw[g, t, A] vxc_drho[g, s, B], where
     // vxc_drho [g, s, B] = sum_x vxc[σ][g, x] drho_σ[g, x, s, B]
     let de_becke_full_1 = {
         let vxc_drho_α = rt::vecdot(drhoα.view(), vxc.i((.., .., α)), 1);
@@ -614,8 +604,8 @@ pub fn make_hessian_setup_chunk_becke_uks(
         rt::vecdot(dw.i((.., .., None, .., None)), vxc_drho.i((.., None, .., None, ..)), 0)
     };
 
-    // de_becke_full_2 (notebook t2): einsum("AtBsg, g, g -> ABts", ddw, exc, rhoa[0] + rhob[0])
-    // via the cddw contraction above (nset = 1), naturally symmetric;
+    // de_becke_full_2: einsum("AtBsg, g, g -> ABts", ddw, exc, rhoa[0] + rhob[0]) via the
+    // cddw contraction above (nset = 1), naturally symmetric;
     // ddc flat is C-order [A, t, B, s, iset] == Fortran-order [iset, s, B, t, A]
     let de_becke_full_2 = rt::asarray((becke_result.ddc.unwrap(), [3, natm, 3, natm].f(), &device))
         .transpose([2, 0, 3, 1])
@@ -640,25 +630,19 @@ pub fn make_hessian_setup_chunk_becke_uks(
         &aoslices,
     );
 
-    let (
-        vmat_becke_t1_α,
-        vmat_becke_t1_β,
-        vmat_becke_t2_ipip_α,
-        vmat_becke_t2_ipip_β,
-        vmat_becke_t2_fxc_α,
-        vmat_becke_t2_fxc_β,
-    ) = get_vmat_becke_parts_uks(
-        xc_type,
-        ao.view(),
-        vxc.view(),
-        fxc.view(),
-        prhoα.view(),
-        prhoβ.view(),
-        weights.view(),
-        dw.view(),
-        vmat_ip_α.view(),
-        vmat_ip_β.view(),
-    );
+    let (vmat_becke_dw_α, vmat_becke_dw_β, vmat_becke_vxc_α, vmat_becke_vxc_β, vmat_becke_fxc_α, vmat_becke_fxc_β) =
+        get_vmat_becke_parts_uks(
+            xc_type,
+            ao.view(),
+            vxc.view(),
+            fxc.view(),
+            prhoα.view(),
+            prhoβ.view(),
+            weights.view(),
+            dw.view(),
+            vmat_ip_α.view(),
+            vmat_ip_β.view(),
+        );
 
     HashMap::from([
         ("fxc", fxc),
@@ -682,12 +666,12 @@ pub fn make_hessian_setup_chunk_becke_uks(
         ("de_becke_atom_3", de_becke_atom_3),
         ("de_becke_vxc_diag", de_becke_vxc_diag),
         ("de_becke_vxc_off", de_becke_vxc_off),
-        ("vmat_becke_T1_a", vmat_becke_t1_α),
-        ("vmat_becke_T1_b", vmat_becke_t1_β),
-        ("vmat_becke_T2_ipip_a", vmat_becke_t2_ipip_α),
-        ("vmat_becke_T2_ipip_b", vmat_becke_t2_ipip_β),
-        ("vmat_becke_T2_fxc_a", vmat_becke_t2_fxc_α),
-        ("vmat_becke_T2_fxc_b", vmat_becke_t2_fxc_β),
+        ("vmat_becke_dw_a", vmat_becke_dw_α),
+        ("vmat_becke_dw_b", vmat_becke_dw_β),
+        ("vmat_becke_vxc_a", vmat_becke_vxc_α),
+        ("vmat_becke_vxc_b", vmat_becke_vxc_β),
+        ("vmat_becke_fxc_a", vmat_becke_fxc_α),
+        ("vmat_becke_fxc_b", vmat_becke_fxc_β),
     ])
 }
 
@@ -696,15 +680,15 @@ pub fn make_hessian_setup_chunk_becke_uks(
 /* #region parallel driver */
 
 /// `x + x.transpose(1, 0, 3, 2)` on a `[3, 3, natm, natm]` (tsAB) tensor: the
-/// `(A, t) <-> (B, s)` symmetrisation of the pyhessref reference.
+/// `(A, t) <-> (B, s)` symmetrisation.
 fn symmetrize_ts_ab(x: Tsr) -> Tsr {
     &x + x.transpose([1, 0, 3, 2])
 }
 
-/// Parallel driver for all UKS DFT skeleton ingredients with the grid-shift
-/// (pyhessref `make_hessian_setup_uks`).  Unrestricted sibling of
-/// [`super::hess_rks_becke::make_hessian_setup_becke`], sharing its flat
-/// chunk-level parallelization: [`quad_split_by_atom`] at `nchunk` granularity
+/// Parallel driver for all UKS DFT skeleton ingredients with the grid-shift.
+/// Unrestricted sibling of [`super::hess_rks_becke::make_hessian_setup_becke`],
+/// sharing its flat chunk-level parallelization: [`quad_split_by_atom`] at
+/// `nchunk` granularity
 /// produces `(atm_idx, start, end)` work units that never cross an atom
 /// boundary, and each unit evaluates [`make_hessian_setup_chunk_becke_uks`]
 /// (its own AO integrals included) inside one flat par_iter.
@@ -733,8 +717,8 @@ fn symmetrize_ts_ab(x: Tsr) -> Tsr {
 ///   axis), plus the assemblies: `de_xc_skeleton_no_becke [3, 3, natm, natm]` = `de_vxc_diag_a +
 ///   de_vxc_off_a + de_vxc_diag_b + de_vxc_off_b + de_fxc`; `de_xc_skeleton [3, 3, natm, natm]`
 ///   with all `de_becke_*` grid-shift parts added (translationally invariant);
-///   `vmat_deriv1_grid_a/b [nao, nao, 3, natm]` = `vmat_deriv1_a/b + vmat_becke_T1_a/b +
-///   T2_ipip_a/b + T2_fxc_a/b` (translationally invariant per spin).  The keys
+///   `vmat_deriv1_grid_a/b [nao, nao, 3, natm]` = `vmat_deriv1_a/b + vmat_becke_dw_a/b +
+///   vmat_becke_vxc_a/b + vmat_becke_fxc_a/b` (translationally invariant per spin).  The keys
 ///   `de_becke_full_1/atom_1/atom_2/vxc_diag/vxc_off` are symmetrised under `(A, t) <-> (B, s)`;
 ///   `de_becke_full_2` is naturally symmetric.
 /// - `timing` : wall-time progress entries.
@@ -793,12 +777,12 @@ pub fn make_hessian_setup_becke_uks(
     let de_becke_atom_3: Tsr = rt::zeros(([3, 3, natm, natm], &device));
     let de_becke_vxc_diag: Tsr = rt::zeros(([3, 3, natm, natm], &device));
     let de_becke_vxc_off: Tsr = rt::zeros(([3, 3, natm, natm], &device));
-    let vmat_becke_t1_α: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
-    let vmat_becke_t1_β: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
-    let vmat_becke_t2_ipip_α: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
-    let vmat_becke_t2_ipip_β: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
-    let vmat_becke_t2_fxc_α: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
-    let vmat_becke_t2_fxc_β: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
+    let vmat_becke_dw_α: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
+    let vmat_becke_dw_β: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
+    let vmat_becke_vxc_α: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
+    let vmat_becke_vxc_β: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
+    let vmat_becke_fxc_α: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
+    let vmat_becke_fxc_β: Tsr = rt::zeros(([nao, nao, 3, natm], &device));
 
     let timing = Arc::new(Mutex::new(IndexMap::from([("total", 0.0)])));
     let time_total = std::time::Instant::now();
@@ -849,17 +833,17 @@ pub fn make_hessian_setup_becke_uks(
             *&mut vmat_deriv1_β.force_mut() += &result_chunk["vmat_deriv1_b"];
             *&mut de_becke_full_1.force_mut() += &result_chunk["de_becke_full_1"];
             *&mut de_becke_full_2.force_mut() += &result_chunk["de_becke_full_2"];
-            *&mut vmat_becke_t1_α.force_mut() += &result_chunk["vmat_becke_T1_a"];
-            *&mut vmat_becke_t1_β.force_mut() += &result_chunk["vmat_becke_T1_b"];
+            *&mut vmat_becke_dw_α.force_mut() += &result_chunk["vmat_becke_dw_a"];
+            *&mut vmat_becke_dw_β.force_mut() += &result_chunk["vmat_becke_dw_b"];
             *&mut de_becke_atom_1.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_atom_1"];
             *&mut de_becke_atom_2.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_atom_2"];
             *&mut de_becke_atom_3.i((Ellipsis, atm_idx, atm_idx)).force_mut() += &result_chunk["de_becke_atom_3"];
             *&mut de_becke_vxc_diag.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_vxc_diag"];
             *&mut de_becke_vxc_off.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["de_becke_vxc_off"];
-            *&mut vmat_becke_t2_ipip_α.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_ipip_a"];
-            *&mut vmat_becke_t2_ipip_β.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_ipip_b"];
-            *&mut vmat_becke_t2_fxc_α.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_fxc_a"];
-            *&mut vmat_becke_t2_fxc_β.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_T2_fxc_b"];
+            *&mut vmat_becke_vxc_α.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_vxc_a"];
+            *&mut vmat_becke_vxc_β.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_vxc_b"];
+            *&mut vmat_becke_fxc_α.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_fxc_a"];
+            *&mut vmat_becke_fxc_β.i((Ellipsis, atm_idx)).force_mut() += &result_chunk["vmat_becke_fxc_b"];
         }
         let ichunk = progress.fetch_add(1, Ordering::Relaxed);
         timing.lock().unwrap().insert("total", time_total.elapsed().as_secs_f64());
@@ -873,8 +857,8 @@ pub fn make_hessian_setup_becke_uks(
         }
     });
 
-    // symmetrize on the atom indices for the becke parts; de_becke_full_2 is
-    // naturally symmetric
+    // (A, t) <-> (B, s) symmetrisation for the becke parts; de_becke_full_2
+    // is naturally symmetric
     let de_becke_full_1 = symmetrize_ts_ab(de_becke_full_1);
     let de_becke_atom_1 = symmetrize_ts_ab(de_becke_atom_1);
     let de_becke_atom_2 = symmetrize_ts_ab(de_becke_atom_2);
@@ -891,8 +875,8 @@ pub fn make_hessian_setup_becke_uks(
         + &de_becke_atom_3
         + &de_becke_vxc_diag
         + &de_becke_vxc_off;
-    let vmat_deriv1_grid_α = &vmat_deriv1_α + &vmat_becke_t1_α + &vmat_becke_t2_ipip_α + &vmat_becke_t2_fxc_α;
-    let vmat_deriv1_grid_β = &vmat_deriv1_β + &vmat_becke_t1_β + &vmat_becke_t2_ipip_β + &vmat_becke_t2_fxc_β;
+    let vmat_deriv1_grid_α = &vmat_deriv1_α + &vmat_becke_dw_α + &vmat_becke_vxc_α + &vmat_becke_fxc_α;
+    let vmat_deriv1_grid_β = &vmat_deriv1_β + &vmat_becke_dw_β + &vmat_becke_vxc_β + &vmat_becke_fxc_β;
 
     let result = HashMap::from([
         ("fxc", fxc_full),
@@ -916,12 +900,12 @@ pub fn make_hessian_setup_becke_uks(
         ("de_becke_atom_3", de_becke_atom_3),
         ("de_becke_vxc_diag", de_becke_vxc_diag),
         ("de_becke_vxc_off", de_becke_vxc_off),
-        ("vmat_becke_T1_a", vmat_becke_t1_α),
-        ("vmat_becke_T1_b", vmat_becke_t1_β),
-        ("vmat_becke_T2_ipip_a", vmat_becke_t2_ipip_α),
-        ("vmat_becke_T2_ipip_b", vmat_becke_t2_ipip_β),
-        ("vmat_becke_T2_fxc_a", vmat_becke_t2_fxc_α),
-        ("vmat_becke_T2_fxc_b", vmat_becke_t2_fxc_β),
+        ("vmat_becke_dw_a", vmat_becke_dw_α),
+        ("vmat_becke_dw_b", vmat_becke_dw_β),
+        ("vmat_becke_vxc_a", vmat_becke_vxc_α),
+        ("vmat_becke_vxc_b", vmat_becke_vxc_β),
+        ("vmat_becke_fxc_a", vmat_becke_fxc_α),
+        ("vmat_becke_fxc_b", vmat_becke_fxc_β),
         ("de_xc_skeleton_no_becke", de_xc_skeleton_no_becke),
         ("de_xc_skeleton", de_xc_skeleton),
         ("vmat_deriv1_grid_a", vmat_deriv1_grid_α),
@@ -936,15 +920,14 @@ pub fn make_hessian_setup_becke_uks(
 
 /* #region final implementation of UKS Hessian with becke grid-shift */
 
-/// UKS Hessian XC component with the Becke grid-shift (pyhessref
-/// `UHessKSNaiveBecke`), the unrestricted sibling of
-/// [`super::hess_rks_becke::RHessKSNIMatmulBecke`]:
+/// UKS Hessian XC component with the Becke grid-shift, the unrestricted
+/// sibling of [`super::hess_rks_becke::RHessKSNIMatmulBecke`]:
 /// [`UHessElecInteractAPI`] with `make_skeleton_hess` returning the
 /// translationally invariant `de_xc_skeleton` and `get_deriv1_ao` the
 /// translationally invariant `vmat_deriv1_grid_a/b` per spin.
 ///
-/// Grids must be atom-grouped (`sort_grids=False` in pyscf; the ByAtom
-/// attribution scheme of `becke_partition`).
+/// Grids must be atom-grouped (the ByAtom attribution scheme of
+/// `becke_partition`).
 pub struct UHessKSNIMatmulBecke<'a> {
     /// Molecule.
     pub mol: CInt,

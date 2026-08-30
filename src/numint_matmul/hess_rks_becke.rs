@@ -1,11 +1,8 @@
-// see also pyhessref/nimatmul/rks_with_becke.py
-//
 // Becke grid-shift contribution to the RKS Hessian: the grid is glued to the
 // atoms that generated it, so the weight factor of the XC energy carries
 // nuclear-coordinate derivatives.  This module carries its own copies of the
-// term-level functions of `hess_rks.rs` (mirroring how `rks_with_becke.py`
-// carries its own copies of `rks.py`) and is meant as a future replacement of
-// `hess_rks.rs`.  On top of the grid-fixed terms it adds the seven skeleton
+// term-level functions of `hess_rks.rs` and is meant as a future replacement
+// of `hess_rks.rs`.  On top of the grid-fixed terms it adds the seven skeleton
 // terms `de_becke_*` and the three f1ao corrections `vmat_becke_*`, restoring
 // translational invariance of `de_xc_skeleton` and `vmat_deriv1_grid`.
 //
@@ -121,9 +118,8 @@ pub fn by_atom_chunk(natm: usize, atm_idx: usize, n: usize) -> Vec<usize> {
 }
 
 /// Split the atom-grouped grid into pieces of at most `nsplit` grids, respecting
-/// atom boundaries (`quad_split_by_atom` in the pyhessref reference), so every
-/// piece carries one definite generating atom.  The number of atoms is
-/// `atm_quad_split.len() - 1`.
+/// atom boundaries, so every piece carries one definite generating atom.  The
+/// number of atoms is `atm_quad_split.len() - 1`.
 ///
 /// The driver uses this at chunk granularity (`nsplit = nchunk`): the returned
 /// `(atm_idx, start, end)` triples are the parallel work units of a single flat
@@ -145,7 +141,7 @@ pub fn quad_split_by_atom(atm_quad_split: &[usize], nsplit: usize) -> Vec<(usize
 }
 
 /// On-grid density with 1st/2nd functional derivatives and the per-particle XC
-/// energy density (pyhessref `_eval_rho_exc_vxc_fxc`).
+/// energy density.
 ///
 /// Same as [`super::hess_rks::get_rho_vxc_fxc`], but also returns the order-0
 /// output `exc`, needed by the `cddw` contraction of `de_becke_full_2`.
@@ -212,15 +208,16 @@ pub fn get_rho_exc_vxc_fxc(
 }
 
 /// 1st-order skeleton derivative of the rho components with respect to nuclear
-/// coordinates (pyhessref `_make_drho`).
+/// coordinates.
 ///
 /// The skeleton derivative counts only the basis functions following the
 /// nucleus they are centred on, density matrix held fixed: for each atom `A`
 /// and direction `t` the derivative acts on bra indices inside `A`'s AO slice.
 /// Symmetric components (rho + gradient) carry a factor 2 from bra/ket
 /// symmetry; the tau channel does not.  The bra contraction is accumulated
-/// with a leading minus, so `prho = drho` summed over `A` equals `-d rho / dr`
-/// under a uniform translation.
+/// with a leading minus, so `drho` summed over `A` equals `-d rho / dr` (the
+/// negated spatial derivative); the drivers negate the atom-sum back into
+/// `prho`.
 ///
 /// # Parameters
 ///
@@ -280,7 +277,7 @@ pub fn get_drho(xc_type: XCDenType, ao: TsrView, ao_dm0: TsrView, aoslices: &[[u
     drho
 }
 
-/// fxc contribution to the XC skeleton Hessian (pyhessref `_de_fxc`):
+/// fxc contribution to the XC skeleton Hessian:
 /// `einsum("gxy, gxtA, gysB -> tsAB", wf, drho, drho)`.
 ///
 /// # Parameters
@@ -304,10 +301,10 @@ pub fn get_de_fxc(wf: TsrView, drho: TsrView) -> Tsr {
     tmp2.reshape([3, natm, 3, natm]).transpose([0, 2, 1, 3]).into_contig(ColMajor)
 }
 
-/// AO-resolved diagonal vxc kernel (pyhessref `_make_dao_vxc_diag`), the
-/// builder part of [`get_de_vxc_diag`].  Both the same-atom Hessian block
-/// `de_vxc_diag` and the grid-shift part [`get_de_becke_vxc_parts`] contract
-/// this same kernel, so it is built once per chunk and shared.
+/// AO-resolved diagonal vxc kernel, the builder part of [`get_de_vxc_diag`].
+/// Both the same-atom Hessian block `de_vxc_diag` and the grid-shift part
+/// [`get_de_becke_vxc_parts`] contract this same kernel, so it is built once
+/// per chunk and shared.
 ///
 /// # Parameters
 ///
@@ -365,10 +362,9 @@ pub fn make_dao_vxc_diag(xc_type: XCDenType, ao: TsrView, ao_dm0: TsrView, wv: T
     dao_vxc_diag
 }
 
-/// Same-atom (A == B) block of the XC skeleton Hessian (pyhessref
-/// `_de_vxc_diag`), the reduction part of [`make_dao_vxc_diag`]: sums the
-/// kernel over each atom's AO slice and expands the 6 symmetric pairs into a
-/// dense (3, 3) block.
+/// Same-atom (A == B) block of the XC skeleton Hessian, the reduction part of
+/// [`make_dao_vxc_diag`]: sums the kernel over each atom's AO slice and
+/// expands the 6 symmetric pairs into a dense (3, 3) block.
 ///
 /// # Parameters
 ///
@@ -390,13 +386,11 @@ pub fn get_de_vxc_diag(dao_vxc_diag: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
     de_vxc_diag.index_select(0, [0, 1, 2, 1, 3, 4, 2, 4, 5]).into_shape([3, 3, natm, natm])
 }
 
-/// AO-resolved two-index vxc kernel (pyhessref `_make_dao_vxc_off`), the
-/// builder part of [`get_de_vxc_off`]; also contracted by the grid-shift part
-/// [`get_de_becke_vxc_parts`].
+/// AO-resolved two-index vxc kernel, the builder part of [`get_de_vxc_off`];
+/// also contracted by the grid-shift part [`get_de_becke_vxc_parts`].
 ///
-/// Note the axis order: the AO indices lead and the direction pair trails.
-/// The pyhessref kernel is `[3, 3, nao, nao]` (t, s, u, v); this layout keeps
-/// each (t, s) block contiguous in column-major storage.
+/// Note the axis order: the AO indices lead and the direction pair trails,
+/// keeping each (t, s) block contiguous in column-major storage.
 ///
 /// # Parameters
 ///
@@ -460,11 +454,10 @@ pub fn make_dao_vxc_off(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
     &dao_vxc_off + dao_vxc_off.transpose([1, 0, 3, 2])
 }
 
-/// Two-atom block of the XC skeleton Hessian (pyhessref `_de_vxc_off`), the
-/// reduction part of [`make_dao_vxc_off`]: contracts the kernel with the
-/// matching `dm0` AO slices per (A, B) block.  Both `A == B` and `A != B`
-/// entries are populated — the diag/off decomposition is by integral kernel,
-/// not by atom index.
+/// Two-atom block of the XC skeleton Hessian, the reduction part of
+/// [`make_dao_vxc_off`]: contracts the kernel with the matching `dm0` AO
+/// slices per (A, B) block.  Both `A == B` and `A != B` entries are populated —
+/// the diag/off decomposition is by integral kernel, not by atom index.
 ///
 /// # Parameters
 ///
@@ -493,10 +486,9 @@ pub fn get_de_vxc_off(dao_vxc_off: TsrView, dm0: TsrView, aoslices: &[[usize; 4]
     de_vxc_off
 }
 
-/// Gradient-level Vxc matrix shared across all atoms (pyhessref `_vmat_ip`):
-/// the AO-space object whose bra-side AO slice per atom yields the on-atom
-/// contribution that [`get_vmat_vxc`] adds to the per-atom skeleton Fock
-/// derivative.
+/// Gradient-level Vxc matrix shared across all atoms: the AO-space object
+/// whose bra-side AO slice per atom yields the on-atom contribution that
+/// [`get_vmat_vxc`] adds to the per-atom skeleton Fock derivative.
 ///
 /// # Parameters
 ///
@@ -510,8 +502,6 @@ pub fn get_de_vxc_off(dao_vxc_off: TsrView, dm0: TsrView, aoslices: &[[usize; 4]
 ///   derivative.  Not symmetrised in AO indices — the symmetrisation happens per atom slice in
 ///   [`get_vmat_vxc`].
 pub fn get_vmat_ip(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
-    // direct transformation of `pyhessref/nimatmul/rks_with_becke.py`, function `_vmat_ip`
-
     let nao = ao.shape()[1];
     let device = ao.device().clone();
 
@@ -556,9 +546,9 @@ pub fn get_vmat_ip(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
 }
 
 /// vxc (ipip, basis-derivative) contribution to the per-atom skeleton
-/// derivative of the Vxc Fock matrix (pyhessref `_vmat_vxc`): the slice of the
-/// gradient-level `vmat_ip` that lives on each atom `A`'s bra rows.
-/// Spin-diagonal, so UKS reuses it per spin channel.
+/// derivative of the Vxc Fock matrix: the slice of the gradient-level
+/// `vmat_ip` that lives on each atom `A`'s bra rows.  Spin-diagonal, so UKS
+/// reuses it per spin channel.
 ///
 /// # Parameters
 ///
@@ -569,8 +559,6 @@ pub fn get_vmat_ip(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
 ///
 /// - `vmat_vxc` : shape `[nao, nao, 3, natm]`, assembled across the AO axes (bra + ket).
 pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
-    // direct transformation of `pyhessref/nimatmul/rks_with_becke.py`, function `_vmat_vxc`
-
     let natm = aoslices.len();
     let nao = vmat_ip.shape()[0];
 
@@ -584,11 +572,10 @@ pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
     &vmat_vxc + vmat_vxc.swapaxes(0, 1)
 }
 
-/// fxc contribution to the per-atom skeleton derivative of the Vxc Fock matrix
-/// (pyhessref `_vmat_fxc`): the fxc kernel folded against the skeleton density
-/// derivative `drho[A]`, one [`xc_fock_stack`] call per atom row.  The
-/// genuinely spin-coupled piece for UKS, so the UKS counterpart is kept
-/// separate.
+/// fxc contribution to the per-atom skeleton derivative of the Vxc Fock
+/// matrix: the fxc kernel folded against the skeleton density derivative
+/// `drho[A]`, one [`xc_fock_stack`] call per atom row.  The genuinely
+/// spin-coupled piece for UKS, so the UKS counterpart is kept separate.
 ///
 /// # Parameters
 ///
@@ -608,9 +595,9 @@ pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView)
     let mut vmat_fxc: Tsr = rt::zeros(([nao, nao, 3, natm], ao.device()));
 
     for A in 0..natm {
-        // field [g, x, t] = sum_y wf[g, x, y] drho[g, y, t, A], passed unscaled: the per-block
-        // AO-axis symmetrisation of `xc_fock_stack` reproduces the 0.5 (rho) factor and turns
-        // the tau factor 0.25 + final symmetrisation of the reference into its 0.5
+        // field [g, x, t] = sum_y wf[g, x, y] drho[g, y, t, A], passed unscaled: the AO-axis
+        // symmetrisation of `xc_fock_stack` restores the rho factor to 1 and the tau factor
+        // to 0.5 (the tau pair products enter the symmetrisation only once)
         let field = rt::vecdot(&wf, drho.i((.., None, .., .., A)), 2);
         *&mut vmat_fxc.i_mut((.., .., .., A)) += &xc_fock_stack(xc_type, ao.view(), field.view());
     }
@@ -622,15 +609,15 @@ pub fn get_vmat_fxc(xc_type: XCDenType, ao: TsrView, drho: TsrView, wf: TsrView)
 
 /* #region becke grid-shift parts: skeleton hessian */
 
-/// `de_becke_atom_1` (notebook t3): `-einsum("g, txg, xyg, Bsyg -> Bts", w, prho, fxc, drho)`,
+/// `de_becke_atom_1`: `einsum("g, txg, xyg, Bsyg -> Bts", w, prho, fxc, drho)`,
 /// evaluated on the chunk's grids only, with the free direction axes `s`/`t`
 /// interchanged (equivalent under the driver's symmetrisation).
 ///
 /// # Parameters
 ///
 /// - `w` : shape `[ngrids]`.  Grid weights of the chunk.
-/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).  Total skeleton derivative `drho` summed over
-///   atoms.
+/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho / dr` (= the
+///   negated atom-sum of `drho`).
 /// - `fxc` : shape `[ngrids, nvar, nvar]`.
 /// - `drho` : shape `[ngrids, nvar, 3, natm]`.
 ///
@@ -645,11 +632,11 @@ pub fn get_de_becke_atom_1(w: TsrView, prho: TsrView, fxc: TsrView, drho: TsrVie
     let fxc_drho = rt::vecdot(fxc.i((.., .., .., None, None)), drho.i((.., None, .., .., ..)), 2);
     // fold in the chunk grid weights
     let fxc_drho = fxc_drho * w.i((.., None, None, None));
-    // t3 [t, s, A] = -sum_{g, x} fxc_drho[g, x, t, A] prho[g, x, s]
-    -rt::vecdot(fxc_drho.i((.., .., .., None, ..)), prho.i((.., .., None, .., None)), ([0, 1], [0, 1]))
+    // de_becke_atom_1 [t, s, A] = sum_{g, x} fxc_drho[g, x, t, A] prho[g, x, s]
+    rt::vecdot(fxc_drho.i((.., .., .., None, ..)), prho.i((.., .., None, .., None)), ([0, 1], [0, 1]))
 }
 
-/// `de_becke_atom_2` (notebook t5): `-einsum("Bsg, xg, txg -> Bts", dw, vxc, prho)`,
+/// `de_becke_atom_2`: `einsum("Bsg, xg, txg -> Bts", dw, vxc, prho)`,
 /// evaluated with the free direction axes `s`/`t` interchanged (equivalent
 /// under the driver's symmetrisation).
 ///
@@ -658,7 +645,7 @@ pub fn get_de_becke_atom_1(w: TsrView, prho: TsrView, fxc: TsrView, drho: TsrVie
 /// - `dw` : shape `[ngrids, 3, natm]` (g, t, A).  Grid-first Becke `dw`: the Fortran-order wrap of
 ///   the C-order `[A, t, g]` becke output buffer (see [`make_hessian_setup_chunk_becke`]).
 /// - `vxc` : shape `[ngrids, nvar]`.
-/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).
+/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho / dr`.
 ///
 /// # Returns
 ///
@@ -667,18 +654,18 @@ pub fn get_de_becke_atom_1(w: TsrView, prho: TsrView, fxc: TsrView, drho: TsrVie
 pub fn get_de_becke_atom_2(dw: TsrView, vxc: TsrView, prho: TsrView) -> Tsr {
     // vdw2 [g, x, t, A] = vxc[g, x] dw[g, t, A]
     let vdw2 = dw.i((.., None, .., ..)) * vxc.i((.., .., None, None));
-    // t5 [t, s, A] = -sum_{g, x} vdw2[g, x, t, A] prho[g, x, s]
-    -rt::vecdot(vdw2.i((.., .., .., None, ..)), prho.i((.., .., None, .., None)), ([0, 1], [0, 1]))
+    // de_becke_atom_2 [t, s, A] = sum_{g, x} vdw2[g, x, t, A] prho[g, x, s]
+    rt::vecdot(vdw2.i((.., .., .., None, ..)), prho.i((.., .., None, .., None)), ([0, 1], [0, 1]))
 }
 
-/// `de_becke_atom_3` (notebook t6): `einsum("g, xyg, syg, txg -> ts", w, fxc, prho, prho)`,
+/// `de_becke_atom_3`: `einsum("g, xyg, syg, txg -> ts", w, fxc, prho, prho)`,
 /// evaluated on the chunk's grids only — fills the `[atm_idx, atm_idx]`
 /// diagonal block of the `[3, 3, natm, natm]` accumulator.
 ///
 /// # Parameters
 ///
 /// - `w` : shape `[ngrids]`.  Grid weights of the chunk.
-/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).
+/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho / dr`.
 /// - `fxc` : shape `[ngrids, nvar, nvar]`.
 ///
 /// # Returns
@@ -689,16 +676,16 @@ pub fn get_de_becke_atom_3(w: TsrView, prho: TsrView, fxc: TsrView) -> Tsr {
     let fp = rt::vecdot(fxc.i((.., .., .., None)), prho.i((.., None, .., ..)), 2);
     // wprho [g, x, s]
     let wprho = &prho * w.i((.., None, None));
-    // t6 [t, s] = sum_{g, x} fp[g, x, t] wprho[g, x, s]
+    // de_becke_atom_3 [t, s] = sum_{g, x} fp[g, x, t] wprho[g, x, s]
     rt::vecdot(fp.i((.., .., None, ..)), wprho.i((.., .., .., None)), ([0, 1], [0, 1]))
 }
 
 /// Contract a per-grid-atom skeleton-Vxc kernel into the chunk atom's Hessian
-/// column (pyhessref `_contract_pvxc`, with the free direction axes
-/// interchanged): the full-AO sum enters the `A == B` block, the per-atom
-/// AO-slice sums enter every `B` column of the row atom.  The 0.5 factor of
-/// the `de_becke_vxc_*` grid-shift terms is absorbed here: the full-AO sum
-/// carries it, the slice sums are unscaled (2 x 0.5 = 1).
+/// column (with the free direction axes interchanged): the full-AO sum enters
+/// the `A == B` block, the per-atom AO-slice sums enter every `B` column of
+/// the row atom.  The 0.5 factor of the `de_becke_vxc_*` grid-shift terms
+/// lives here: only the `A == B` full-AO sum carries it — the driver's
+/// symmetrisation doubles it back to 1 — while the slice sums are unscaled.
 ///
 /// # Parameters
 ///
@@ -725,9 +712,9 @@ pub fn contract_pvxc(pvxc: TsrView, atm_idx: usize, aoslices: &[[usize; 4]]) -> 
     row
 }
 
-/// `de_becke_vxc_diag` (notebook t8) / `de_becke_vxc_off` (t9): the basis form
-/// of t4/t7, contracting the per-chunk `dao_vxc_*` kernels (shared with
-/// `de_vxc_*`) with the density.  Substituting t4/t7 by t8/t9 avoids building
+/// `de_becke_vxc_diag` / `de_becke_vxc_off`: the basis form of the
+/// `de_becke_vxc` grid-shift terms, contracting the per-chunk `dao_vxc_*`
+/// kernels (shared with `de_vxc_*`) with the density, which avoids building
 /// the 2nd-order skeleton density derivatives altogether.
 ///
 /// # Parameters
@@ -762,7 +749,6 @@ pub fn get_de_becke_vxc_parts(
     let pvxc_diag: Tsr = dao_vxc_diag.index_select(1, IDX_PAIR_TS).into_shape([nao, 3, 3]);
 
     // pvxc_off[u, t, s] = sum_v dao_vxc_off[u, v, t, s] dm0[u, v]
-    // (einsum "tsuv, uv -> tsu" on the [t, s, u, v] kernel)
     let pvxc_off: Tsr = rt::vecdot(dao_vxc_off, dm0, 1);
     (contract_pvxc(pvxc_diag.view(), atm_idx, aoslices), contract_pvxc(pvxc_off.view(), atm_idx, aoslices))
 }
@@ -772,18 +758,19 @@ pub fn get_de_becke_vxc_parts(
 /* #region becke grid-shift parts: f1ao (CP-KS RHS) */
 
 /// Symmetric XC-style Fock matrices from a stack of grid-weighted effective
-/// fields (pyhessref `_vxc_fock`, generalised): the standard on-grid Vxc build
-/// (nr_vxc convention), batched over the trailing field axis.
+/// fields: the standard on-grid Vxc build, batched over the trailing field
+/// axis.
 ///
 /// The field is not restricted to the vxc itself: feeding the grid-weighted
 /// vxc produces the Vxc Fock matrix (`vmat_becke_dw` with the Becke `dw` rows
 /// as the weights), while feeding an fxc kernel folded with a density
 /// derivative produces first skeleton derivatives of the Fock matrix
 /// (`vmat_fxc`, `vmat_becke_fxc`).  The build is linear in `wv`, and the
-/// nr_vxc 0.5 factors live here, not with the callers: the rho channel enters
-/// both the bra and the ket AO factor (the AO-axis symmetrisation supplies the
-/// ket half), and the tau channel enters the kinetic-density pair products
-/// only once (those products are already AO-symmetric).
+/// 0.5 factors of the Vxc build live here, not with the callers: the rho
+/// channel enters both the bra and the ket AO factor (the AO-axis
+/// symmetrisation supplies the ket half), and the tau channel enters the
+/// kinetic-density pair products only once (those products are already
+/// AO-symmetric).
 ///
 /// # Parameters
 ///
@@ -828,18 +815,17 @@ pub fn xc_fock_stack(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
     fock
 }
 
-/// f1ao-level Becke grid-shift parts of the skeleton Vxc Fock derivative
-/// (pyhessref `_vmat_becke_parts`): the increment `vmat_becke_dw + vmat_becke_vxc +
-/// vmat_becke_fxc` that restores translational invariance of `vmat_deriv1` (the DFT part of
-/// the CP-KS right-hand side f1ao).
+/// f1ao-level Becke grid-shift parts of the skeleton Vxc Fock derivative: the
+/// increment `vmat_becke_dw + vmat_becke_vxc + vmat_becke_fxc` that restores
+/// translational invariance of `vmat_deriv1` (the DFT part of the CP-KS
+/// right-hand side f1ao).
 ///
 /// - `vmat_becke_dw` (weight part): [`xc_fock_stack`] per atom row, built with the Becke `dw[g, t,
 ///   A]` slices as the weight field; every grid of the chunk contributes to every atom's row.
 /// - `vmat_becke_vxc` (functional part, Vxc): the chunk's `vmat_ip` symmetrised in AO — the chunk
 ///   holds one atom's grids, so `vmat_ip` already is the per-grid-atom kernel.
-/// - `vmat_becke_fxc` (functional part, fxc): the fxc kernel folded with `prho` (which equals `-d
-///   rho / dr` under a uniform translation, hence the leading minus), contracted as an
-///   [`xc_fock_stack`] on the chunk weights.
+/// - `vmat_becke_fxc` (functional part, fxc): the fxc kernel folded with the spatial density
+///   derivative `prho`, contracted as an [`xc_fock_stack`] on the chunk weights.
 ///
 /// # Parameters
 ///
@@ -848,7 +834,7 @@ pub fn xc_fock_stack(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
 ///   for SIGMA/TAU), through [`xc_fock_stack`].
 /// - `vxc` : shape `[ngrids, nvar]`.
 /// - `fxc` : shape `[ngrids, nvar, nvar]`.
-/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).
+/// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).  Spatial density derivative `d rho / dr`.
 /// - `w` : shape `[ngrids]`.  Grid weights of the chunk.
 /// - `dw` : shape `[ngrids, 3, natm]` (g, t, A).  Grid-first Becke `dw` (see
 ///   [`get_de_becke_atom_2`]).
@@ -889,7 +875,7 @@ pub fn get_vmat_becke_parts(
     // fxc part: fxc folded with prho, contracted on the chunk weights
     // fxc_prho [g, x, t] = sum_y fxc[g, x, y] prho[g, y, t]
     let fxc_prho = rt::vecdot(fxc, prho.i((.., None, ..)), 2);
-    let wv: Tsr = -1.0 * fxc_prho * w.i((.., None, None));
+    let wv: Tsr = fxc_prho * w.i((.., None, None));
     let vmat_becke_fxc = xc_fock_stack(xc_type, ao.view(), wv.view());
 
     (vmat_becke_dw, vmat_becke_vxc, vmat_becke_fxc)
@@ -899,10 +885,9 @@ pub fn get_vmat_becke_parts(
 
 /* #region per-chunk evaluation */
 
-/// Per-chunk evaluation of all skeleton ingredients with the grid-shift
-/// (pyhessref `make_hessian_setup_batch`).  The chunk must hold grids of the
-/// single atom `atm_idx` (ByAtom attribution) and computes its own AO
-/// integrals through `ni.get_cached_ao`.
+/// Per-chunk evaluation of all skeleton ingredients with the grid-shift.  The
+/// chunk must hold grids of the single atom `atm_idx` (ByAtom attribution) and
+/// computes its own AO integrals through `ni.get_cached_ao`.
 ///
 /// # Parameters
 ///
@@ -962,8 +947,8 @@ pub fn make_hessian_setup_chunk_becke(
     // --- drho, prho --- //
 
     let drho = get_drho(xc_type, ao.view(), ao_dm0.view(), &aoslices);
-    // prho [ngrids, nvar, 3] = drho summed over atoms
-    let prho = drho.sum_axes(3);
+    // prho [ngrids, nvar, 3] = d rho / dr = -(drho summed over atoms)
+    let prho = -drho.sum_axes(3);
 
     // --- without-becke parts --- //
 
@@ -1004,22 +989,21 @@ pub fn make_hessian_setup_chunk_becke(
         2,
         Some(deriv_arg),
     );
-    // dw flat is C-order [A, t, g] == Fortran-order [g, t, A];
-    // ddc flat is C-order [A, t, B, s, iset] == Fortran-order [iset, s, B, t, A]
+    // dw flat is C-order [A, t, g] == Fortran-order [g, t, A]
     let dw = rt::asarray((becke_result.dw.unwrap(), [ngrids, 3, natm].f(), &device));
 
     // --- becke grid-shift parts --- //
 
-    // de_becke_full_1 (notebook t1): einsum("Atg, xg, Bsxg -> ABts", dw, vxc, drho);
-    // t1 [t, s, A, B] = sum_g dw[g, t, A] vxc_drho[g, s, B], where
+    // de_becke_full_1: einsum("Atg, xg, Bsxg -> ABts", dw, vxc, drho);
+    // [t, s, A, B] = sum_g dw[g, t, A] vxc_drho[g, s, B], where
     // vxc_drho [g, s, B] = sum_x vxc[g, x] drho[g, x, s, B]
     let de_becke_full_1 = {
         let vxc_drho = rt::vecdot(drho.view(), vxc.view(), 1);
         rt::vecdot(dw.i((.., .., None, .., None)), vxc_drho.i((.., None, .., None, ..)), 0)
     };
 
-    // de_becke_full_2 (notebook t2): einsum("AtBsg, g, g -> ABts", ddw, exc, rho[0]) via
-    // the cddw contraction above (nset = 1), naturally symmetric;
+    // de_becke_full_2: einsum("AtBsg, g, g -> ABts", ddw, exc, rho[0]) via the cddw
+    // contraction above (nset = 1), naturally symmetric;
     // ddc flat is C-order [A, t, B, s, iset] == Fortran-order [iset, s, B, t, A]
     let de_becke_full_2 = rt::asarray((becke_result.ddc.unwrap(), [3, natm, 3, natm].f(), &device))
         .transpose([2, 0, 3, 1])
@@ -1073,13 +1057,12 @@ pub fn make_hessian_setup_chunk_becke(
 /* #region parallel driver */
 
 /// `x + x.transpose(1, 0, 3, 2)` on a `[3, 3, natm, natm]` (tsAB) tensor: the
-/// `(A, t) <-> (B, s)` symmetrisation of the pyhessref reference.
+/// `(A, t) <-> (B, s)` symmetrisation.
 fn symmetrize_ts_ab(x: Tsr) -> Tsr {
     &x + x.transpose([1, 0, 3, 2])
 }
 
-/// Parallel driver for all DFT skeleton ingredients with the grid-shift
-/// (pyhessref `make_hessian_setup`).
+/// Parallel driver for all DFT skeleton ingredients with the grid-shift.
 ///
 /// Unlike [`super::hess_rks::make_hessian_setup_batched`] (two-level: serial
 /// batch-level AO evaluation + chunk-level parallel), the atom-grouped grid is
@@ -1087,8 +1070,8 @@ fn symmetrize_ts_ab(x: Tsr) -> Tsr {
 /// granularity produces `(atm_idx, start, end)` work units that never cross an
 /// atom boundary, and each unit evaluates [`make_hessian_setup_chunk_becke`]
 /// (its own AO integrals included) inside one flat par_iter.  Atom grid sizes
-/// differ, so atom-aligned batches would be neither uniform nor guaranteed to
-/// fill the thread pool; uniform chunks over the whole grid are.
+/// differ, so atom-sized work units would not fill the thread pool;
+/// `nchunk`-sized pieces (as far as atom boundaries allow) do.
 ///
 /// # Parameters
 ///
@@ -1234,8 +1217,8 @@ pub fn make_hessian_setup_becke(
         }
     });
 
-    // symmetrize on the atom indices for the becke parts; de_becke_full_2 is
-    // naturally symmetric
+    // (A, t) <-> (B, s) symmetrisation for the becke parts; de_becke_full_2
+    // is naturally symmetric
     let de_becke_full_1 = symmetrize_ts_ab(de_becke_full_1);
     let de_becke_atom_1 = symmetrize_ts_ab(de_becke_atom_1);
     let de_becke_atom_2 = symmetrize_ts_ab(de_becke_atom_2);
@@ -1286,15 +1269,14 @@ pub fn make_hessian_setup_becke(
 
 /* #region final implementation of RKS Hessian with becke grid-shift */
 
-/// RKS Hessian XC component with the Becke grid-shift (pyhessref
-/// `RHessKSNaiveBecke`), the grid-shift sibling of
-/// [`super::hess_rks::RHessKSNIMatmul`]: [`RHessElecInteractAPI`] with
+/// RKS Hessian XC component with the Becke grid-shift, the grid-shift sibling
+/// of [`super::hess_rks::RHessKSNIMatmul`]: [`RHessElecInteractAPI`] with
 /// `make_skeleton_hess` returning the translationally invariant
 /// `de_xc_skeleton` and `get_deriv1_ao` the translationally invariant
 /// `vmat_deriv1_grid`.
 ///
-/// Grids must be atom-grouped (`sort_grids=False` in pyscf; the ByAtom
-/// attribution scheme of `becke_partition`).
+/// Grids must be atom-grouped (the ByAtom attribution scheme of
+/// `becke_partition`).
 pub struct RHessKSNIMatmulBecke<'a> {
     /// Molecule.
     pub mol: CInt,

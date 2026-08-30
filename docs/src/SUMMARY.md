@@ -6,4 +6,4 @@
 - [DFT 能量二阶 Skeleton 导数](./nimatmul-skeleton2.md)
 - [DFT Fock 矩阵一阶 Skeleton 导数](./nimatmul-vmat1.md)
 - [DFT Becke Partition 权重导数](./nimatmul-becke-deriv.md)
-- [DFT 基于 Becke Partition 的格点偏移导数](./nimatmul-becke-grid-shift.md)
+- [DFT 基于 Becke 配分的格点偏移导数](./nimatmul-becke-grid-shift.md)
