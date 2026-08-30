@@ -593,7 +593,8 @@ pub fn get_vmat_vxc(vmat_ip: TsrView, aoslices: &[[usize; 4]]) -> Tsr {
 /// # Parameters
 ///
 /// - `xc_type` : density family.
-/// - `ao` : shape `[ngrids, nao, ncomp]`; reads channels 0..3.
+/// - `ao` : shape `[ngrids, nao, ncomp]`; reads the leading `num_ao_comp` channels (1 for RHO, 4
+///   for SIGMA/TAU), through [`xc_fock_stack`].
 /// - `drho` : shape `[ngrids, nvar, 3, natm]`, output of [`get_drho`].
 /// - `wf` : shape `[ngrids, nvar, nvar]`.  Grid-weighted fxc.
 ///
@@ -787,7 +788,8 @@ pub fn get_de_becke_vxc_parts(
 /// # Parameters
 ///
 /// - `xc_type` : density family.
-/// - `ao` : shape `[ngrids, nao, ncomp]`; reads channels 0..3.
+/// - `ao` : shape `[ngrids, nao, ncomp]`; reads the leading `num_ao_comp` channels (1 for RHO, 4
+///   for SIGMA/TAU).
 /// - `wv` : shape `[ngrids, nvar, k]` (g, x, field).  Stack of grid-weighted effective fields,
 ///   weights already folded in and unscaled.  `k` is typically the 3 Cartesian directions of one
 ///   atom row; batching them keeps the per-field `[nao, ngrids] x [ngrids, nao]` GEMMs down to one
@@ -842,7 +844,8 @@ pub fn xc_fock_stack(xc_type: XCDenType, ao: TsrView, wv: TsrView) -> Tsr {
 /// # Parameters
 ///
 /// - `xc_type` : density family.
-/// - `ao` : shape `[ngrids, nao, ncomp]`; reads channels 0..3.
+/// - `ao` : shape `[ngrids, nao, ncomp]`; reads the leading `num_ao_comp` channels (1 for RHO, 4
+///   for SIGMA/TAU), through [`xc_fock_stack`].
 /// - `vxc` : shape `[ngrids, nvar]`.
 /// - `fxc` : shape `[ngrids, nvar, nvar]`.
 /// - `prho` : shape `[ngrids, nvar, 3]` (g, x, t).

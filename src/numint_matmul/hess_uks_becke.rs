@@ -196,7 +196,8 @@ pub fn get_de_fxc_uks(wf: TsrView, drhoα: TsrView, drhoβ: TsrView) -> Tsr {
 /// # Parameters
 ///
 /// - `xc_type` : density family.
-/// - `ao` : shape `[ngrids, nao, ncomp]`; reads channels 0..3.
+/// - `ao` : shape `[ngrids, nao, ncomp]`; reads the leading `num_ao_comp` channels (1 for RHO, 4
+///   for SIGMA/TAU), through [`xc_fock_stack`].
 /// - `drhoα`, `drhoβ` : shape `[ngrids, nvar, 3, natm]`, per-spin outputs of
 ///   [`super::hess_rks_becke::get_drho`].
 /// - `wf` : shape `[ngrids, nvar, 2, nvar, 2]`.  Grid-weighted spin-polarized fxc kernel.
@@ -402,7 +403,8 @@ pub fn get_de_becke_vxc_parts_uks(
 /// # Parameters
 ///
 /// - `xc_type` : density family.
-/// - `ao` : shape `[ngrids, nao, ncomp]`; reads channels 0..3.
+/// - `ao` : shape `[ngrids, nao, ncomp]`; reads the leading `num_ao_comp` channels (1 for RHO, 4
+///   for SIGMA/TAU), through [`xc_fock_stack`].
 /// - `vxc` : shape `[ngrids, nvar, 2]`.
 /// - `fxc` : shape `[ngrids, nvar, 2, nvar, 2]`.
 /// - `prhoα`, `prhoβ` : shape `[ngrids, nvar, 3]` (g, x, t), per spin.
